@@ -318,8 +318,7 @@ def bulk_delete_dialog(selected: list):
             for r in selected:
                 db.delete(r["channel_id"])
             # 清除选择状态
-            for r in selected:
-                st.session_state.pop(f"sel_{r['channel_id']}", None)
+            st.session_state["bd_selected_ids"] = []
             st.success(f"已删除 {len(selected)} 位网红")
             st.rerun()
 
@@ -408,6 +407,89 @@ def edit_metrics_dialog(record: dict):
         )
         st.success("已保存")
         st.rerun()
+
+
+@st.dialog("网红详情")
+def row_detail_dialog(record: dict):
+    """点击表格行打开的详情弹窗，集中所有行级操作"""
+    st.markdown(f"### {record.get('channel_name', '-')}")
+    st.caption(f"状态：{record.get('status', '-')} ｜ 垂类：{record.get('category', '-')} ｜ 挖掘人：{record.get('recruiter', '-')}")
+
+    channel_url = record.get("channel_url", "")
+    if channel_url:
+        st.markdown(f"[🌐 打开 YouTube 主页]({channel_url})")
+
+    st.divider()
+
+    tab_names = ["数据总览", "爆款分析", "脚本 + 邮件"]
+    if record.get("video_link"):
+        tab_names.append("视频回链")
+    else:
+        tab_names.append("添加视频")
+    if record.get("product_link"):
+        tab_names.append("转化详情")
+    tab_names.append("编辑 / 删除")
+
+    tabs = st.tabs(tab_names)
+    idx = 0
+
+    with tabs[idx]:
+        idx += 1
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("粉丝", fmt_num(record.get("subscribers")))
+            st.metric("播放", fmt_num(record.get("video_views")))
+        with c2:
+            st.metric("总播放", fmt_num(record.get("total_views")))
+            st.metric("点赞", fmt_num(record.get("video_likes")))
+        with c3:
+            st.metric("浏览", fmt_num(record.get("product_views")))
+            st.metric("评论", fmt_num(record.get("video_comments")))
+        with c4:
+            st.metric("点击", fmt_num(record.get("product_clicks")))
+            st.metric("转化", fmt_num(record.get("product_conversions")))
+        st.metric("GMV", fmt_money(record.get("gmv")))
+
+    with tabs[idx]:
+        idx += 1
+        run_viral_analysis(record)
+
+    with tabs[idx]:
+        idx += 1
+        run_script_email(record)
+
+    if record.get("video_link"):
+        with tabs[idx]:
+            idx += 1
+            video_detail_dialog(record)
+    else:
+        with tabs[idx]:
+            idx += 1
+            add_video_dialog(record)
+
+    if record.get("product_link"):
+        with tabs[idx]:
+            idx += 1
+            conversion_detail_dialog(record)
+    else:
+        idx += 1
+
+    with tabs[idx]:
+        idx += 1
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("编辑数据", use_container_width=True, key=f"detail_edit_{record['channel_id']}"):
+                st.session_state[f"open_edit_{record['channel_id']}"] = True
+                st.rerun()
+        with c2:
+            if st.button("删除网红", type="primary", use_container_width=True, key=f"detail_delete_{record['channel_id']}"):
+                db = st.session_state.bd_db
+                db.delete(record["channel_id"])
+                st.success("已删除")
+                st.rerun()
+
+    if st.session_state.pop(f"open_edit_{record['channel_id']}", False):
+        edit_metrics_dialog(record)
 
 
 @st.dialog("筛选 & 排序")
@@ -528,6 +610,268 @@ def filter_dialog(records: list):
             st.rerun()
 
 
+def _build_bd_table_html(records: list, selected_ids: list) -> str:
+    """用真实 HTML <table> 渲染 BD 底库表格，保证跨行严格对齐"""
+    # 列定义：(表头, 宽度 px, 对齐, 取值函数, 额外 class)
+    cols = [
+        ("", 66, "center", lambda r: r['channel_id'], ""),
+        ("昵称", 192, "left", lambda r: _html_escape(r.get("channel_name", "-")), ""),
+        ("状态", 96, "left", lambda r: _html_escape(r.get("status", "-")), lambda r: "bd-status" if r.get("status") == "已引入" else ("bd-empty" if not r.get("status") or r.get("status") == "-" else "")),
+        ("粉丝", 96, "right", lambda r: fmt_num(r.get("subscribers")), "bd-num"),
+        ("总播放", 96, "right", lambda r: fmt_num(r.get("total_views")), "bd-num"),
+        ("垂类", 140, "left", lambda r: _html_escape(r.get("category", "-")), ""),
+        ("主页", 88, "center", lambda r: _bd_home_cell(r.get("channel_url", "")), ""),
+        ("回链", 96, "center", lambda r: _bd_video_cell(r), ""),
+        ("播放", 88, "right", lambda r: fmt_num(r.get("video_views")), "bd-num"),
+        ("点赞", 88, "right", lambda r: fmt_num(r.get("video_likes")), "bd-num"),
+        ("评论", 88, "right", lambda r: fmt_num(r.get("video_comments")), "bd-num"),
+        ("商品链接", 96, "center", lambda r: _bd_product_cell(r.get("product_link", "")), ""),
+        ("浏览", 88, "right", lambda r: fmt_num(r.get("product_views")), "bd-num"),
+        ("点击", 88, "right", lambda r: fmt_num(r.get("product_clicks")), "bd-num"),
+        ("转化", 88, "right", lambda r: fmt_num(r.get("product_conversions")), "bd-num"),
+        ("GMV", 104, "right", lambda r: fmt_money(r.get("gmv")), "bd-num"),
+    ]
+
+    selected_set = set(selected_ids)
+
+    def _th(header, width, align):
+        if header == "":
+            return f"<th style='width:{width}px;text-align:center;'><input type='checkbox' id='bd-select-all'></th>"
+        return f"<th style='width:{width}px;text-align:{align};'>{header}</th>"
+
+    def _td(content, width, align, cid=None, extra_class=""):
+        cls = "bd-td"
+        if align == "right":
+            cls += " bd-num"
+        elif align == "center":
+            cls += " bd-center"
+        if extra_class:
+            cls += f" {extra_class}"
+        attrs = f"style='width:{width}px;text-align:{align};'"
+        if cid:
+            attrs += f" data-cid='{cid}'"
+        return f"<td {attrs}><p class='{cls}'>{content}</p></td>"
+
+    thead = "<thead><tr>" + "".join(_th(h, w, a) for h, w, a, _, _ in cols) + "</tr></thead>"
+
+    rows = []
+    for r in records:
+        cid = r["channel_id"]
+        cells = []
+        for (h, w, a, fn, extra) in cols:
+            if h == "":
+                checked = "checked" if cid in selected_set else ""
+                cells.append(f"<td style='width:{w}px;text-align:center;'><input type='checkbox' class='bd-row-checkbox' value='{cid}' {checked} onclick='event.stopPropagation(); toggleRow(\"{cid}\")'></td>")
+            else:
+                ec = extra(r) if callable(extra) else extra
+                cells.append(_td(fn(r), w, a, cid=cid, extra_class=ec))
+        rows.append(f"<tr class='bd-row' data-cid='{cid}'>" + "".join(cells) + "</tr>")
+
+    tbody = "<tbody>" + "".join(rows) + "</tbody>"
+    table = f"<table class='bd-table'>{thead}{tbody}</table>"
+
+    script = f"""
+    <script>
+    (function() {{
+        var selected = new Set({json.dumps(list(selected_set))});
+        var lastClicked = null;
+
+        function send() {{
+            var payload = JSON.stringify({{
+                selected: Array.from(selected),
+                clicked: lastClicked
+            }});
+            if (window.parent) {{
+                window.parent.postMessage({{
+                    type: 'streamlit:setComponentValue',
+                    value: payload
+                }}, '*');
+            }}
+            lastClicked = null;
+        }}
+
+        function toggleRow(cid) {{
+            if (selected.has(cid)) selected.delete(cid);
+            else selected.add(cid);
+            send();
+        }}
+
+        function selectAll(checked) {{
+            var rows = document.querySelectorAll('.bd-row');
+            rows.forEach(function(row) {{
+                var cid = row.getAttribute('data-cid');
+                var cb = row.querySelector('.bd-row-checkbox');
+                if (checked) selected.add(cid);
+                else selected.delete(cid);
+                if (cb) cb.checked = checked;
+            }});
+            send();
+        }}
+
+        document.querySelectorAll('.bd-row').forEach(function(row) {{
+            row.addEventListener('click', function(e) {{
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'A') return;
+                var cid = row.getAttribute('data-cid');
+                lastClicked = cid;
+                send();
+            }});
+        }});
+
+        var selectAllCb = document.getElementById('bd-select-all');
+        if (selectAllCb) {{
+            selectAllCb.addEventListener('change', function(e) {{
+                selectAll(e.target.checked);
+            }});
+        }}
+
+        // 初始化时同步一次
+        send();
+    }})();
+    </script>
+    """
+
+    inline_css = """
+    <style>
+    /* 组件 iframe 内不能依赖外部字体，否则网络受阻时整表会白屏 */
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans KR', 'Microsoft YaHei', sans-serif; }
+    .bd-table-wrapper {
+        overflow-x: auto;
+        width: 100%;
+        border-radius: 8px;
+        padding-bottom: 4px;
+    }
+    .bd-table-wrapper::-webkit-scrollbar { height: 8px; }
+    .bd-table-wrapper::-webkit-scrollbar-track { background: #F9EEF1; border-radius: 4px; }
+    .bd-table-wrapper::-webkit-scrollbar-thumb { background: #E8B4C0; border-radius: 4px; }
+    .bd-table-wrapper::-webkit-scrollbar-thumb:hover { background: #B8989E; }
+    .bd-table {
+        table-layout: fixed;
+        width: 1600px;
+        border-collapse: collapse;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans KR', 'Microsoft YaHei', sans-serif;
+    }
+    .bd-table th {
+        font-size: 11px;
+        font-weight: 800;
+        color: #7A4A55;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        padding: 12px 8px;
+        line-height: 1.4;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        border-bottom: 3px solid #D97A8A;
+        background: #FFFFFF;
+        text-align: left;
+        vertical-align: middle;
+    }
+    .bd-table th input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        accent-color: #D97A8A;
+        cursor: pointer;
+        margin: 0;
+    }
+    .bd-table td {
+        padding: 0;
+        border-bottom: 2px solid #F9EEF1;
+        vertical-align: middle;
+    }
+    .bd-table td p {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans KR', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        font-weight: 500;
+        color: #111827;
+        margin: 0;
+        padding: 11px 8px;
+        line-height: 1.5;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .bd-table td p.bd-num {
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+        font-weight: 600;
+    }
+    .bd-table td p.bd-center {
+        text-align: center;
+    }
+    .bd-table td p.bd-empty {
+        color: #B8989E;
+        font-weight: 400;
+    }
+    .bd-table td p.bd-status {
+        color: #D97A8A;
+        font-weight: 700;
+    }
+    .bd-table td a {
+        color: #D97A8A;
+        text-decoration: none;
+        font-weight: 600;
+    }
+    .bd-table td a:hover {
+        text-decoration: underline;
+    }
+    .bd-table tbody tr {
+        cursor: pointer;
+        transition: background 0.15s ease;
+    }
+    .bd-table tbody tr:hover {
+        background: #FDF6F8;
+    }
+    .bd-table tbody tr td:first-child {
+        text-align: center;
+    }
+    .bd-table tbody tr td:first-child input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        accent-color: #D97A8A;
+        cursor: pointer;
+        margin: 0;
+    }
+    </style>
+    """
+
+    return f"""
+    {inline_css}
+    <div class='bd-table-wrapper'>
+        {table}
+    </div>
+    {script}
+    """
+
+
+def _html_escape(s: str) -> str:
+    if not isinstance(s, str):
+        s = str(s)
+    return (s.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
+def _bd_home_cell(url: str) -> str:
+    if url:
+        return f"<a href='{_html_escape(url)}' target='_blank' onclick='event.stopPropagation()'>主页</a>"
+    return "-"
+
+
+def _bd_video_cell(r: dict) -> str:
+    vlink = r.get("video_link", "")
+    if vlink:
+        return f"<a href='{_html_escape(vlink)}' target='_blank' onclick='event.stopPropagation()'>视频</a>"
+    return "-"
+
+
+def _bd_product_cell(url: str) -> str:
+    if url:
+        return f"<a href='{_html_escape(url)}' target='_blank' onclick='event.stopPropagation()'>商品</a>"
+    return "-"
+
+
 def render_bd_table():
     db = st.session_state.bd_db
     records = db.get_all()
@@ -624,178 +968,47 @@ def render_bd_table():
 
     st.caption(f"共 {len(records)} 条")
 
-    # 批量操作栏
-    def _get_selected_records():
-        return [r for r in records if st.session_state.get(f"sel_{r['channel_id']}", False)]
+    # 读取 HTML 组件上一次返回的选中状态
+    selected_ids = st.session_state.get("bd_selected_ids", [])
 
+    # 批量操作栏
     bulk_cols = st.columns([0.12, 0.88])
     with bulk_cols[0]:
         if st.button("删除选中", key="bulk_delete_btn", type="primary"):
-            selected = _get_selected_records()
+            selected = [r for r in records if r["channel_id"] in selected_ids]
             bulk_delete_dialog(selected)
     with bulk_cols[1]:
-        selected_count = len(_get_selected_records())
-        if selected_count:
-            st.caption(f"已选中 {selected_count} 位网红")
+        if selected_ids:
+            st.caption(f"已选中 {len(selected_ids)} 位网红")
 
-    # 表头：18 + 1 列，默认视图显示到商品链接，右侧滚动查看
-    COL_WIDTHS = [0.45, 1.3, 0.65, 0.65, 0.65, 0.95, 0.6, 0.6, 0.6, 0.65, 0.6, 0.6, 0.6, 0.65, 0.6, 0.6, 0.6, 0.7, 0.4]
-    headers = [
-        "", "昵称", "状态", "粉丝", "总播放", "垂类", "主页", "分析", "邮件",
-        "回链", "播放", "点赞", "评论", "商品链接", "浏览", "点击", "转化", "GMV", "",
-    ]
-    header_aligns = [
-        "center", "left", "left", "right", "right", "left", "left", "center", "center",
-        "center", "right", "right", "right", "center", "right", "right", "right", "right", "center",
-    ]
-    with st.container():
-        cols = st.columns(COL_WIDTHS)
-        for col, header, align in zip(cols, headers, header_aligns):
-            with col:
-                st.markdown(
-                    f"<p class='bd-th' style='text-align:{align};'>{header}</p>",
-                    unsafe_allow_html=True,
-                )
-        st.markdown("<div class='bd-head-line'></div>", unsafe_allow_html=True)
+    # 真实 HTML 表格：表头和数据在同一 <table> 内，严格对齐
+    table_html = _build_bd_table_html(records, selected_ids)
+    row_height = 42
+    header_height = 40
+    table_height = max(200, header_height + len(records) * row_height + 20)
 
-    # 数据行：一个网红一行
-    for i, r in enumerate(records):
-        with st.container():
-            cols = st.columns(COL_WIDTHS)
+    result = components.html(table_html, height=table_height, scrolling=False)
 
-            with cols[0]:
-                st.checkbox(
-                    "",
-                    key=f"sel_{r['channel_id']}",
-                    label_visibility="collapsed",
-                )
+    # 处理表格组件返回的状态
+    if result:
+        try:
+            data = json.loads(result) if isinstance(result, str) else result
+            if not isinstance(data, dict):
+                data = {}
+        except Exception:
+            data = {}
 
-            with cols[1]:
-                st.markdown(
-                    f"<p class='bd-td'>{r.get('channel_name', '-')}</p>",
-                    unsafe_allow_html=True,
-                )
+        new_selected = data.get("selected", [])
+        clicked_id = data.get("clicked")
 
-            with cols[2]:
-                status = r.get("status", "-")
-                if status == "已引入":
-                    st.markdown(
-                        "<p class='bd-td bd-status'>已引入</p>",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown(
-                        f"<p class='bd-td bd-empty'>{status}</p>",
-                        unsafe_allow_html=True,
-                    )
+        if new_selected != selected_ids:
+            st.session_state.bd_selected_ids = new_selected
+            st.rerun()
 
-            with cols[3]:
-                st.markdown(
-                    f"<p class='bd-td bd-num'>{fmt_num(r.get('subscribers'))}</p>",
-                    unsafe_allow_html=True,
-                )
-
-            with cols[4]:
-                st.markdown(
-                    f"<p class='bd-td bd-num'>{fmt_num(r.get('total_views'))}</p>",
-                    unsafe_allow_html=True,
-                )
-
-            with cols[5]:
-                cat = r.get("category", "-")
-                st.markdown(
-                    f"<p class='bd-td' title='{cat}'>{cat}</p>",
-                    unsafe_allow_html=True,
-                )
-
-            with cols[6]:
-                url = r.get("channel_url", "")
-                if url:
-                    st.markdown(
-                        f"<p class='bd-td bd-center'><a href='{url}' target='_blank'>主页</a></p>",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown(
-                        "<p class='bd-td bd-empty bd-center'>-</p>",
-                        unsafe_allow_html=True,
-                    )
-
-            with cols[7]:
-                if st.button("分析", key=f"viral_{r['channel_id']}", help="爆款分析"):
-                    viral_dialog(r)
-
-            with cols[8]:
-                if st.button("邮件", key=f"script_{r['channel_id']}", help="脚本/邮件"):
-                    script_email_dialog(r)
-
-            with cols[9]:
-                vlink = r.get("video_link", "")
-                if vlink:
-                    if st.button("视频", key=f"video_{r['channel_id']}", help="查看视频详情"):
-                        video_detail_dialog(r)
-                else:
-                    if st.button("添加", key=f"add_video_{r['channel_id']}", help="添加视频回链"):
-                        add_video_dialog(r)
-
-            with cols[10]:
-                st.markdown(
-                    f"<p class='bd-td bd-num'>{fmt_num(r.get('video_views'))}</p>",
-                    unsafe_allow_html=True,
-                )
-
-            with cols[11]:
-                st.markdown(
-                    f"<p class='bd-td bd-num'>{fmt_num(r.get('video_likes'))}</p>",
-                    unsafe_allow_html=True,
-                )
-
-            with cols[12]:
-                st.markdown(
-                    f"<p class='bd-td bd-num'>{fmt_num(r.get('video_comments'))}</p>",
-                    unsafe_allow_html=True,
-                )
-
-            with cols[13]:
-                plink = r.get("product_link", "")
-                if plink:
-                    if st.button("商品", key=f"product_{r['channel_id']}", help="查看转化详情"):
-                        conversion_detail_dialog(r)
-                else:
-                    st.markdown(
-                        "<p class='bd-td bd-empty bd-center'>-</p>",
-                        unsafe_allow_html=True,
-                    )
-
-            with cols[14]:
-                st.markdown(
-                    f"<p class='bd-td bd-num'>{fmt_num(r.get('product_views'))}</p>",
-                    unsafe_allow_html=True,
-                )
-
-            with cols[15]:
-                st.markdown(
-                    f"<p class='bd-td bd-num'>{fmt_num(r.get('product_clicks'))}</p>",
-                    unsafe_allow_html=True,
-                )
-
-            with cols[16]:
-                st.markdown(
-                    f"<p class='bd-td bd-num'>{fmt_num(r.get('product_conversions'))}</p>",
-                    unsafe_allow_html=True,
-                )
-
-            with cols[17]:
-                st.markdown(
-                    f"<p class='bd-td bd-num'>{fmt_money(r.get('gmv'))}</p>",
-                    unsafe_allow_html=True,
-                )
-
-            with cols[18]:
-                if st.button("编辑", key=f"edit_{r['channel_id']}", help="编辑数据"):
-                    edit_metrics_dialog(r)
-
-        st.markdown("<div class='bd-row-line'></div>", unsafe_allow_html=True)
+        if clicked_id:
+            clicked_record = next((r for r in records if r["channel_id"] == clicked_id), None)
+            if clicked_record:
+                row_detail_dialog(clicked_record)
 
 
 def _sync_discovery_demo(db):
@@ -1507,122 +1720,115 @@ def main():
             }
 
             /* Table */
-            .bd-th p {
+            .bd-table-wrapper {
+                overflow-x: auto;
+                width: 100%;
+                border-radius: 8px;
+                padding-bottom: 4px;
+            }
+            .bd-table-wrapper::-webkit-scrollbar {
+                height: 8px;
+            }
+            .bd-table-wrapper::-webkit-scrollbar-track {
+                background: #F9EEF1;
+                border-radius: 4px;
+            }
+            .bd-table-wrapper::-webkit-scrollbar-thumb {
+                background: #E8B4C0;
+                border-radius: 4px;
+            }
+            .bd-table-wrapper::-webkit-scrollbar-thumb:hover {
+                background: #B8989E;
+            }
+            .bd-table {
+                table-layout: fixed;
+                width: 1600px;
+                border-collapse: collapse;
                 font-family: 'Outfit', sans-serif;
+            }
+            .bd-table thead {
+                display: table-header-group;
+            }
+            .bd-table th {
                 font-size: 11px;
-                font-weight: 700;
-                color: #8E6B72;
+                font-weight: 800;
+                color: #7A4A55;
                 text-transform: uppercase;
-                letter-spacing: 0.06em;
-                margin: 0;
-                padding: 0.75rem 0;
+                letter-spacing: 0.07em;
+                padding: 10px 8px;
                 line-height: 1.3;
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
+                border-bottom: 3px solid #D97A8A;
+                background: #FFFFFF;
+                text-align: left;
+                vertical-align: middle;
             }
-            .bd-td p {
+            .bd-table th input[type="checkbox"] {
+                width: 18px;
+                height: 18px;
+                accent-color: #D97A8A;
+                cursor: pointer;
+                margin: 0;
+            }
+            .bd-table td {
+                padding: 0;
+                border-bottom: 2px solid #F9EEF1;
+                vertical-align: middle;
+            }
+            .bd-table td p {
                 font-family: 'Outfit', sans-serif;
                 font-size: 13px;
                 font-weight: 500;
                 color: #111827;
                 margin: 0;
-                padding: 0.85rem 0;
+                padding: 10px 8px;
                 line-height: 1.4;
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
-            .bd-td.bd-num {
+            .bd-table td p.bd-num {
                 font-variant-numeric: tabular-nums;
                 text-align: right;
                 font-weight: 600;
             }
-            .bd-td.bd-center {
+            .bd-table td p.bd-center {
                 text-align: center;
             }
-            .bd-td a {
+            .bd-table td p.bd-empty {
+                color: #B8989E;
+                font-weight: 400;
+            }
+            .bd-table td p.bd-status {
+                color: #D97A8A;
+                font-weight: 700;
+            }
+            .bd-table td a {
                 color: #D97A8A;
                 text-decoration: none;
                 font-weight: 600;
             }
-            .bd-td a:hover {
+            .bd-table td a:hover {
                 text-decoration: underline;
             }
-            .bd-td.bd-empty {
-                color: #B8989E;
-                font-weight: 400;
+            .bd-table tbody tr {
+                cursor: pointer;
+                transition: background 0.15s ease;
             }
-            .bd-td.bd-status {
-                color: #D97A8A;
-                font-weight: 700;
+            .bd-table tbody tr:hover {
+                background: #FDF6F8;
             }
-
-            /* Header row distinct from content */
-            .bd-th p {
-                color: #7A4A55;
-                font-weight: 800;
-                letter-spacing: 0.07em;
+            .bd-table tbody tr td:first-child {
+                text-align: center;
             }
-
-            /* Row lines */
-            .bd-row-line {
-                border-bottom: 2px solid #F9EEF1;
-                margin: 0;
-                height: 0;
-            }
-            .bd-head-line {
-                border-bottom: 3px solid #D97A8A;
-                margin: 0;
-                height: 0;
-            }
-
-            /* Horizontal blocks align center */
-            [data-testid="stHorizontalBlock"] {
-                align-items: center !important;
-                margin-bottom: 0 !important;
-                padding: 0 !important;
-                min-height: auto !important;
-            }
-
-            /* Small table buttons */
-            [data-testid="stHorizontalBlock"] [data-testid="stButton"] button {
-                min-height: 1.6rem;
-                padding: 0.15rem 0.5rem;
-                font-size: 12px;
-                font-weight: 600;
-                white-space: nowrap;
-                min-width: auto !important;
-            }
-
-            /* Checkbox in table */
-            [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] {
-                margin: 0 !important;
-                padding: 0 !important;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                min-height: 2.5rem;
-            }
-            [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] > div {
-                margin: 0 !important;
-                padding: 0 !important;
-                min-height: auto !important;
-                width: auto !important;
-            }
-            [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] label {
-                font-size: 0 !important;
-                padding: 0 !important;
-                margin: 0 !important;
-                min-height: auto !important;
-            }
-            [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] label p {
-                display: none !important;
-            }
-            [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] input[type="checkbox"] {
+            .bd-table tbody tr td:first-child input[type="checkbox"] {
                 width: 18px;
                 height: 18px;
                 accent-color: #D97A8A;
+                cursor: pointer;
+                margin: 0;
             }
 
             /* Caption */
@@ -1643,85 +1849,9 @@ def main():
                 padding-left: 1.5rem;
                 padding-right: 1.5rem;
             }
-            .bd-scroll-outer {
-                overflow-x: auto;
-                width: 100%;
-                border-radius: 8px;
-                padding-bottom: 4px;
-            }
-            .bd-scroll-outer::-webkit-scrollbar {
-                height: 8px;
-            }
-            .bd-scroll-outer::-webkit-scrollbar-track {
-                background: #F9EEF1;
-                border-radius: 4px;
-            }
-            .bd-scroll-outer::-webkit-scrollbar-thumb {
-                background: #E8B4C0;
-                border-radius: 4px;
-            }
-            .bd-scroll-outer::-webkit-scrollbar-thumb:hover {
-                background: #B8989E;
-            }
-            .bd-scroll-inner {
-                display: flex;
-                flex-direction: column;
-                min-width: 1650px;
-            }
-            [data-testid="stHorizontalBlock"]:has(.bd-th, .bd-td) {
-                min-width: 1650px !important;
-            }
         </style>
         """,
         unsafe_allow_html=True,
-    )
-
-    # 用 components.v1.html 在父页面执行 JS，把表格行包进独立滚动容器
-    components.html(
-        """
-        <script>
-        (function() {
-            function wrapTableBlocks() {
-                var parentDoc = window.parent.document;
-                var blocks = Array.from(parentDoc.querySelectorAll('[data-testid="stHorizontalBlock"]:has(.bd-th, .bd-td)'));
-                if (blocks.length === 0) return;
-                if (blocks[0].closest('.bd-scroll-inner')) return;
-
-                var firstBlock = blocks[0];
-                var parent = firstBlock.parentElement;
-                var outer = parentDoc.createElement('div');
-                outer.className = 'bd-scroll-outer';
-                var inner = parentDoc.createElement('div');
-                inner.className = 'bd-scroll-inner';
-                outer.appendChild(inner);
-                parent.insertBefore(outer, firstBlock);
-                blocks.forEach(function(b) { inner.appendChild(b); });
-            }
-
-            function tryWrap() {
-                try {
-                    wrapTableBlocks();
-                } catch (e) {
-                    console.error('wrapTableBlocks error', e);
-                }
-            }
-
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', tryWrap);
-            } else {
-                tryWrap();
-            }
-            setTimeout(tryWrap, 800);
-            setTimeout(tryWrap, 2000);
-
-            var observer = new MutationObserver(function() {
-                tryWrap();
-            });
-            observer.observe(document.body, { childList: true, subtree: true });
-        })();
-        </script>
-        """,
-        height=0,
     )
 
     render_sidebar()
