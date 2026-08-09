@@ -21,6 +21,7 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from bd_database import LocalBDDB, SupabaseBDDB, SUPABASE_MIGRATION_SQL, get_bd_db
 from youtube_analyzer import YouTubeAnalyzer, extract_channel_id, extract_video_id
@@ -528,8 +529,6 @@ def filter_dialog(records: list):
 
 
 def render_bd_table():
-    st.header("YTS 网红管理库")
-
     db = st.session_state.bd_db
     records = db.get_all()
 
@@ -639,105 +638,162 @@ def render_bd_table():
         if selected_count:
             st.caption(f"已选中 {selected_count} 位网红")
 
-    # 表头：18 + 1 列 Apple 风表格（增加选择列）
-    COL_WIDTHS = [0.6, 1.35, 0.65, 0.65, 0.75, 1.15, 0.7, 0.75, 0.75, 0.8, 0.6, 0.6, 0.6, 0.8, 0.6, 0.6, 0.6, 0.75, 0.45]
+    # 表头：18 + 1 列，默认视图显示到商品链接，右侧滚动查看
+    COL_WIDTHS = [0.45, 1.3, 0.65, 0.65, 0.65, 0.95, 0.6, 0.6, 0.6, 0.65, 0.6, 0.6, 0.6, 0.65, 0.6, 0.6, 0.6, 0.7, 0.4]
     headers = [
         "", "昵称", "状态", "粉丝", "总播放", "垂类", "主页", "分析", "邮件",
-        "视频回链", "播放", "点赞", "评论", "商品链接", "浏览", "点击", "转化", "GMV", "",
+        "回链", "播放", "点赞", "评论", "商品链接", "浏览", "点击", "转化", "GMV", "",
     ]
-    cols = st.columns(COL_WIDTHS)
-    for col, header in zip(cols, headers):
-        with col:
-            st.markdown(f"<p class='bd-th'>{header}</p>", unsafe_allow_html=True)
-    st.markdown("<div class='bd-head-line'></div>", unsafe_allow_html=True)
+    header_aligns = [
+        "center", "left", "left", "right", "right", "left", "left", "center", "center",
+        "center", "right", "right", "right", "center", "right", "right", "right", "right", "center",
+    ]
+    with st.container():
+        cols = st.columns(COL_WIDTHS)
+        for col, header, align in zip(cols, headers, header_aligns):
+            with col:
+                st.markdown(
+                    f"<p class='bd-th' style='text-align:{align};'>{header}</p>",
+                    unsafe_allow_html=True,
+                )
+        st.markdown("<div class='bd-head-line'></div>", unsafe_allow_html=True)
 
     # 数据行：一个网红一行
     for i, r in enumerate(records):
-        cols = st.columns(COL_WIDTHS)
+        with st.container():
+            cols = st.columns(COL_WIDTHS)
 
-        with cols[0]:
-            st.checkbox(
-                "",
-                key=f"sel_{r['channel_id']}",
-                label_visibility="collapsed",
-            )
+            with cols[0]:
+                st.checkbox(
+                    "",
+                    key=f"sel_{r['channel_id']}",
+                    label_visibility="collapsed",
+                )
 
-        with cols[1]:
-            st.markdown(f"<p class='bd-td'>{r.get('channel_name', '-')}</p>", unsafe_allow_html=True)
+            with cols[1]:
+                st.markdown(
+                    f"<p class='bd-td'>{r.get('channel_name', '-')}</p>",
+                    unsafe_allow_html=True,
+                )
 
-        with cols[2]:
-            status = r.get("status", "-")
-            if status == "已引入":
-                st.markdown("<p class='bd-td bd-status'>已引入</p>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<p class='bd-td bd-empty'>{status}</p>", unsafe_allow_html=True)
+            with cols[2]:
+                status = r.get("status", "-")
+                if status == "已引入":
+                    st.markdown(
+                        "<p class='bd-td bd-status'>已引入</p>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f"<p class='bd-td bd-empty'>{status}</p>",
+                        unsafe_allow_html=True,
+                    )
 
-        with cols[3]:
-            st.markdown(f"<p class='bd-td'>{fmt_num(r.get('subscribers'))}</p>", unsafe_allow_html=True)
+            with cols[3]:
+                st.markdown(
+                    f"<p class='bd-td bd-num'>{fmt_num(r.get('subscribers'))}</p>",
+                    unsafe_allow_html=True,
+                )
 
-        with cols[4]:
-            st.markdown(f"<p class='bd-td'>{fmt_num(r.get('total_views'))}</p>", unsafe_allow_html=True)
+            with cols[4]:
+                st.markdown(
+                    f"<p class='bd-td bd-num'>{fmt_num(r.get('total_views'))}</p>",
+                    unsafe_allow_html=True,
+                )
 
-        with cols[5]:
-            cat = r.get("category", "-")
-            st.markdown(f"<p class='bd-td' title='{cat}'>{cat}</p>", unsafe_allow_html=True)
+            with cols[5]:
+                cat = r.get("category", "-")
+                st.markdown(
+                    f"<p class='bd-td' title='{cat}'>{cat}</p>",
+                    unsafe_allow_html=True,
+                )
 
-        with cols[6]:
-            url = r.get("channel_url", "")
-            if url:
-                st.markdown(f"<p class='bd-td'><a href='{url}' target='_blank'>主页</a></p>", unsafe_allow_html=True)
-            else:
-                st.markdown("<p class='bd-td bd-empty'>-</p>", unsafe_allow_html=True)
+            with cols[6]:
+                url = r.get("channel_url", "")
+                if url:
+                    st.markdown(
+                        f"<p class='bd-td bd-center'><a href='{url}' target='_blank'>主页</a></p>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        "<p class='bd-td bd-empty bd-center'>-</p>",
+                        unsafe_allow_html=True,
+                    )
 
-        with cols[7]:
-            if st.button("分析", key=f"viral_{r['channel_id']}", help="爆款分析"):
-                viral_dialog(r)
+            with cols[7]:
+                if st.button("分析", key=f"viral_{r['channel_id']}", help="爆款分析"):
+                    viral_dialog(r)
 
-        with cols[8]:
-            if st.button("邮件", key=f"script_{r['channel_id']}", help="脚本/邮件"):
-                script_email_dialog(r)
+            with cols[8]:
+                if st.button("邮件", key=f"script_{r['channel_id']}", help="脚本/邮件"):
+                    script_email_dialog(r)
 
-        with cols[9]:
-            vlink = r.get("video_link", "")
-            if vlink:
-                if st.button("视频", key=f"video_{r['channel_id']}", help="查看视频详情"):
-                    video_detail_dialog(r)
-            else:
-                if st.button("添加", key=f"add_video_{r['channel_id']}", help="添加视频回链"):
-                    add_video_dialog(r)
+            with cols[9]:
+                vlink = r.get("video_link", "")
+                if vlink:
+                    if st.button("视频", key=f"video_{r['channel_id']}", help="查看视频详情"):
+                        video_detail_dialog(r)
+                else:
+                    if st.button("添加", key=f"add_video_{r['channel_id']}", help="添加视频回链"):
+                        add_video_dialog(r)
 
-        with cols[10]:
-            st.markdown(f"<p class='bd-td'>{fmt_num(r.get('video_views'))}</p>", unsafe_allow_html=True)
+            with cols[10]:
+                st.markdown(
+                    f"<p class='bd-td bd-num'>{fmt_num(r.get('video_views'))}</p>",
+                    unsafe_allow_html=True,
+                )
 
-        with cols[11]:
-            st.markdown(f"<p class='bd-td'>{fmt_num(r.get('video_likes'))}</p>", unsafe_allow_html=True)
+            with cols[11]:
+                st.markdown(
+                    f"<p class='bd-td bd-num'>{fmt_num(r.get('video_likes'))}</p>",
+                    unsafe_allow_html=True,
+                )
 
-        with cols[12]:
-            st.markdown(f"<p class='bd-td'>{fmt_num(r.get('video_comments'))}</p>", unsafe_allow_html=True)
+            with cols[12]:
+                st.markdown(
+                    f"<p class='bd-td bd-num'>{fmt_num(r.get('video_comments'))}</p>",
+                    unsafe_allow_html=True,
+                )
 
-        with cols[13]:
-            plink = r.get("product_link", "")
-            if plink:
-                if st.button("商品", key=f"product_{r['channel_id']}", help="查看转化详情"):
-                    conversion_detail_dialog(r)
-            else:
-                st.markdown("<p class='bd-td bd-empty'>-</p>", unsafe_allow_html=True)
+            with cols[13]:
+                plink = r.get("product_link", "")
+                if plink:
+                    if st.button("商品", key=f"product_{r['channel_id']}", help="查看转化详情"):
+                        conversion_detail_dialog(r)
+                else:
+                    st.markdown(
+                        "<p class='bd-td bd-empty bd-center'>-</p>",
+                        unsafe_allow_html=True,
+                    )
 
-        with cols[14]:
-            st.markdown(f"<p class='bd-td'>{fmt_num(r.get('product_views'))}</p>", unsafe_allow_html=True)
+            with cols[14]:
+                st.markdown(
+                    f"<p class='bd-td bd-num'>{fmt_num(r.get('product_views'))}</p>",
+                    unsafe_allow_html=True,
+                )
 
-        with cols[15]:
-            st.markdown(f"<p class='bd-td'>{fmt_num(r.get('product_clicks'))}</p>", unsafe_allow_html=True)
+            with cols[15]:
+                st.markdown(
+                    f"<p class='bd-td bd-num'>{fmt_num(r.get('product_clicks'))}</p>",
+                    unsafe_allow_html=True,
+                )
 
-        with cols[16]:
-            st.markdown(f"<p class='bd-td'>{fmt_num(r.get('product_conversions'))}</p>", unsafe_allow_html=True)
+            with cols[16]:
+                st.markdown(
+                    f"<p class='bd-td bd-num'>{fmt_num(r.get('product_conversions'))}</p>",
+                    unsafe_allow_html=True,
+                )
 
-        with cols[17]:
-            st.markdown(f"<p class='bd-td'>{fmt_money(r.get('gmv'))}</p>", unsafe_allow_html=True)
+            with cols[17]:
+                st.markdown(
+                    f"<p class='bd-td bd-num'>{fmt_money(r.get('gmv'))}</p>",
+                    unsafe_allow_html=True,
+                )
 
-        with cols[18]:
-            if st.button("编辑", key=f"edit_{r['channel_id']}", help="编辑数据"):
-                edit_metrics_dialog(r)
+            with cols[18]:
+                if st.button("编辑", key=f"edit_{r['channel_id']}", help="编辑数据"):
+                    edit_metrics_dialog(r)
 
         st.markdown("<div class='bd-row-line'></div>", unsafe_allow_html=True)
 
@@ -1283,77 +1339,274 @@ def main():
     st.title("🎯 YTS 网红管理库")
     st.caption("配置项默认收起，点击左上角 ☰ 可展开填写 API Key 等设置")
 
-    # Apple 官网极简高级风：真实表格感、垂直居中、中等字重
+    # Flat Design: 大胆扁平、色块结构、无阴影、Outfit 字体
     st.markdown(
         """
         <style>
+            @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap');
+
             .stApp {
-                font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+                font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+                background: #FFFFFF;
+                color: #111827;
             }
+            .stApp * {
+                box-shadow: none !important;
+            }
+
+            /* Typography */
+            h1, h2, h3, h4, h5, h6, p, label, span, div, input, button, select, textarea {
+                font-family: 'Outfit', sans-serif;
+            }
+            h1 {
+                font-weight: 800;
+                letter-spacing: -0.02em;
+                font-size: 2.25rem;
+                color: #111827;
+            }
+            h2, h3 {
+                font-weight: 700;
+                letter-spacing: -0.02em;
+                color: #111827;
+            }
+
+            /* Container width */
+            .block-container {
+                max-width: 1400px;
+                padding-left: 2rem;
+                padding-right: 2rem;
+            }
+
+            /* Buttons */
+            [data-testid="stButton"] button {
+                font-family: 'Outfit', sans-serif;
+                font-weight: 600;
+                border-radius: 6px;
+                border: none;
+                background: #D97A8A;
+                color: #FFFFFF;
+                min-height: 2.25rem;
+                padding: 0 1rem;
+                transition: all 0.2s ease;
+            }
+            [data-testid="stButton"] button:hover {
+                background: #C35A6E;
+                transform: scale(1.05);
+            }
+            [data-testid="stButton"] button[kind="primary"] {
+                background: #D97A8A;
+                color: #FFFFFF;
+            }
+            [data-testid="stButton"] button[kind="secondary"] {
+                background: #F9EEF1;
+                color: #111827;
+            }
+            [data-testid="stButton"] button[kind="secondary"]:hover {
+                background: #EAD0D6;
+            }
+
+            /* Inputs */
+            [data-testid="stTextInput"] input,
+            [data-testid="stNumberInput"] input,
+            [data-testid="stTextArea"] textarea {
+                font-family: 'Outfit', sans-serif;
+                background: #F9EEF1;
+                border: 2px solid transparent;
+                border-radius: 6px;
+                color: #111827;
+                transition: all 0.2s ease;
+            }
+            [data-testid="stTextInput"] input:focus,
+            [data-testid="stNumberInput"] input:focus,
+            [data-testid="stTextArea"] textarea:focus {
+                background: #FFFFFF;
+                border: 2px solid #D97A8A;
+            }
+
+            /* Selectbox / Multiselect */
+            [data-testid="stSelectbox"] > div[data-baseweb="select"] > div,
+            [data-testid="stMultiselect"] > div[data-baseweb="select"] > div {
+                background: #F9EEF1;
+                border: 2px solid transparent;
+                border-radius: 6px;
+            }
+            [data-testid="stSelectbox"] > div[data-baseweb="select"] > div:focus-within,
+            [data-testid="stMultiselect"] > div[data-baseweb="select"] > div:focus-within {
+                background: #FFFFFF;
+                border: 2px solid #D97A8A;
+            }
+
+            /* Checkbox */
+            [data-testid="stCheckbox"] label {
+                font-family: 'Outfit', sans-serif;
+                font-weight: 500;
+            }
+            [data-testid="stCheckbox"] input[type="checkbox"] {
+                width: 18px;
+                height: 18px;
+                accent-color: #D97A8A;
+                cursor: pointer;
+            }
+
+            /* Tabs */
             [data-testid="stTabs"] [role="tablist"] {
                 display: flex;
                 justify-content: space-between;
+                background: #F9EEF1;
+                border-radius: 8px;
+                padding: 4px;
+                gap: 4px;
+                border-bottom: none;
             }
             [data-testid="stTabs"] [role="tablist"] button {
                 flex: 1;
                 text-align: center;
-            }
-            .bd-th p {
-                font-size: 13px;
+                font-family: 'Outfit', sans-serif;
                 font-weight: 600;
-                color: #86868b;
+                font-size: 14px;
+                border-radius: 6px;
+                color: #8E6B72;
+                background: transparent;
+                border: none;
+                transition: all 0.2s ease;
+            }
+            [data-testid="stTabs"] [role="tablist"] button:hover {
+                color: #111827;
+                background: #EAD0D6;
+            }
+            [data-testid="stTabs"] [role="tablist"] button[aria-selected="true"] {
+                background: #D97A8A;
+                color: #FFFFFF;
+            }
+
+            /* Metrics / Cards */
+            [data-testid="stMetric"] {
+                background: #F9EEF1;
+                border-radius: 8px;
+                padding: 1rem;
+            }
+            [data-testid="stMetricLabel"] {
+                font-family: 'Outfit', sans-serif;
+                font-weight: 600;
+                color: #8E6B72;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                font-size: 12px;
+            }
+            [data-testid="stMetricValue"] {
+                font-family: 'Outfit', sans-serif;
+                font-weight: 700;
+                color: #111827;
+            }
+
+            /* Divider */
+            hr {
+                border: none;
+                border-top: 2px solid #EAD0D6;
+                margin: 1.5rem 0;
+            }
+
+            /* Table */
+            .bd-th p {
+                font-family: 'Outfit', sans-serif;
+                font-size: 11px;
+                font-weight: 700;
+                color: #8E6B72;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
                 margin: 0;
-                letter-spacing: -0.01em;
+                padding: 0.75rem 0;
+                line-height: 1.3;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
             .bd-td p {
+                font-family: 'Outfit', sans-serif;
                 font-size: 13px;
                 font-weight: 500;
-                color: #1d1d1f;
+                color: #111827;
                 margin: 0;
+                padding: 0.85rem 0;
                 line-height: 1.4;
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
+            .bd-td.bd-num p {
+                font-variant-numeric: tabular-nums;
+                text-align: right;
+                font-weight: 600;
+            }
+            .bd-td.bd-center p {
+                text-align: center;
+            }
             .bd-td a {
-                color: #0071e3;
+                color: #D97A8A;
                 text-decoration: none;
-                font-weight: 500;
+                font-weight: 600;
+            }
+            .bd-td a:hover {
+                text-decoration: underline;
             }
             .bd-empty p {
-                color: #86868b;
+                color: #B8989E;
                 font-weight: 400;
             }
             .bd-status p {
-                color: #34c759;
-                font-weight: 600;
+                color: #D97A8A;
+                font-weight: 700;
             }
+
+            /* Header row distinct from content */
+            .bd-scroll-inner > [data-testid="stHorizontalBlock"]:has(.bd-th) {
+                background: #F4E6EA;
+                border-radius: 8px 8px 0 0;
+            }
+            .bd-th p {
+                color: #7A4A55;
+                font-weight: 800;
+                letter-spacing: 0.07em;
+            }
+
+            /* Row lines */
+            .bd-row-line {
+                border-bottom: 2px solid #F9EEF1;
+                margin: 0;
+                height: 0;
+            }
+            .bd-head-line {
+                border-bottom: 2px solid #EAD0D6;
+                margin: 0;
+                height: 0;
+            }
+
+            /* Horizontal blocks align center */
             [data-testid="stHorizontalBlock"] {
                 align-items: center !important;
                 margin-bottom: 0 !important;
-                padding: 0.05rem 0 !important;
+                padding: 0 !important;
                 min-height: auto !important;
             }
+
+            /* Small table buttons */
             [data-testid="stHorizontalBlock"] [data-testid="stButton"] button {
+                min-height: 1.6rem;
+                padding: 0.15rem 0.5rem;
+                font-size: 12px;
+                font-weight: 600;
                 white-space: nowrap;
-                padding: 0.05rem 0.35rem;
-                min-width: auto;
-                min-height: 1.1rem;
-                font-size: 11px;
-                font-weight: 500;
-                line-height: 1.1;
-                color: #1d1d1f;
-                background-color: #ffffff;
-                border: 1px solid #d2d2d7;
-                border-radius: 9999px;
-                box-shadow: none;
+                min-width: auto !important;
             }
+
+            /* Checkbox in table */
             [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] {
                 margin: 0 !important;
                 padding: 0 !important;
                 display: flex;
                 align-items: center;
                 justify-content: center;
+                min-height: 2.5rem;
             }
             [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] > div {
                 margin: 0 !important;
@@ -1370,23 +1623,109 @@ def main():
             [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] label p {
                 display: none !important;
             }
-            [data-testid="stHorizontalBlock"] [data-testid="stButton"] button:hover {
-                background-color: #f5f5f7;
-                border-color: #86868b;
+            [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] input[type="checkbox"] {
+                width: 18px;
+                height: 18px;
+                accent-color: #D97A8A;
             }
-            .bd-row-line {
-                border-bottom: 1px solid #f0f0f0;
-                margin: 0;
-                height: 0;
+
+            /* Caption */
+            .stCaption {
+                font-family: 'Outfit', sans-serif;
+                color: #8E6B72;
             }
-            .bd-head-line {
-                border-bottom: 1px solid #d2d2d7;
-                margin: 0;
-                height: 0;
+
+            /* Alert boxes */
+            .stAlert {
+                border-radius: 8px;
+                border: 2px solid #EAD0D6;
+            }
+
+            /* Horizontal scroll for table */
+            .block-container {
+                max-width: 1400px;
+                padding-left: 1.5rem;
+                padding-right: 1.5rem;
+            }
+            .bd-scroll-outer {
+                overflow-x: auto;
+                width: 100%;
+                border-radius: 8px;
+                padding-bottom: 4px;
+            }
+            .bd-scroll-outer::-webkit-scrollbar {
+                height: 8px;
+            }
+            .bd-scroll-outer::-webkit-scrollbar-track {
+                background: #F9EEF1;
+                border-radius: 4px;
+            }
+            .bd-scroll-outer::-webkit-scrollbar-thumb {
+                background: #E8B4C0;
+                border-radius: 4px;
+            }
+            .bd-scroll-outer::-webkit-scrollbar-thumb:hover {
+                background: #B8989E;
+            }
+            .bd-scroll-inner {
+                display: flex;
+                flex-direction: column;
+                min-width: 1650px;
+            }
+            [data-testid="stHorizontalBlock"]:has(.bd-th, .bd-td) {
+                min-width: 1650px !important;
             }
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
+    # 用 components.v1.html 在父页面执行 JS，把表格行包进独立滚动容器
+    components.html(
+        """
+        <script>
+        (function() {
+            function wrapTableBlocks() {
+                var parentDoc = window.parent.document;
+                var blocks = Array.from(parentDoc.querySelectorAll('[data-testid="stHorizontalBlock"]:has(.bd-th, .bd-td)'));
+                if (blocks.length === 0) return;
+                if (blocks[0].closest('.bd-scroll-inner')) return;
+
+                var firstBlock = blocks[0];
+                var parent = firstBlock.parentElement;
+                var outer = parentDoc.createElement('div');
+                outer.className = 'bd-scroll-outer';
+                var inner = parentDoc.createElement('div');
+                inner.className = 'bd-scroll-inner';
+                outer.appendChild(inner);
+                parent.insertBefore(outer, firstBlock);
+                blocks.forEach(function(b) { inner.appendChild(b); });
+            }
+
+            function tryWrap() {
+                try {
+                    wrapTableBlocks();
+                } catch (e) {
+                    console.error('wrapTableBlocks error', e);
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', tryWrap);
+            } else {
+                tryWrap();
+            }
+            setTimeout(tryWrap, 800);
+            setTimeout(tryWrap, 2000);
+
+            var observer = new MutationObserver(function() {
+                tryWrap();
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+        })();
+        </script>
+        """,
+        height=0,
     )
 
     render_sidebar()
