@@ -199,6 +199,25 @@ class YouTubeAnalyzer:
             return items[0]["snippet"]["channelId"]
         return None
 
+    def get_channel_stats(self, channel_id: str) -> dict:
+        """获取频道统计信息：订阅数、总播放量，花费 1 unit"""
+        ch_data = self._get("channels", {
+            "part": "statistics,snippet",
+            "id": channel_id,
+        }, cost=1)
+        if not ch_data.get("items"):
+            raise RuntimeError(f"找不到频道: {channel_id}")
+        item = ch_data["items"][0]
+        stats = item.get("statistics", {})
+        snippet = item.get("snippet", {})
+        return {
+            "channel_id": channel_id,
+            "title": snippet.get("title", ""),
+            "subscriber_count": int(stats.get("subscriberCount", 0) or 0),
+            "view_count": int(stats.get("viewCount", 0) or 0),
+            "video_count": int(stats.get("videoCount", 0) or 0),
+        }
+
     def get_channel_uploads(self, channel_id: str, max_results: int = 30) -> list[dict]:
         """
         获取频道最近上传视频。

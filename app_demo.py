@@ -6,7 +6,7 @@ BD 网红底库 - 独立 Streamlit Demo
 大表单目标：
 - 与 kol-finder 挖掘库联动，状态为「已引入」的网红自动进入 BD 底库
 - 一页展示所有关键字段：
-  昵称 / 状态 / 粉丝 / 垂类 / 主页链接 / 分析 / 邮件 / 视频回链 / 播放 / 点赞 / 评论 / 商品链接 / 浏览 / 点击 / 转化 / GMV
+  昵称 / 状态 / 粉丝 / 总播放 / 垂类 / 主页链接 / 分析 / 邮件 / 视频回链 / 播放 / 点赞 / 评论 / 商品链接 / 浏览 / 点击 / 转化 / GMV
 - 支持单个编辑、批量导入（CSV/Excel）、视频数据追踪后回写
 
 说明：
@@ -56,6 +56,7 @@ DEFAULT_BD_INFLUENCERS = [
         "category": "뷰티 & 헬스",
         "recruiter": "아이비",
         "subscribers": 15000,
+        "total_views": 2500000,
         "status": "已引入",
         "video_link": "https://www.youtube.com/shorts/xxx",
         "video_views": 120000,
@@ -74,6 +75,7 @@ DEFAULT_BD_INFLUENCERS = [
         "category": "뷰티 & 헬스",
         "recruiter": "아이비",
         "subscribers": 22000,
+        "total_views": 4800000,
         "status": "已引入",
         "video_link": "https://www.youtube.com/watch?v=yyy",
         "video_views": 89000,
@@ -92,6 +94,7 @@ DEFAULT_BD_INFLUENCERS = [
         "category": "뷰티 & 헬스",
         "recruiter": "아이비",
         "subscribers": 18000,
+        "total_views": 1200000,
         "status": "已引入",
         "video_link": "",
         "video_views": 0,
@@ -360,6 +363,9 @@ def edit_metrics_dialog(record: dict):
         subscribers = st.number_input(
             "粉丝", min_value=0, value=int(record.get("subscribers") or 0), step=1000
         )
+        total_views = st.number_input(
+            "总播放", min_value=0, value=int(record.get("total_views") or 0), step=1000
+        )
         video_views = st.number_input(
             "播放", min_value=0, value=int(record.get("video_views") or 0), step=1000
         )
@@ -389,6 +395,7 @@ def edit_metrics_dialog(record: dict):
             record["channel_id"],
             {
                 "subscribers": int(subscribers),
+                "total_views": int(total_views),
                 "video_views": int(video_views),
                 "video_likes": int(video_likes),
                 "video_comments": int(video_comments),
@@ -456,6 +463,7 @@ def filter_dialog(records: list):
                 "默认",
                 "GMV 从高到低",
                 "GMV 从低到高",
+                "总播放 从高到低",
                 "播放量 从高到低",
                 "点赞数 从高到低",
                 "评论数 从高到低",
@@ -464,6 +472,7 @@ def filter_dialog(records: list):
                 "默认",
                 "GMV 从高到低",
                 "GMV 从低到高",
+                "总播放 从高到低",
                 "播放量 从高到低",
                 "点赞数 从高到低",
                 "评论数 从高到低",
@@ -605,6 +614,8 @@ def render_bd_table():
         records = sorted(records, key=lambda x: float(x.get("gmv") or 0), reverse=True)
     elif sort_by == "GMV 从低到高":
         records = sorted(records, key=lambda x: float(x.get("gmv") or 0))
+    elif sort_by == "总播放 从高到低":
+        records = sorted(records, key=lambda x: int(x.get("total_views") or 0), reverse=True)
     elif sort_by == "播放量 从高到低":
         records = sorted(records, key=lambda x: int(x.get("video_views") or 0), reverse=True)
     elif sort_by == "点赞数 从高到低":
@@ -628,10 +639,10 @@ def render_bd_table():
         if selected_count:
             st.caption(f"已选中 {selected_count} 位网红")
 
-    # 表头：17 + 1 列 Apple 风表格（增加选择列）
-    COL_WIDTHS = [0.6, 1.35, 0.65, 0.65, 1.15, 0.7, 0.75, 0.75, 0.8, 0.6, 0.6, 0.6, 0.8, 0.6, 0.6, 0.6, 0.75, 0.45]
+    # 表头：18 + 1 列 Apple 风表格（增加选择列）
+    COL_WIDTHS = [0.6, 1.35, 0.65, 0.65, 0.75, 1.15, 0.7, 0.75, 0.75, 0.8, 0.6, 0.6, 0.6, 0.8, 0.6, 0.6, 0.6, 0.75, 0.45]
     headers = [
-        "", "昵称", "状态", "粉丝", "垂类", "主页", "分析", "邮件",
+        "", "昵称", "状态", "粉丝", "总播放", "垂类", "主页", "分析", "邮件",
         "视频回链", "播放", "点赞", "评论", "商品链接", "浏览", "点击", "转化", "GMV", "",
     ]
     cols = st.columns(COL_WIDTHS)
@@ -665,25 +676,28 @@ def render_bd_table():
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('subscribers'))}</p>", unsafe_allow_html=True)
 
         with cols[4]:
+            st.markdown(f"<p class='bd-td'>{fmt_num(r.get('total_views'))}</p>", unsafe_allow_html=True)
+
+        with cols[5]:
             cat = r.get("category", "-")
             st.markdown(f"<p class='bd-td' title='{cat}'>{cat}</p>", unsafe_allow_html=True)
 
-        with cols[5]:
+        with cols[6]:
             url = r.get("channel_url", "")
             if url:
                 st.markdown(f"<p class='bd-td'><a href='{url}' target='_blank'>主页</a></p>", unsafe_allow_html=True)
             else:
                 st.markdown("<p class='bd-td bd-empty'>-</p>", unsafe_allow_html=True)
 
-        with cols[6]:
+        with cols[7]:
             if st.button("分析", key=f"viral_{r['channel_id']}", help="爆款分析"):
                 viral_dialog(r)
 
-        with cols[7]:
+        with cols[8]:
             if st.button("邮件", key=f"script_{r['channel_id']}", help="脚本/邮件"):
                 script_email_dialog(r)
 
-        with cols[8]:
+        with cols[9]:
             vlink = r.get("video_link", "")
             if vlink:
                 if st.button("视频", key=f"video_{r['channel_id']}", help="查看视频详情"):
@@ -692,16 +706,16 @@ def render_bd_table():
                 if st.button("添加", key=f"add_video_{r['channel_id']}", help="添加视频回链"):
                     add_video_dialog(r)
 
-        with cols[9]:
+        with cols[10]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('video_views'))}</p>", unsafe_allow_html=True)
 
-        with cols[10]:
+        with cols[11]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('video_likes'))}</p>", unsafe_allow_html=True)
 
-        with cols[11]:
+        with cols[12]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('video_comments'))}</p>", unsafe_allow_html=True)
 
-        with cols[12]:
+        with cols[13]:
             plink = r.get("product_link", "")
             if plink:
                 if st.button("商品", key=f"product_{r['channel_id']}", help="查看转化详情"):
@@ -709,19 +723,19 @@ def render_bd_table():
             else:
                 st.markdown("<p class='bd-td bd-empty'>-</p>", unsafe_allow_html=True)
 
-        with cols[13]:
+        with cols[14]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('product_views'))}</p>", unsafe_allow_html=True)
 
-        with cols[14]:
+        with cols[15]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('product_clicks'))}</p>", unsafe_allow_html=True)
 
-        with cols[15]:
+        with cols[16]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('product_conversions'))}</p>", unsafe_allow_html=True)
 
-        with cols[16]:
+        with cols[17]:
             st.markdown(f"<p class='bd-td'>{fmt_money(r.get('gmv'))}</p>", unsafe_allow_html=True)
 
-        with cols[17]:
+        with cols[18]:
             if st.button("编辑", key=f"edit_{r['channel_id']}", help="编辑数据"):
                 edit_metrics_dialog(r)
 
@@ -737,6 +751,7 @@ def _sync_discovery_demo(db):
             "channel_url": "https://www.youtube.com/@sync_example",
             "category": "뷰티",
             "subscribers": 30000,
+            "total_views": 1500000,
             "discovered_by": "아이비",
             "status": "已引入",
         },
@@ -1069,6 +1084,11 @@ def render_add_influencer():
         category = st.text_input("垂类", value="뷰티 & 헬스")
         recruiter = st.text_input("挖掘人", value=st.session_state.get("sender_name", "아이비"))
         subscribers = st.number_input("粉丝数", min_value=0, value=0, step=1000)
+        auto_fetch = st.toggle(
+            "自动抓取粉丝数+总播放（需配置 YouTube API Key）",
+            value=True,
+            help="开启后会自动从 YouTube Data API 抓取该频道的最新粉丝数和总播放量。",
+        )
         submitted = st.form_submit_button("添加")
 
     if submitted:
@@ -1077,6 +1097,34 @@ def render_add_influencer():
             return
 
         channel_id = extract_channel_id(channel_url) or channel_url
+        subscribers_value = int(subscribers)
+        total_views_value = 0
+
+        if auto_fetch:
+            api_key = st.session_state.get("youtube_api_key", "")
+            if not api_key:
+                st.error("请先配置 YouTube Data API Key")
+                return
+
+            with st.spinner("正在抓取频道数据..."):
+                try:
+                    analyzer = YouTubeAnalyzer(api_key)
+                    resolved_id = channel_id
+                    # 如果输入的是 @handle，先解析成 UC ID
+                    if isinstance(resolved_id, str) and resolved_id.startswith("@"):
+                        resolved_id = analyzer.get_channel_id_by_handle(resolved_id)
+                        if not resolved_id:
+                            st.error("无法从主页链接解析出频道 ID")
+                            return
+
+                    stats = analyzer.get_channel_stats(resolved_id)
+                    subscribers_value = stats.get("subscriber_count", subscribers_value)
+                    total_views_value = stats.get("view_count", 0)
+                    st.info(f"已抓取：粉丝 {subscribers_value:,} · 总播放 {total_views_value:,}")
+                except Exception as e:
+                    st.error(f"自动抓取失败：{e}")
+                    return
+
         db = st.session_state.bd_db
         db.add({
             "channel_id": channel_id,
@@ -1084,7 +1132,8 @@ def render_add_influencer():
             "channel_url": channel_url,
             "category": category,
             "recruiter": recruiter,
-            "subscribers": int(subscribers),
+            "subscribers": int(subscribers_value),
+            "total_views": int(total_views_value),
             "status": "已引入",
         })
         st.success(f"已添加 {channel_name} 到 BD 底库")

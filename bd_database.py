@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS bd_influencers (
     category TEXT,
     recruiter TEXT,
     subscribers INTEGER DEFAULT 0,
+    total_views INTEGER DEFAULT 0,
     status TEXT DEFAULT '已引入',
     notes TEXT,
     -- 追踪视频（给网红参考/回链）
@@ -69,7 +70,13 @@ class LocalBDDB:
     def _init_db(self):
         with self._connect() as conn:
             conn.execute(BD_INFLUENCERS_SCHEMA)
-            conn.commit()
+            # 兼容旧数据库：如果 total_views 列不存在则添加
+            try:
+                conn.execute("ALTER TABLE bd_influencers ADD COLUMN total_views INTEGER DEFAULT 0")
+                conn.commit()
+            except sqlite3.OperationalError:
+                # 列已存在，忽略
+                pass
 
     def add(self, record: dict) -> dict:
         """新增或更新 BD 网红记录"""
@@ -80,7 +87,7 @@ class LocalBDDB:
         # 仅保留表内存在的字段
         allowed = {
             "channel_id", "channel_name", "channel_url", "category",
-            "recruiter", "subscribers", "status", "notes",
+            "recruiter", "subscribers", "total_views", "status", "notes",
             "video_link", "video_views", "video_likes", "video_comments",
             "product_link", "product_views", "product_clicks", "product_conversions",
             "ctr", "conversion_rate", "gmv",
@@ -100,6 +107,7 @@ class LocalBDDB:
                 category=COALESCE(excluded.category, bd_influencers.category),
                 recruiter=COALESCE(excluded.recruiter, bd_influencers.recruiter),
                 subscribers=COALESCE(excluded.subscribers, bd_influencers.subscribers),
+                total_views=COALESCE(excluded.total_views, bd_influencers.total_views),
                 status=COALESCE(excluded.status, bd_influencers.status),
                 notes=COALESCE(excluded.notes, bd_influencers.notes),
                 video_link=COALESCE(excluded.video_link, bd_influencers.video_link),
@@ -149,7 +157,7 @@ class LocalBDDB:
         updates["updated_at"] = datetime.now().isoformat()
         allowed = {
             "channel_name", "channel_url", "category", "recruiter",
-            "subscribers", "status", "notes",
+            "subscribers", "total_views", "status", "notes",
             "video_link", "video_views", "video_likes", "video_comments",
             "product_link", "product_views", "product_clicks", "product_conversions",
             "ctr", "conversion_rate", "gmv", "updated_at",
@@ -221,6 +229,7 @@ class LocalBDDB:
                 "category": rec.get("category", ""),
                 "recruiter": rec.get("discovered_by", ""),
                 "subscribers": rec.get("subscribers", 0) or 0,
+                "total_views": rec.get("total_views", 0) or 0,
                 "status": "已引入",
             }
             if not mapped["channel_id"]:
@@ -315,6 +324,7 @@ class SupabaseBDDB:
                 "category": rec.get("category", ""),
                 "recruiter": rec.get("discovered_by", ""),
                 "subscribers": rec.get("subscribers", 0) or 0,
+                "total_views": rec.get("total_views", 0) or 0,
                 "status": "已引入",
             }
             if not mapped["channel_id"]:
