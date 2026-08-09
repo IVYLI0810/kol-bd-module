@@ -1559,10 +1559,6 @@ def main():
             }
 
             /* Header row distinct from content */
-            .bd-scroll-inner > [data-testid="stHorizontalBlock"]:has(.bd-th) {
-                background: #F4E6EA;
-                border-radius: 8px 8px 0 0;
-            }
             .bd-th p {
                 color: #7A4A55;
                 font-weight: 800;
@@ -1576,7 +1572,7 @@ def main():
                 height: 0;
             }
             .bd-head-line {
-                border-bottom: 2px solid #EAD0D6;
+                border-bottom: 3px solid #D97A8A;
                 margin: 0;
                 height: 0;
             }
