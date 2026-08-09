@@ -295,6 +295,31 @@ def add_video_dialog(record: dict):
         st.rerun()
 
 
+@st.dialog("确认删除")
+def bulk_delete_dialog(selected: list):
+    """批量删除确认弹窗"""
+    if not selected:
+        st.info("没有选中的网红")
+        return
+    st.markdown(f"确定删除以下 **{len(selected)}** 位网红吗？")
+    names = ", ".join(r.get("channel_name", "-") for r in selected)
+    st.caption(names)
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("取消", use_container_width=True, key="bulk_delete_cancel"):
+            st.rerun()
+    with c2:
+        if st.button("确认删除", use_container_width=True, key="bulk_delete_confirm"):
+            db = st.session_state.bd_db
+            for r in selected:
+                db.delete(r["channel_id"])
+            # 清除选择状态
+            for r in selected:
+                st.session_state.pop(f"sel_{r['channel_id']}", None)
+            st.success(f"已删除 {len(selected)} 位网红")
+            st.rerun()
+
+
 @st.dialog("转化详情")
 def conversion_detail_dialog(record: dict):
     """弹窗展示商品链接与浏览/点击/转化/GMV"""
@@ -589,10 +614,24 @@ def render_bd_table():
 
     st.caption(f"共 {len(records)} 条")
 
-    # 表头：16 + 1 列 Apple 风表格
-    COL_WIDTHS = [1.4, 0.65, 0.65, 1.2, 0.7, 0.75, 0.75, 0.8, 0.6, 0.6, 0.6, 0.8, 0.6, 0.6, 0.6, 0.8, 0.45]
+    # 批量操作栏
+    def _get_selected_records():
+        return [r for r in records if st.session_state.get(f"sel_{r['channel_id']}", False)]
+
+    bulk_cols = st.columns([0.12, 0.88])
+    with bulk_cols[0]:
+        if st.button("删除选中", key="bulk_delete_btn", type="primary"):
+            selected = _get_selected_records()
+            bulk_delete_dialog(selected)
+    with bulk_cols[1]:
+        selected_count = len(_get_selected_records())
+        if selected_count:
+            st.caption(f"已选中 {selected_count} 位网红")
+
+    # 表头：17 + 1 列 Apple 风表格（增加选择列）
+    COL_WIDTHS = [0.6, 1.35, 0.65, 0.65, 1.15, 0.7, 0.75, 0.75, 0.8, 0.6, 0.6, 0.6, 0.8, 0.6, 0.6, 0.6, 0.75, 0.45]
     headers = [
-        "昵称", "状态", "粉丝", "垂类", "主页", "分析", "邮件",
+        "", "昵称", "状态", "粉丝", "垂类", "主页", "分析", "邮件",
         "视频回链", "播放", "点赞", "评论", "商品链接", "浏览", "点击", "转化", "GMV", "",
     ]
     cols = st.columns(COL_WIDTHS)
@@ -606,38 +645,45 @@ def render_bd_table():
         cols = st.columns(COL_WIDTHS)
 
         with cols[0]:
-            st.markdown(f"<p class='bd-td'>{r.get('channel_name', '-')}</p>", unsafe_allow_html=True)
+            st.checkbox(
+                "",
+                key=f"sel_{r['channel_id']}",
+                label_visibility="collapsed",
+            )
 
         with cols[1]:
+            st.markdown(f"<p class='bd-td'>{r.get('channel_name', '-')}</p>", unsafe_allow_html=True)
+
+        with cols[2]:
             status = r.get("status", "-")
             if status == "已引入":
                 st.markdown("<p class='bd-td bd-status'>已引入</p>", unsafe_allow_html=True)
             else:
                 st.markdown(f"<p class='bd-td bd-empty'>{status}</p>", unsafe_allow_html=True)
 
-        with cols[2]:
+        with cols[3]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('subscribers'))}</p>", unsafe_allow_html=True)
 
-        with cols[3]:
+        with cols[4]:
             cat = r.get("category", "-")
             st.markdown(f"<p class='bd-td' title='{cat}'>{cat}</p>", unsafe_allow_html=True)
 
-        with cols[4]:
+        with cols[5]:
             url = r.get("channel_url", "")
             if url:
                 st.markdown(f"<p class='bd-td'><a href='{url}' target='_blank'>主页</a></p>", unsafe_allow_html=True)
             else:
                 st.markdown("<p class='bd-td bd-empty'>-</p>", unsafe_allow_html=True)
 
-        with cols[5]:
+        with cols[6]:
             if st.button("分析", key=f"viral_{r['channel_id']}", help="爆款分析"):
                 viral_dialog(r)
 
-        with cols[6]:
+        with cols[7]:
             if st.button("邮件", key=f"script_{r['channel_id']}", help="脚本/邮件"):
                 script_email_dialog(r)
 
-        with cols[7]:
+        with cols[8]:
             vlink = r.get("video_link", "")
             if vlink:
                 if st.button("视频", key=f"video_{r['channel_id']}", help="查看视频详情"):
@@ -646,16 +692,16 @@ def render_bd_table():
                 if st.button("添加", key=f"add_video_{r['channel_id']}", help="添加视频回链"):
                     add_video_dialog(r)
 
-        with cols[8]:
+        with cols[9]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('video_views'))}</p>", unsafe_allow_html=True)
 
-        with cols[9]:
+        with cols[10]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('video_likes'))}</p>", unsafe_allow_html=True)
 
-        with cols[10]:
+        with cols[11]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('video_comments'))}</p>", unsafe_allow_html=True)
 
-        with cols[11]:
+        with cols[12]:
             plink = r.get("product_link", "")
             if plink:
                 if st.button("商品", key=f"product_{r['channel_id']}", help="查看转化详情"):
@@ -663,19 +709,19 @@ def render_bd_table():
             else:
                 st.markdown("<p class='bd-td bd-empty'>-</p>", unsafe_allow_html=True)
 
-        with cols[12]:
+        with cols[13]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('product_views'))}</p>", unsafe_allow_html=True)
 
-        with cols[13]:
+        with cols[14]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('product_clicks'))}</p>", unsafe_allow_html=True)
 
-        with cols[14]:
+        with cols[15]:
             st.markdown(f"<p class='bd-td'>{fmt_num(r.get('product_conversions'))}</p>", unsafe_allow_html=True)
 
-        with cols[15]:
+        with cols[16]:
             st.markdown(f"<p class='bd-td'>{fmt_money(r.get('gmv'))}</p>", unsafe_allow_html=True)
 
-        with cols[16]:
+        with cols[17]:
             if st.button("编辑", key=f"edit_{r['channel_id']}", help="编辑数据"):
                 edit_metrics_dialog(r)
 
@@ -1236,21 +1282,44 @@ def main():
             [data-testid="stHorizontalBlock"] {
                 align-items: center !important;
                 margin-bottom: 0 !important;
-                padding: 0.3rem 0 !important;
+                padding: 0.05rem 0 !important;
+                min-height: auto !important;
             }
             [data-testid="stHorizontalBlock"] [data-testid="stButton"] button {
                 white-space: nowrap;
-                padding: 0.15rem 0.5rem;
+                padding: 0.05rem 0.35rem;
                 min-width: auto;
-                min-height: 1.4rem;
-                font-size: 12px;
+                min-height: 1.1rem;
+                font-size: 11px;
                 font-weight: 500;
-                line-height: 1.2;
+                line-height: 1.1;
                 color: #1d1d1f;
                 background-color: #ffffff;
                 border: 1px solid #d2d2d7;
                 border-radius: 9999px;
                 box-shadow: none;
+            }
+            [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] {
+                margin: 0 !important;
+                padding: 0 !important;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] > div {
+                margin: 0 !important;
+                padding: 0 !important;
+                min-height: auto !important;
+                width: auto !important;
+            }
+            [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] label {
+                font-size: 0 !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                min-height: auto !important;
+            }
+            [data-testid="stHorizontalBlock"] [data-testid="stCheckbox"] label p {
+                display: none !important;
             }
             [data-testid="stHorizontalBlock"] [data-testid="stButton"] button:hover {
                 background-color: #f5f5f7;
