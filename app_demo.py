@@ -1533,12 +1533,12 @@ def main():
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
-            .bd-td.bd-num p {
+            .bd-td.bd-num {
                 font-variant-numeric: tabular-nums;
                 text-align: right;
                 font-weight: 600;
             }
-            .bd-td.bd-center p {
+            .bd-td.bd-center {
                 text-align: center;
             }
             .bd-td a {
@@ -1549,11 +1549,11 @@ def main():
             .bd-td a:hover {
                 text-decoration: underline;
             }
-            .bd-empty p {
+            .bd-td.bd-empty {
                 color: #B8989E;
                 font-weight: 400;
             }
-            .bd-status p {
+            .bd-td.bd-status {
                 color: #D97A8A;
                 font-weight: 700;
             }
