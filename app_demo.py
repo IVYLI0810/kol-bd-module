@@ -21,12 +21,12 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from bd_database import LocalBDDB, SupabaseBDDB, SUPABASE_MIGRATION_SQL, get_bd_db
 from youtube_analyzer import YouTubeAnalyzer, extract_channel_id, extract_video_id
 from ai_email_generator import AIEmailGenerator
 from product_importer import generate_template_df, parse_upload_file, validate_and_transform
+from bd_table_component import bd_table
 
 
 # ---------------------------------------------------------------------------
@@ -209,9 +209,8 @@ def fmt_money(v):
     return f"{n:,.0f}"
 
 
-@st.dialog("视频详情")
-def video_detail_dialog(record: dict):
-    """弹窗展示视频回链与播放/点赞/评论，并支持更新/删除"""
+def _video_detail_content(record: dict):
+    """视频回链详情内容（可被独立弹窗或网红详情弹窗的 tab 复用）"""
     vlink = record.get("video_link", "")
     if vlink:
         st.markdown(f"**视频回链**：[打开]({vlink})")
@@ -254,9 +253,14 @@ def video_detail_dialog(record: dict):
             st.rerun()
 
 
-@st.dialog("添加视频回链")
-def add_video_dialog(record: dict):
-    """弹窗为网红添加视频回链，可选自动抓取数据"""
+@st.dialog("视频详情")
+def video_detail_dialog(record: dict):
+    """弹窗展示视频回链与播放/点赞/评论，并支持更新/删除"""
+    _video_detail_content(record)
+
+
+def _add_video_content(record: dict):
+    """添加视频回链内容（可被独立弹窗或网红详情弹窗的 tab 复用）"""
     st.markdown(f"**{record.get('channel_name', '-')}")
     video_url = st.text_input(
         "YouTube 视频链接",
@@ -299,6 +303,12 @@ def add_video_dialog(record: dict):
         st.rerun()
 
 
+@st.dialog("添加视频回链")
+def add_video_dialog(record: dict):
+    """弹窗为网红添加视频回链，可选自动抓取数据"""
+    _add_video_content(record)
+
+
 @st.dialog("确认删除")
 def bulk_delete_dialog(selected: list):
     """批量删除确认弹窗"""
@@ -323,9 +333,8 @@ def bulk_delete_dialog(selected: list):
             st.rerun()
 
 
-@st.dialog("转化详情")
-def conversion_detail_dialog(record: dict):
-    """弹窗展示商品链接与浏览/点击/转化/GMV"""
+def _conversion_detail_content(record: dict):
+    """转化详情内容（可被独立弹窗或网红详情弹窗的 tab 复用）"""
     plink = record.get("product_link", "")
     if plink:
         st.markdown(f"**商品链接**：[打开]({plink})")
@@ -340,6 +349,12 @@ def conversion_detail_dialog(record: dict):
         st.metric("转化", fmt_num(record.get("product_conversions")))
     with c4:
         st.metric("GMV", fmt_money(record.get("gmv")))
+
+
+@st.dialog("转化详情")
+def conversion_detail_dialog(record: dict):
+    """弹窗展示商品链接与浏览/点击/转化/GMV"""
+    _conversion_detail_content(record)
 
 
 @st.dialog("爆款分析")
@@ -461,18 +476,16 @@ def row_detail_dialog(record: dict):
     if record.get("video_link"):
         with tabs[idx]:
             idx += 1
-            video_detail_dialog(record)
+            _video_detail_content(record)
     else:
         with tabs[idx]:
             idx += 1
-            add_video_dialog(record)
+            _add_video_content(record)
 
     if record.get("product_link"):
         with tabs[idx]:
             idx += 1
-            conversion_detail_dialog(record)
-    else:
-        idx += 1
+            _conversion_detail_content(record)
 
     with tabs[idx]:
         idx += 1
@@ -611,31 +624,35 @@ def filter_dialog(records: list):
 
 
 def _build_bd_table_html(records: list, selected_ids: list) -> str:
-    """用真实 HTML <table> 渲染 BD 底库表格，保证跨行严格对齐"""
+    """用真实 HTML <table> 渲染 BD 底库表格，保证跨行严格对齐，恢复 Flat Design 动作列"""
     # 列定义：(表头, 宽度 px, 对齐, 取值函数, 额外 class)
+    # 总宽 1650px；文字列/数字列统一左对齐，动作按钮列保持居中
     cols = [
-        ("", 66, "center", lambda r: r['channel_id'], ""),
-        ("昵称", 192, "left", lambda r: _html_escape(r.get("channel_name", "-")), ""),
-        ("状态", 96, "left", lambda r: _html_escape(r.get("status", "-")), lambda r: "bd-status" if r.get("status") == "已引入" else ("bd-empty" if not r.get("status") or r.get("status") == "-" else "")),
-        ("粉丝", 96, "right", lambda r: fmt_num(r.get("subscribers")), "bd-num"),
-        ("总播放", 96, "right", lambda r: fmt_num(r.get("total_views")), "bd-num"),
-        ("垂类", 140, "left", lambda r: _html_escape(r.get("category", "-")), ""),
-        ("主页", 88, "center", lambda r: _bd_home_cell(r.get("channel_url", "")), ""),
-        ("回链", 96, "center", lambda r: _bd_video_cell(r), ""),
-        ("播放", 88, "right", lambda r: fmt_num(r.get("video_views")), "bd-num"),
-        ("点赞", 88, "right", lambda r: fmt_num(r.get("video_likes")), "bd-num"),
-        ("评论", 88, "right", lambda r: fmt_num(r.get("video_comments")), "bd-num"),
-        ("商品链接", 96, "center", lambda r: _bd_product_cell(r.get("product_link", "")), ""),
-        ("浏览", 88, "right", lambda r: fmt_num(r.get("product_views")), "bd-num"),
-        ("点击", 88, "right", lambda r: fmt_num(r.get("product_clicks")), "bd-num"),
-        ("转化", 88, "right", lambda r: fmt_num(r.get("product_conversions")), "bd-num"),
-        ("GMV", 104, "right", lambda r: fmt_money(r.get("gmv")), "bd-num"),
+        ("", 56, "center", lambda r: r['channel_id'], ""),
+        ("昵称", 190, "left", lambda r: _html_escape(r.get("channel_name", "-")), ""),
+        ("状态", 90, "left", lambda r: _html_escape(r.get("status", "-")), lambda r: "bd-status" if r.get("status") == "已引入" else ("bd-empty" if not r.get("status") or r.get("status") == "-" else "")),
+        ("粉丝", 80, "left", lambda r: fmt_num(r.get("subscribers")), ""),
+        ("总播放", 90, "left", lambda r: fmt_num(r.get("total_views")), ""),
+        ("垂类", 120, "left", lambda r: _html_escape(r.get("category", "-")), ""),
+        ("主页", 80, "center", lambda r: _bd_home_cell(r.get("channel_url", "")), ""),
+        ("分析", 78, "center", lambda r: _bd_action_btn(r["channel_id"], "viral", "分析"), ""),
+        ("邮件", 78, "center", lambda r: _bd_action_btn(r["channel_id"], "script_email", "邮件"), ""),
+        ("回链", 84, "center", lambda r: _bd_video_action_cell(r), ""),
+        ("播放", 78, "left", lambda r: fmt_num(r.get("video_views")), ""),
+        ("点赞", 78, "left", lambda r: fmt_num(r.get("video_likes")), ""),
+        ("评论", 78, "left", lambda r: fmt_num(r.get("video_comments")), ""),
+        ("商品链接", 90, "center", lambda r: _bd_product_action_cell(r), ""),
+        ("浏览", 78, "left", lambda r: fmt_num(r.get("product_views")), ""),
+        ("点击", 78, "left", lambda r: fmt_num(r.get("product_clicks")), ""),
+        ("转化", 78, "left", lambda r: fmt_num(r.get("product_conversions")), ""),
+        ("GMV", 90, "left", lambda r: fmt_money(r.get("gmv")), ""),
+        ("", 56, "center", lambda r: _bd_action_btn(r["channel_id"], "edit", "编辑"), ""),
     ]
 
     selected_set = set(selected_ids)
 
-    def _th(header, width, align):
-        if header == "":
+    def _th(idx, header, width, align):
+        if idx == 0:
             return f"<th style='width:{width}px;text-align:center;'><input type='checkbox' id='bd-select-all'></th>"
         return f"<th style='width:{width}px;text-align:{align};'>{header}</th>"
 
@@ -650,18 +667,21 @@ def _build_bd_table_html(records: list, selected_ids: list) -> str:
         attrs = f"style='width:{width}px;text-align:{align};'"
         if cid:
             attrs += f" data-cid='{cid}'"
-        return f"<td {attrs}><p class='{cls}'>{content}</p></td>"
+        return f"<td {attrs}>{content}</td>"
 
-    thead = "<thead><tr>" + "".join(_th(h, w, a) for h, w, a, _, _ in cols) + "</tr></thead>"
+    thead = "<thead><tr>" + "".join(_th(i, h, w, a) for i, (h, w, a, _, _) in enumerate(cols)) + "</tr></thead>"
 
     rows = []
+    last_col_idx = len(cols) - 1
     for r in records:
         cid = r["channel_id"]
         cells = []
-        for (h, w, a, fn, extra) in cols:
-            if h == "":
+        for i, (h, w, a, fn, extra) in enumerate(cols):
+            if i == 0:
                 checked = "checked" if cid in selected_set else ""
                 cells.append(f"<td style='width:{w}px;text-align:center;'><input type='checkbox' class='bd-row-checkbox' value='{cid}' {checked} onclick='event.stopPropagation(); toggleRow(\"{cid}\")'></td>")
+            elif i == last_col_idx:
+                cells.append(_td(fn(r), w, a, cid=cid, extra_class=""))
             else:
                 ec = extra(r) if callable(extra) else extra
                 cells.append(_td(fn(r), w, a, cid=cid, extra_class=ec))
@@ -670,69 +690,9 @@ def _build_bd_table_html(records: list, selected_ids: list) -> str:
     tbody = "<tbody>" + "".join(rows) + "</tbody>"
     table = f"<table class='bd-table'>{thead}{tbody}</table>"
 
-    script = f"""
-    <script>
-    (function() {{
-        var selected = new Set({json.dumps(list(selected_set))});
-        var lastClicked = null;
-
-        function send() {{
-            var payload = JSON.stringify({{
-                selected: Array.from(selected),
-                clicked: lastClicked
-            }});
-            if (window.parent) {{
-                window.parent.postMessage({{
-                    type: 'streamlit:setComponentValue',
-                    value: payload
-                }}, '*');
-            }}
-            lastClicked = null;
-        }}
-
-        function toggleRow(cid) {{
-            if (selected.has(cid)) selected.delete(cid);
-            else selected.add(cid);
-            send();
-        }}
-
-        function selectAll(checked) {{
-            var rows = document.querySelectorAll('.bd-row');
-            rows.forEach(function(row) {{
-                var cid = row.getAttribute('data-cid');
-                var cb = row.querySelector('.bd-row-checkbox');
-                if (checked) selected.add(cid);
-                else selected.delete(cid);
-                if (cb) cb.checked = checked;
-            }});
-            send();
-        }}
-
-        document.querySelectorAll('.bd-row').forEach(function(row) {{
-            row.addEventListener('click', function(e) {{
-                if (e.target.tagName === 'INPUT' || e.target.tagName === 'A') return;
-                var cid = row.getAttribute('data-cid');
-                lastClicked = cid;
-                send();
-            }});
-        }});
-
-        var selectAllCb = document.getElementById('bd-select-all');
-        if (selectAllCb) {{
-            selectAllCb.addEventListener('change', function(e) {{
-                selectAll(e.target.checked);
-            }});
-        }}
-
-        // 初始化时同步一次
-        send();
-    }})();
-    </script>
-    """
-
     inline_css = """
     <style>
-    /* 组件 iframe 内不能依赖外部字体，否则网络受阻时整表会白屏 */
+    /* 组件 iframe 内不能依赖外部字体/外部 CSS，否则网络受阻时整表会白屏 */
     * { box-sizing: border-box; }
     body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans KR', 'Microsoft YaHei', sans-serif; }
     .bd-table-wrapper {
@@ -747,16 +707,15 @@ def _build_bd_table_html(records: list, selected_ids: list) -> str:
     .bd-table-wrapper::-webkit-scrollbar-thumb:hover { background: #B8989E; }
     .bd-table {
         table-layout: fixed;
-        width: 1600px;
+        width: 1650px;
         border-collapse: collapse;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans KR', 'Microsoft YaHei', sans-serif;
     }
     .bd-table th {
-        font-size: 11px;
-        font-weight: 800;
+        font-size: 16px;
+        font-weight: 700;
         color: #7A4A55;
-        text-transform: uppercase;
-        letter-spacing: 0.07em;
+        letter-spacing: 0;
         padding: 12px 8px;
         line-height: 1.4;
         white-space: nowrap;
@@ -779,22 +738,18 @@ def _build_bd_table_html(records: list, selected_ids: list) -> str:
         border-bottom: 2px solid #F9EEF1;
         vertical-align: middle;
     }
-    .bd-table td p {
+    .bd-table td p.bd-td {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans KR', 'Microsoft YaHei', sans-serif;
-        font-size: 13px;
+        font-size: 16px;
         font-weight: 500;
         color: #111827;
         margin: 0;
-        padding: 11px 8px;
+        padding: 12px 8px;
         line-height: 1.5;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-    }
-    .bd-table td p.bd-num {
-        font-variant-numeric: tabular-nums;
-        text-align: right;
-        font-weight: 600;
+        text-align: left;
     }
     .bd-table td p.bd-center {
         text-align: center;
@@ -832,6 +787,30 @@ def _build_bd_table_html(records: list, selected_ids: list) -> str:
         cursor: pointer;
         margin: 0;
     }
+    /* Flat Design 小药丸动作按钮 */
+    .bd-action-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 48px;
+        height: 28px;
+        padding: 0 10px;
+        border-radius: 14px;
+        border: none;
+        background: #F9EEF1;
+        color: #7A4A55;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans KR', 'Microsoft YaHei', sans-serif;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        line-height: 1;
+        white-space: nowrap;
+    }
+    .bd-action-btn:hover {
+        background: #D97A8A;
+        color: #FFFFFF;
+    }
     </style>
     """
 
@@ -840,7 +819,6 @@ def _build_bd_table_html(records: list, selected_ids: list) -> str:
     <div class='bd-table-wrapper'>
         {table}
     </div>
-    {script}
     """
 
 
@@ -855,21 +833,36 @@ def _html_escape(s: str) -> str:
 
 def _bd_home_cell(url: str) -> str:
     if url:
-        return f"<a href='{_html_escape(url)}' target='_blank' onclick='event.stopPropagation()'>主页</a>"
-    return "-"
+        return f"<p class='bd-td bd-center'><a href='{_html_escape(url)}' target='_blank' onclick='event.stopPropagation()'>主页</a></p>"
+    return "<p class='bd-td bd-empty bd-center'>-</p>"
 
 
-def _bd_video_cell(r: dict) -> str:
+def _bd_action_btn(cid: str, action: str, label: str) -> str:
+    return f"<button class='bd-action-btn' data-cid='{cid}' data-action='{action}' type='button'>{label}</button>"
+
+
+def _bd_video_action_cell(r: dict) -> str:
     vlink = r.get("video_link", "")
+    cid = r["channel_id"]
     if vlink:
-        return f"<a href='{_html_escape(vlink)}' target='_blank' onclick='event.stopPropagation()'>视频</a>"
-    return "-"
+        return (
+            f"<p class='bd-td bd-center'>"
+            f"<a href='{_html_escape(vlink)}' target='_blank' onclick='event.stopPropagation()'>视频</a>"
+            f"</p>"
+        )
+    return _bd_action_btn(cid, "add_video", "添加")
 
 
-def _bd_product_cell(url: str) -> str:
-    if url:
-        return f"<a href='{_html_escape(url)}' target='_blank' onclick='event.stopPropagation()'>商品</a>"
-    return "-"
+def _bd_product_action_cell(r: dict) -> str:
+    plink = r.get("product_link", "")
+    cid = r["channel_id"]
+    if plink:
+        return (
+            f"<p class='bd-td bd-center'>"
+            f"<a href='{_html_escape(plink)}' target='_blank' onclick='event.stopPropagation()'>商品</a>"
+            f"</p>"
+        )
+    return "<p class='bd-td bd-empty bd-center'>-</p>"
 
 
 def render_bd_table():
@@ -983,32 +976,57 @@ def render_bd_table():
 
     # 真实 HTML 表格：表头和数据在同一 <table> 内，严格对齐
     table_html = _build_bd_table_html(records, selected_ids)
-    row_height = 42
-    header_height = 40
+    row_height = 52
+    header_height = 48
     table_height = max(200, header_height + len(records) * row_height + 20)
 
-    result = components.html(table_html, height=table_height, scrolling=False)
+    result = bd_table(
+        records=records,
+        selected_ids=selected_ids,
+        height=table_height,
+        key="bd_table",
+        html=table_html,
+    )
 
     # 处理表格组件返回的状态
-    if result:
-        try:
-            data = json.loads(result) if isinstance(result, str) else result
-            if not isinstance(data, dict):
-                data = {}
-        except Exception:
-            data = {}
+    data = result if isinstance(result, dict) else {}
 
-        new_selected = data.get("selected", [])
-        clicked_id = data.get("clicked")
+    new_selected = data.get("selected", [])
+    clicked = data.get("clicked")
+    action = data.get("action")  # {cid, type, ts}
 
-        if new_selected != selected_ids:
-            st.session_state.bd_selected_ids = new_selected
-            st.rerun()
+    if new_selected != selected_ids:
+        st.session_state.bd_selected_ids = new_selected
+        st.rerun()
 
-        if clicked_id:
-            clicked_record = next((r for r in records if r["channel_id"] == clicked_id), None)
-            if clicked_record:
-                row_detail_dialog(clicked_record)
+    # 用 processed 记录上次已处理的动作/行点击，防止组件旧值反复弹窗
+    processed = st.session_state.setdefault("bd_processed", {})
+
+    if action and action != processed.get("action"):
+        processed["action"] = action
+        action_cid = action.get("cid")
+        action_type = action.get("type")
+        action_record = next((r for r in records if r["channel_id"] == action_cid), None)
+        if action_record:
+            if action_type == "viral":
+                viral_dialog(action_record)
+            elif action_type == "script_email":
+                script_email_dialog(action_record)
+            elif action_type == "video_detail":
+                video_detail_dialog(action_record)
+            elif action_type == "add_video":
+                add_video_dialog(action_record)
+            elif action_type == "conversion_detail":
+                conversion_detail_dialog(action_record)
+            elif action_type == "edit":
+                edit_metrics_dialog(action_record)
+
+    clicked_id = clicked.get("cid") if isinstance(clicked, dict) else clicked
+    if clicked_id and clicked != processed.get("clicked"):
+        processed["clicked"] = clicked
+        clicked_record = next((r for r in records if r["channel_id"] == clicked_id), None)
+        if clicked_record:
+            row_detail_dialog(clicked_record)
 
 
 def _sync_discovery_demo(db):
