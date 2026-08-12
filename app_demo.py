@@ -235,40 +235,110 @@ def fmt_money(v):
     return f"{n:,.0f}"
 
 
-@st.dialog("视频详情")
-def video_detail_dialog(record: dict):
-    """弹窗展示视频回链与播放/点赞/评论"""
-    vlink = record.get("video_link", "")
-    if vlink:
-        st.markdown(f"**视频回链**：[打开]({vlink})")
-    else:
-        st.markdown("**视频回链**：-")
+@st.dialog("视频回链")
+def video_edit_dialog(record: dict):
+    """弹窗内直接增加/修改/删除视频回链及数据"""
+    cid = record["channel_id"]
+    db = st.session_state.bd_db
+    rec = db.get_by_channel_id(cid) or record
+
+    vlink = st.text_input(
+        "视频回链",
+        value=rec.get("video_link", ""),
+        placeholder="https://www.youtube.com/watch?v=... 或 /shorts/...",
+    )
+    if st.button("⚡ 一键导入视频数据", use_container_width=True):
+        _import_video_stats(cid, vlink)
+
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("播放", fmt_num(record.get("video_views")))
+        views = st.number_input("播放", min_value=0, value=int(rec.get("video_views") or 0), step=1000)
     with c2:
-        st.metric("点赞", fmt_num(record.get("video_likes")))
+        likes = st.number_input("点赞", min_value=0, value=int(rec.get("video_likes") or 0), step=100)
     with c3:
-        st.metric("评论", fmt_num(record.get("video_comments")))
+        comments = st.number_input("评论", min_value=0, value=int(rec.get("video_comments") or 0), step=100)
 
-
-@st.dialog("转化详情")
-def conversion_detail_dialog(record: dict):
-    """弹窗展示商品链接与浏览/点击率/成交量/GMV"""
-    plink = record.get("product_link", "")
-    if plink:
-        st.markdown(f"**商品链接**：[打开]({plink})")
-    else:
-        st.markdown("**商品链接**：-")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2 = st.columns(2)
     with c1:
-        st.metric("浏览", fmt_num(record.get("product_views")))
+        if st.button("💾 保存", use_container_width=True):
+            db.update(cid, {
+                "video_link": vlink,
+                "video_views": views,
+                "video_likes": likes,
+                "video_comments": comments,
+            })
+            st.success("已保存")
+            st.rerun()
     with c2:
-        st.metric("点击率", fmt_percent(record.get("ctr")))
-    with c3:
-        st.metric("成交量", fmt_num(record.get("orders")))
-    with c4:
-        st.metric("GMV", fmt_money(record.get("gmv")))
+        if st.button("🗑 删除视频回链", use_container_width=True):
+            db.update(cid, {"video_link": "", "video_views": 0, "video_likes": 0, "video_comments": 0})
+            st.rerun()
+
+
+def _import_video_stats(cid: str, vlink: str):
+    """根据视频链接一键抓取播放/点赞/评论并回写"""
+    api_key = st.session_state.get("youtube_api_key", "")
+    if not api_key:
+        st.error("请先在侧边栏填写 YouTube API Key")
+        return
+    if not vlink:
+        st.error("请先填写视频回链")
+        return
+    vid = extract_video_id(vlink)
+    if not vid:
+        st.error("无法识别视频链接")
+        return
+    with st.spinner("抓取中..."):
+        try:
+            stats = YouTubeAnalyzer(api_key).get_video_stats(vid)
+            st.session_state.bd_db.update(cid, {
+                "video_link": stats["url"],
+                "video_views": stats["view_count"],
+                "video_likes": stats["like_count"],
+                "video_comments": stats["comment_count"],
+            })
+            st.success("视频数据已导入")
+            st.rerun()
+        except Exception as e:
+            st.error(f"导入失败：{e}")
+
+
+@st.dialog("商品链接")
+def product_edit_dialog(record: dict):
+    """弹窗内直接增加/修改/删除商品链接及效果数据"""
+    cid = record["channel_id"]
+    db = st.session_state.bd_db
+    rec = db.get_by_channel_id(cid) or record
+
+    plink = st.text_input(
+        "商品链接",
+        value=rec.get("product_link", ""),
+        placeholder="https://ko.aliexpress.com/item/...",
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        pviews = st.number_input("浏览", min_value=0, value=int(rec.get("product_views") or 0), step=1000)
+        ctr = st.number_input("点击率（小数）", min_value=0.0, value=float(rec.get("ctr") or 0.0), step=0.0001, format="%.4f")
+    with c2:
+        orders = st.number_input("成交量", min_value=0, value=int(rec.get("orders") or 0), step=10)
+        gmv = st.number_input("GMV (KRW)", min_value=0.0, value=float(rec.get("gmv") or 0), step=10000.0)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("💾 保存", use_container_width=True):
+            db.update(cid, {
+                "product_link": plink,
+                "product_views": pviews,
+                "ctr": ctr,
+                "orders": orders,
+                "gmv": gmv,
+            })
+            st.success("已保存")
+            st.rerun()
+    with c2:
+        if st.button("🗑 删除商品链接", use_container_width=True):
+            db.update(cid, {"product_link": "", "product_views": 0, "ctr": 0, "orders": 0, "gmv": 0})
+            st.rerun()
 
 
 @st.dialog("爆款分析")
@@ -297,13 +367,20 @@ def render_bd_table():
         st.info("底库为空，先去「添加网红」页添加，或点击上方「同步挖掘库」。")
         return
 
-    # 顶部操作：同步挖掘库（演示用）
-    c1, c2 = st.columns([1, 4])
+    # 顶部操作：同步挖掘库 + 一键导入
+    c1, c2, c3 = st.columns([1, 1, 3])
     with c1:
         if st.button("同步 kol-finder 挖掘库", use_container_width=True):
             _sync_discovery_demo(db)
     with c2:
-        st.caption("只同步挖掘库中状态为「已引入」的网红。生产环境会自动触发，无需手动点击。")
+        if st.button("📥 一键导入", use_container_width=True):
+            st.session_state.show_import = not st.session_state.get("show_import", False)
+            st.rerun()
+    with c3:
+        st.caption("同步只拉「已引入」网红；一键导入用于批量更新商品/视频数据。")
+
+    if st.session_state.get("show_import"):
+        render_bulk_import()
 
     st.divider()
 
@@ -369,12 +446,8 @@ def render_bd_table():
                 script_email_dialog(r)
 
         with cols[7]:
-            vlink = r.get("video_link", "")
-            if vlink:
-                if st.button("视频", key=f"video_{r['channel_id']}", help="查看视频详情"):
-                    video_detail_dialog(r)
-            else:
-                st.markdown("<p style='font-size:11px; color:#6e6e73; margin:0'>-</p>", unsafe_allow_html=True)
+            if st.button("视频", key=f"video_{r['channel_id']}", help="视频回链：增加/修改/删除"):
+                video_edit_dialog(r)
 
         with cols[8]:
             st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('video_views'))}</p>", unsafe_allow_html=True)
@@ -386,12 +459,8 @@ def render_bd_table():
             st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('video_comments'))}</p>", unsafe_allow_html=True)
 
         with cols[11]:
-            plink = r.get("product_link", "")
-            if plink:
-                if st.button("商品", key=f"product_{r['channel_id']}", help="查看转化详情"):
-                    conversion_detail_dialog(r)
-            else:
-                st.markdown("<p style='font-size:11px; color:#6e6e73; margin:0'>-</p>", unsafe_allow_html=True)
+            if st.button("商品", key=f"product_{r['channel_id']}", help="商品链接：增加/修改/删除"):
+                product_edit_dialog(r)
 
         with cols[12]:
             st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('product_views'))}</p>", unsafe_allow_html=True)
@@ -558,122 +627,8 @@ def render_add_influencer():
         st.rerun()
 
 
-def render_video_tracker():
-    st.header("📹 视频数据追踪")
-
-    db = st.session_state.bd_db
-    try:
-        records = db.get_all()
-    except Exception as e:
-        st.error(f"无法连接宜搭：{e}")
-        return
-    if not records:
-        st.info("底库为空，先去「添加网红」页添加。")
-        return
-
-    names = [r["channel_name"] for r in records]
-    selected_name = st.selectbox("关联到网红", names)
-    selected = next(r for r in records if r["channel_name"] == selected_name)
-
-    video_url = st.text_input(
-        "输入 YouTube 视频链接",
-        value=selected.get("video_link", ""),
-        placeholder="https://www.youtube.com/watch?v=... 或 /shorts/..."
-    )
-
-    c1, c2 = st.columns([1, 4])
-    with c1:
-        track_clicked = st.button("追踪数据并回写", use_container_width=True)
-    with c2:
-        st.caption("抓取后会自动把播放/点赞/评论写回该网红的「视频回链」字段。")
-
-    if track_clicked:
-        api_key = st.session_state.get("youtube_api_key", "")
-        if not api_key:
-            st.error("请先配置 YouTube API Key")
-            return
-        if not video_url:
-            st.error("请输入视频链接")
-            return
-
-        video_id = extract_video_id(video_url)
-        if not video_id:
-            st.error("无法识别视频链接")
-            return
-
-        with st.spinner("抓取中..."):
-            try:
-                analyzer = YouTubeAnalyzer(api_key)
-                stats = analyzer.get_video_stats(video_id)
-
-                # 回写到数据库
-                db.update(selected["channel_id"], {
-                    "video_link": stats["url"],
-                    "video_views": stats["view_count"],
-                    "video_likes": stats["like_count"],
-                    "video_comments": stats["comment_count"],
-                })
-
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("播放量", f"{stats['view_count']:,}")
-                m2.metric("点赞", f"{stats['like_count']:,}")
-                m3.metric("评论", f"{stats['comment_count']:,}")
-                m4.metric("类型", "Shorts" if stats["is_shorts"] else "长视频")
-                st.markdown(f"**标题**：{stats['title']}")
-                st.success("已回写到 BD 底库")
-            except Exception as e:
-                st.error(f"追踪失败：{e}")
-
-
-def render_product_import():
-    st.header("📥 商品效果数据导入")
-
-    # 单个编辑
-    with st.expander("单个编辑商品与视频数据"):
-        db = st.session_state.bd_db
-        try:
-            records = db.get_all()
-        except Exception as e:
-            st.error(f"无法连接宜搭：{e}")
-            records = []
-        names = [r["channel_name"] for r in records]
-        if not names:
-            st.info("底库为空")
-        else:
-            selected = st.selectbox("选择网红", names, key="single_edit_name")
-            rec = next(r for r in records if r["channel_name"] == selected)
-            with st.form("single_metric_form"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    video_link = st.text_input("视频回链", value=rec.get("video_link", ""))
-                    video_views = st.number_input("播放", min_value=0, value=int(rec.get("video_views") or 0), step=1000)
-                    video_likes = st.number_input("点赞", min_value=0, value=int(rec.get("video_likes") or 0), step=100)
-                    video_comments = st.number_input("评论", min_value=0, value=int(rec.get("video_comments") or 0), step=100)
-                with col2:
-                    product_link = st.text_input("商品链接", value=rec.get("product_link", ""))
-                    product_views = st.number_input("浏览", min_value=0, value=int(rec.get("product_views") or 0), step=1000)
-                    ctr = st.number_input("点击率（小数，如 0.0267 = 2.67%）", min_value=0.0, value=float(rec.get("ctr") or 0.0), step=0.0001, format="%.4f")
-                    orders = st.number_input("成交量", min_value=0, value=int(rec.get("orders") or 0), step=10)
-                    price = st.number_input("报价 (KRW)", min_value=0.0, value=float(rec.get("price") or 0.0), step=10000.0)
-                gmv = st.number_input("GMV (KRW)", min_value=0.0, value=float(rec.get("gmv") or 0), step=10000.0)
-                if st.form_submit_button("保存"):
-                    db.update(rec["channel_id"], {
-                        "video_link": video_link,
-                        "video_views": video_views,
-                        "video_likes": video_likes,
-                        "video_comments": video_comments,
-                        "product_link": product_link,
-                        "product_views": product_views,
-                        "ctr": ctr,
-                        "orders": orders,
-                        "price": price,
-                        "gmv": gmv,
-                    })
-                    st.success("已保存")
-                    st.rerun()
-
-    # 批量导入
-    st.subheader("批量导入")
+def render_bulk_import():
+    st.subheader("📥 批量导入商品/视频数据")
     uploaded = st.file_uploader("上传 CSV 或 Excel", type=["csv", "xlsx", "xls"])
     if uploaded:
         try:
@@ -704,11 +659,11 @@ def render_product_import():
 
 def main():
     st.set_page_config(
-        page_title="BD 网红底库 Demo",
+        page_title="YTS网红管理库",
         layout="wide",
         initial_sidebar_state="expanded",
     )
-    st.title("🎯 BD 网红底库管理")
+    st.title("🎯 YTS网红管理库")
     st.caption("数据存储在钉钉宜搭，团队共享一份数据")
 
     # 让顶部 Tab 均匀分布，避免堆在左侧
@@ -746,21 +701,28 @@ def main():
     render_sidebar()
     init_db()
 
-    tab_base, tab_add, tab_track, tab_import = st.tabs([
-        "📁 BD 底库",
-        "➕ 添加网红",
-        "📹 视频追踪",
-        "📥 商品导入",
-    ])
+    # 模块切换：按钮形式
+    if "module" not in st.session_state:
+        st.session_state.module = "base"
 
-    with tab_base:
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("📁 BD 底库", use_container_width=True,
+                     type="primary" if st.session_state.module == "base" else "secondary"):
+            st.session_state.module = "base"
+            st.rerun()
+    with b2:
+        if st.button("➕ 添加网红", use_container_width=True,
+                     type="primary" if st.session_state.module == "add" else "secondary"):
+            st.session_state.module = "add"
+            st.rerun()
+
+    st.divider()
+
+    if st.session_state.module == "base":
         render_bd_table()
-    with tab_add:
+    else:
         render_add_influencer()
-    with tab_track:
-        render_video_tracker()
-    with tab_import:
-        render_product_import()
 
 
 if __name__ == "__main__":
