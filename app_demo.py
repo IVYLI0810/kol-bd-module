@@ -6,7 +6,7 @@ BD 网红底库 - 独立 Streamlit Demo
 大表单目标：
 - 与 kol-finder 挖掘库联动，状态为「已引入」的网红自动进入 BD 底库
 - 一页展示所有关键字段：
-  昵称 / 状态 / 粉丝 / 总播放 / 垂类 / 主页链接 / 分析 / 邮件 / 视频回链 / 播放 / 点赞 / 评论 / 商品链接 / 浏览 / 点击 / 转化 / GMV
+  昵称 / 状态 / 粉丝 / 垂类 / 主页链接 / 分析 / 邮件 / 视频回链 / 播放 / 点赞 / 评论 / 商品链接 / 浏览 / 点击 / 转化 / GMV
 - 支持单个编辑、批量导入（CSV/Excel）、视频数据追踪后回写
 
 说明：
@@ -16,7 +16,6 @@ BD 网红底库 - 独立 Streamlit Demo
 
 import json
 import os
-from collections import Counter
 from datetime import datetime
 
 import pandas as pd
@@ -26,7 +25,6 @@ from bd_database import LocalBDDB, SupabaseBDDB, SUPABASE_MIGRATION_SQL, get_bd_
 from youtube_analyzer import YouTubeAnalyzer, extract_channel_id, extract_video_id
 from ai_email_generator import AIEmailGenerator
 from product_importer import generate_template_df, parse_upload_file, validate_and_transform
-from bd_table_component import bd_table
 
 
 # ---------------------------------------------------------------------------
@@ -45,9 +43,6 @@ SAMPLE_PRODUCT = {
     ],
 }
 
-# 默认不再自动写入示例数据；需要演示时设置环境变量 SEED_SAMPLE_DATA=1
-SEED_SAMPLE_DATA = os.environ.get("SEED_SAMPLE_DATA", "0") == "1"
-
 # 演示数据：把 kol-finder 里「已引入」的网红同步过来后的样子
 DEFAULT_BD_INFLUENCERS = [
     {
@@ -57,7 +52,6 @@ DEFAULT_BD_INFLUENCERS = [
         "category": "뷰티 & 헬스",
         "recruiter": "아이비",
         "subscribers": 15000,
-        "total_views": 2500000,
         "status": "已引入",
         "video_link": "https://www.youtube.com/shorts/xxx",
         "video_views": 120000,
@@ -76,7 +70,6 @@ DEFAULT_BD_INFLUENCERS = [
         "category": "뷰티 & 헬스",
         "recruiter": "아이비",
         "subscribers": 22000,
-        "total_views": 4800000,
         "status": "已引入",
         "video_link": "https://www.youtube.com/watch?v=yyy",
         "video_views": 89000,
@@ -95,7 +88,6 @@ DEFAULT_BD_INFLUENCERS = [
         "category": "뷰티 & 헬스",
         "recruiter": "아이비",
         "subscribers": 18000,
-        "total_views": 1200000,
         "status": "已引入",
         "video_link": "",
         "video_views": 0,
@@ -209,8 +201,9 @@ def fmt_money(v):
     return f"{n:,.0f}"
 
 
-def _video_detail_content(record: dict):
-    """视频回链详情内容（可被独立弹窗或网红详情弹窗的 tab 复用）"""
+@st.dialog("视频详情")
+def video_detail_dialog(record: dict):
+    """弹窗展示视频回链与播放/点赞/评论"""
     vlink = record.get("video_link", "")
     if vlink:
         st.markdown(f"**视频回链**：[打开]({vlink})")
@@ -224,117 +217,10 @@ def _video_detail_content(record: dict):
     with c3:
         st.metric("评论", fmt_num(record.get("video_comments")))
 
-    st.divider()
-    new_link = st.text_input(
-        "更新视频链接",
-        value=vlink,
-        key=f"upd_video_link_{record['channel_id']}",
-    )
-    b1, b2 = st.columns(2)
-    with b1:
-        if st.button("更新链接", use_container_width=True, key=f"upd_video_{record['channel_id']}"):
-            db = st.session_state.bd_db
-            db.update(record["channel_id"], {"video_link": new_link})
-            st.success("已更新")
-            st.rerun()
-    with b2:
-        if st.button("删除视频回链", use_container_width=True, key=f"del_video_{record['channel_id']}"):
-            db = st.session_state.bd_db
-            db.update(
-                record["channel_id"],
-                {
-                    "video_link": "",
-                    "video_views": 0,
-                    "video_likes": 0,
-                    "video_comments": 0,
-                },
-            )
-            st.success("已删除")
-            st.rerun()
 
-
-@st.dialog("视频详情")
-def video_detail_dialog(record: dict):
-    """弹窗展示视频回链与播放/点赞/评论，并支持更新/删除"""
-    _video_detail_content(record)
-
-
-def _add_video_content(record: dict):
-    """添加视频回链内容（可被独立弹窗或网红详情弹窗的 tab 复用）"""
-    st.markdown(f"**{record.get('channel_name', '-')}")
-    video_url = st.text_input(
-        "YouTube 视频链接",
-        placeholder="https://www.youtube.com/watch?v=... 或 /shorts/...",
-        key=f"add_video_url_{record['channel_id']}",
-    )
-    fetch_stats = st.toggle(
-        "自动抓取播放/点赞/评论",
-        value=True,
-        key=f"add_video_fetch_{record['channel_id']}",
-    )
-    if st.button("保存", use_container_width=True, key=f"add_video_save_{record['channel_id']}"):
-        if not video_url:
-            st.error("请输入视频链接")
-            return
-        update = {"video_link": video_url}
-        if fetch_stats:
-            api_key = st.session_state.get("youtube_api_key", "")
-            if not api_key:
-                st.error("请先配置 YouTube API Key")
-                return
-            try:
-                analyzer = YouTubeAnalyzer(api_key)
-                video_id = extract_video_id(video_url)
-                if not video_id:
-                    st.error("无法识别视频链接")
-                    return
-                stats = analyzer.get_video_stats(video_id)
-                update.update({
-                    "video_views": stats["view_count"],
-                    "video_likes": stats["like_count"],
-                    "video_comments": stats["comment_count"],
-                })
-            except Exception as e:
-                st.error(f"抓取失败：{e}")
-                return
-        db = st.session_state.bd_db
-        db.update(record["channel_id"], update)
-        st.success("已保存")
-        st.rerun()
-
-
-@st.dialog("添加视频回链")
-def add_video_dialog(record: dict):
-    """弹窗为网红添加视频回链，可选自动抓取数据"""
-    _add_video_content(record)
-
-
-@st.dialog("确认删除")
-def bulk_delete_dialog(selected: list):
-    """批量删除确认弹窗"""
-    if not selected:
-        st.info("没有选中的网红")
-        return
-    st.markdown(f"确定删除以下 **{len(selected)}** 位网红吗？")
-    names = ", ".join(r.get("channel_name", "-") for r in selected)
-    st.caption(names)
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("取消", use_container_width=True, key="bulk_delete_cancel"):
-            st.rerun()
-    with c2:
-        if st.button("确认删除", use_container_width=True, key="bulk_delete_confirm"):
-            db = st.session_state.bd_db
-            for r in selected:
-                db.delete(r["channel_id"])
-            # 清除选择状态
-            st.session_state["bd_selected_ids"] = []
-            st.success(f"已删除 {len(selected)} 位网红")
-            st.rerun()
-
-
-def _conversion_detail_content(record: dict):
-    """转化详情内容（可被独立弹窗或网红详情弹窗的 tab 复用）"""
+@st.dialog("转化详情")
+def conversion_detail_dialog(record: dict):
+    """弹窗展示商品链接与浏览/点击/转化/GMV"""
     plink = record.get("product_link", "")
     if plink:
         st.markdown(f"**商品链接**：[打开]({plink})")
@@ -351,12 +237,6 @@ def _conversion_detail_content(record: dict):
         st.metric("GMV", fmt_money(record.get("gmv")))
 
 
-@st.dialog("转化详情")
-def conversion_detail_dialog(record: dict):
-    """弹窗展示商品链接与浏览/点击/转化/GMV"""
-    _conversion_detail_content(record)
-
-
 @st.dialog("爆款分析")
 def viral_dialog(record: dict):
     """弹窗展示爆款分析结果"""
@@ -369,505 +249,15 @@ def script_email_dialog(record: dict):
     run_script_email(record)
 
 
-@st.dialog("编辑数据")
-def edit_metrics_dialog(record: dict):
-    """弹窗直接修改数字指标"""
-    st.markdown(f"**{record.get('channel_name', '-')}**")
-    c1, c2 = st.columns(2)
-    with c1:
-        subscribers = st.number_input(
-            "粉丝", min_value=0, value=int(record.get("subscribers") or 0), step=1000
-        )
-        total_views = st.number_input(
-            "总播放", min_value=0, value=int(record.get("total_views") or 0), step=1000
-        )
-        video_views = st.number_input(
-            "播放", min_value=0, value=int(record.get("video_views") or 0), step=1000
-        )
-        video_likes = st.number_input(
-            "点赞", min_value=0, value=int(record.get("video_likes") or 0), step=100
-        )
-        video_comments = st.number_input(
-            "评论", min_value=0, value=int(record.get("video_comments") or 0), step=100
-        )
-    with c2:
-        product_views = st.number_input(
-            "浏览", min_value=0, value=int(record.get("product_views") or 0), step=1000
-        )
-        product_clicks = st.number_input(
-            "点击", min_value=0, value=int(record.get("product_clicks") or 0), step=100
-        )
-        product_conversions = st.number_input(
-            "转化", min_value=0, value=int(record.get("product_conversions") or 0), step=10
-        )
-        gmv = st.number_input(
-            "GMV (KRW)", min_value=0.0, value=float(record.get("gmv") or 0), step=10000.0
-        )
-
-    if st.button("保存", key=f"save_edit_{record['channel_id']}"):
-        db = st.session_state.bd_db
-        db.update(
-            record["channel_id"],
-            {
-                "subscribers": int(subscribers),
-                "total_views": int(total_views),
-                "video_views": int(video_views),
-                "video_likes": int(video_likes),
-                "video_comments": int(video_comments),
-                "product_views": int(product_views),
-                "product_clicks": int(product_clicks),
-                "product_conversions": int(product_conversions),
-                "gmv": float(gmv),
-            },
-        )
-        st.success("已保存")
-        st.rerun()
-
-
-@st.dialog("网红详情")
-def row_detail_dialog(record: dict):
-    """点击表格行打开的详情弹窗，集中所有行级操作"""
-    st.markdown(f"### {record.get('channel_name', '-')}")
-    st.caption(f"状态：{record.get('status', '-')} ｜ 垂类：{record.get('category', '-')} ｜ 挖掘人：{record.get('recruiter', '-')}")
-
-    channel_url = record.get("channel_url", "")
-    if channel_url:
-        st.markdown(f"[🌐 打开 YouTube 主页]({channel_url})")
-
-    st.divider()
-
-    tab_names = ["数据总览", "爆款分析", "脚本 + 邮件"]
-    if record.get("video_link"):
-        tab_names.append("视频回链")
-    else:
-        tab_names.append("添加视频")
-    if record.get("product_link"):
-        tab_names.append("转化详情")
-    tab_names.append("编辑 / 删除")
-
-    tabs = st.tabs(tab_names)
-    idx = 0
-
-    with tabs[idx]:
-        idx += 1
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.metric("粉丝", fmt_num(record.get("subscribers")))
-            st.metric("播放", fmt_num(record.get("video_views")))
-        with c2:
-            st.metric("总播放", fmt_num(record.get("total_views")))
-            st.metric("点赞", fmt_num(record.get("video_likes")))
-        with c3:
-            st.metric("浏览", fmt_num(record.get("product_views")))
-            st.metric("评论", fmt_num(record.get("video_comments")))
-        with c4:
-            st.metric("点击", fmt_num(record.get("product_clicks")))
-            st.metric("转化", fmt_num(record.get("product_conversions")))
-        st.metric("GMV", fmt_money(record.get("gmv")))
-
-    with tabs[idx]:
-        idx += 1
-        run_viral_analysis(record)
-
-    with tabs[idx]:
-        idx += 1
-        run_script_email(record)
-
-    if record.get("video_link"):
-        with tabs[idx]:
-            idx += 1
-            _video_detail_content(record)
-    else:
-        with tabs[idx]:
-            idx += 1
-            _add_video_content(record)
-
-    if record.get("product_link"):
-        with tabs[idx]:
-            idx += 1
-            _conversion_detail_content(record)
-
-    with tabs[idx]:
-        idx += 1
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("编辑数据", use_container_width=True, key=f"detail_edit_{record['channel_id']}"):
-                st.session_state[f"open_edit_{record['channel_id']}"] = True
-                st.rerun()
-        with c2:
-            if st.button("删除网红", type="primary", use_container_width=True, key=f"detail_delete_{record['channel_id']}"):
-                db = st.session_state.bd_db
-                db.delete(record["channel_id"])
-                st.success("已删除")
-                st.rerun()
-
-    if st.session_state.pop(f"open_edit_{record['channel_id']}", False):
-        edit_metrics_dialog(record)
-
-
-@st.dialog("筛选 & 排序")
-def filter_dialog(records: list):
-    """弹窗集中设置所有筛选条件和排序"""
-    statuses = sorted({r.get("status", "-") for r in records})
-    categories = sorted({r.get("category", "-") for r in records})
-    recruiters = sorted({r.get("recruiter", "-") for r in records})
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.multiselect(
-            "状态",
-            options=statuses,
-            default=st.session_state.get("filter_status", []),
-            key="dlg_status",
-        )
-        st.multiselect(
-            "垂类",
-            options=categories,
-            default=st.session_state.get("filter_category", []),
-            key="dlg_category",
-        )
-        st.number_input(
-            "粉丝 ≥",
-            min_value=0,
-            value=int(st.session_state.get("filter_sub_min", 0)),
-            step=1000,
-            key="dlg_sub_min",
-        )
-        st.number_input(
-            "GMV ≥",
-            min_value=0.0,
-            value=float(st.session_state.get("filter_gmv_min", 0.0)),
-            step=100000.0,
-            key="dlg_gmv_min",
-        )
-        st.selectbox(
-            "视频回链",
-            options=["全部", "有", "无"],
-            index=["全部", "有", "无"].index(st.session_state.get("filter_has_video", "全部")),
-            key="dlg_has_video",
-        )
-    with c2:
-        st.multiselect(
-            "挖掘人",
-            options=recruiters,
-            default=st.session_state.get("filter_recruiter", []),
-            key="dlg_recruiter",
-        )
-        st.selectbox(
-            "排序",
-            options=[
-                "默认",
-                "GMV 从高到低",
-                "GMV 从低到高",
-                "总播放 从高到低",
-                "播放量 从高到低",
-                "点赞数 从高到低",
-                "评论数 从高到低",
-            ],
-            index=[
-                "默认",
-                "GMV 从高到低",
-                "GMV 从低到高",
-                "总播放 从高到低",
-                "播放量 从高到低",
-                "点赞数 从高到低",
-                "评论数 从高到低",
-            ].index(st.session_state.get("filter_sort", "默认")),
-            key="dlg_sort",
-        )
-        st.number_input(
-            "粉丝 ≤",
-            min_value=0,
-            value=int(st.session_state.get("filter_sub_max", 0)),
-            step=1000,
-            help="0 表示不限",
-            key="dlg_sub_max",
-        )
-        st.number_input(
-            "GMV ≤",
-            min_value=0.0,
-            value=float(st.session_state.get("filter_gmv_max", 0.0)),
-            step=100000.0,
-            help="0 表示不限",
-            key="dlg_gmv_max",
-        )
-        st.selectbox(
-            "商品链接",
-            options=["全部", "有", "无"],
-            index=["全部", "有", "无"].index(st.session_state.get("filter_has_product", "全部")),
-            key="dlg_has_product",
-        )
-
-    b1, b2 = st.columns(2)
-    with b1:
-        if st.button("应用", use_container_width=True, key="dlg_apply"):
-            st.session_state.filter_status = st.session_state.get("dlg_status", [])
-            st.session_state.filter_category = st.session_state.get("dlg_category", [])
-            st.session_state.filter_recruiter = st.session_state.get("dlg_recruiter", [])
-            st.session_state.filter_sub_min = st.session_state.get("dlg_sub_min", 0)
-            st.session_state.filter_sub_max = st.session_state.get("dlg_sub_max", 0)
-            st.session_state.filter_gmv_min = st.session_state.get("dlg_gmv_min", 0.0)
-            st.session_state.filter_gmv_max = st.session_state.get("dlg_gmv_max", 0.0)
-            st.session_state.filter_has_video = st.session_state.get("dlg_has_video", "全部")
-            st.session_state.filter_has_product = st.session_state.get("dlg_has_product", "全部")
-            st.session_state.filter_sort = st.session_state.get("dlg_sort", "默认")
-            st.rerun()
-    with b2:
-        if st.button("重置", use_container_width=True, key="dlg_reset"):
-            for k in [
-                "filter_status", "filter_category", "filter_recruiter",
-                "filter_sub_min", "filter_sub_max", "filter_gmv_min", "filter_gmv_max",
-                "filter_has_video", "filter_has_product", "filter_sort",
-            ]:
-                st.session_state.pop(k, None)
-            st.rerun()
-
-
-def _build_bd_table_html(records: list, selected_ids: list) -> str:
-    """用真实 HTML <table> 渲染 BD 底库表格，保证跨行严格对齐，恢复 Flat Design 动作列"""
-    # 列定义：(表头, 宽度 px, 对齐, 取值函数, 额外 class)
-    # 总宽 1650px；文字列/数字列统一左对齐，动作按钮列保持居中
-    cols = [
-        ("", 56, "center", lambda r: r['channel_id'], ""),
-        ("昵称", 190, "left", lambda r: _html_escape(r.get("channel_name", "-")), ""),
-        ("状态", 90, "left", lambda r: _html_escape(r.get("status", "-")), lambda r: "bd-status" if r.get("status") == "已引入" else ("bd-empty" if not r.get("status") or r.get("status") == "-" else "")),
-        ("粉丝", 80, "left", lambda r: fmt_num(r.get("subscribers")), ""),
-        ("总播放", 90, "left", lambda r: fmt_num(r.get("total_views")), ""),
-        ("垂类", 120, "left", lambda r: _html_escape(r.get("category", "-")), ""),
-        ("主页", 80, "center", lambda r: _bd_home_cell(r.get("channel_url", "")), ""),
-        ("分析", 78, "center", lambda r: _bd_action_btn(r["channel_id"], "viral", "分析"), ""),
-        ("邮件", 78, "center", lambda r: _bd_action_btn(r["channel_id"], "script_email", "邮件"), ""),
-        ("回链", 84, "center", lambda r: _bd_video_action_cell(r), ""),
-        ("播放", 78, "left", lambda r: fmt_num(r.get("video_views")), ""),
-        ("点赞", 78, "left", lambda r: fmt_num(r.get("video_likes")), ""),
-        ("评论", 78, "left", lambda r: fmt_num(r.get("video_comments")), ""),
-        ("商品链接", 90, "center", lambda r: _bd_product_action_cell(r), ""),
-        ("浏览", 78, "left", lambda r: fmt_num(r.get("product_views")), ""),
-        ("点击", 78, "left", lambda r: fmt_num(r.get("product_clicks")), ""),
-        ("转化", 78, "left", lambda r: fmt_num(r.get("product_conversions")), ""),
-        ("GMV", 90, "left", lambda r: fmt_money(r.get("gmv")), ""),
-        ("", 56, "center", lambda r: _bd_action_btn(r["channel_id"], "edit", "编辑"), ""),
-    ]
-
-    selected_set = set(selected_ids)
-
-    def _th(idx, header, width, align):
-        if idx == 0:
-            return f"<th style='width:{width}px;text-align:center;'><input type='checkbox' id='bd-select-all'></th>"
-        return f"<th style='width:{width}px;text-align:{align};'>{header}</th>"
-
-    def _td(content, width, align, cid=None, extra_class=""):
-        cls = "bd-td"
-        if align == "right":
-            cls += " bd-num"
-        elif align == "center":
-            cls += " bd-center"
-        if extra_class:
-            cls += f" {extra_class}"
-        attrs = f"style='width:{width}px;text-align:{align};'"
-        if cid:
-            attrs += f" data-cid='{cid}'"
-        return f"<td {attrs}>{content}</td>"
-
-    thead = "<thead><tr>" + "".join(_th(i, h, w, a) for i, (h, w, a, _, _) in enumerate(cols)) + "</tr></thead>"
-
-    rows = []
-    last_col_idx = len(cols) - 1
-    for r in records:
-        cid = r["channel_id"]
-        cells = []
-        for i, (h, w, a, fn, extra) in enumerate(cols):
-            if i == 0:
-                checked = "checked" if cid in selected_set else ""
-                cells.append(f"<td style='width:{w}px;text-align:center;'><input type='checkbox' class='bd-row-checkbox' value='{cid}' {checked} onclick='event.stopPropagation(); toggleRow(\"{cid}\")'></td>")
-            elif i == last_col_idx:
-                cells.append(_td(fn(r), w, a, cid=cid, extra_class=""))
-            else:
-                ec = extra(r) if callable(extra) else extra
-                cells.append(_td(fn(r), w, a, cid=cid, extra_class=ec))
-        rows.append(f"<tr class='bd-row' data-cid='{cid}'>" + "".join(cells) + "</tr>")
-
-    tbody = "<tbody>" + "".join(rows) + "</tbody>"
-    table = f"<table class='bd-table'>{thead}{tbody}</table>"
-
-    inline_css = """
-    <style>
-    /* 组件 iframe 内不能依赖外部字体/外部 CSS，否则网络受阻时整表会白屏 */
-    * { box-sizing: border-box; }
-    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans KR', 'Microsoft YaHei', sans-serif; }
-    .bd-table-wrapper {
-        overflow-x: auto;
-        width: 100%;
-        border-radius: 8px;
-        padding-bottom: 4px;
-    }
-    .bd-table-wrapper::-webkit-scrollbar { height: 8px; }
-    .bd-table-wrapper::-webkit-scrollbar-track { background: #F9EEF1; border-radius: 4px; }
-    .bd-table-wrapper::-webkit-scrollbar-thumb { background: #E8B4C0; border-radius: 4px; }
-    .bd-table-wrapper::-webkit-scrollbar-thumb:hover { background: #B8989E; }
-    .bd-table {
-        table-layout: fixed;
-        width: 1650px;
-        border-collapse: collapse;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans KR', 'Microsoft YaHei', sans-serif;
-    }
-    .bd-table th {
-        font-size: 16px;
-        font-weight: 700;
-        color: #7A4A55;
-        letter-spacing: 0;
-        padding: 12px 8px;
-        line-height: 1.4;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        border-bottom: 3px solid #D97A8A;
-        background: #FFFFFF;
-        text-align: left;
-        vertical-align: middle;
-    }
-    .bd-table th input[type="checkbox"] {
-        width: 18px;
-        height: 18px;
-        accent-color: #D97A8A;
-        cursor: pointer;
-        margin: 0;
-    }
-    .bd-table td {
-        padding: 0;
-        border-bottom: 2px solid #F9EEF1;
-        vertical-align: middle;
-    }
-    .bd-table td p.bd-td {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans KR', 'Microsoft YaHei', sans-serif;
-        font-size: 16px;
-        font-weight: 500;
-        color: #111827;
-        margin: 0;
-        padding: 12px 8px;
-        line-height: 1.5;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        text-align: left;
-    }
-    .bd-table td p.bd-center {
-        text-align: center;
-    }
-    .bd-table td p.bd-empty {
-        color: #B8989E;
-        font-weight: 400;
-    }
-    .bd-table td p.bd-status {
-        color: #D97A8A;
-        font-weight: 700;
-    }
-    .bd-table td a {
-        color: #D97A8A;
-        text-decoration: none;
-        font-weight: 600;
-    }
-    .bd-table td a:hover {
-        text-decoration: underline;
-    }
-    .bd-table tbody tr {
-        cursor: pointer;
-        transition: background 0.15s ease;
-    }
-    .bd-table tbody tr:hover {
-        background: #FDF6F8;
-    }
-    .bd-table tbody tr td:first-child {
-        text-align: center;
-    }
-    .bd-table tbody tr td:first-child input[type="checkbox"] {
-        width: 18px;
-        height: 18px;
-        accent-color: #D97A8A;
-        cursor: pointer;
-        margin: 0;
-    }
-    /* Flat Design 小药丸动作按钮 */
-    .bd-action-btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 48px;
-        height: 28px;
-        padding: 0 10px;
-        border-radius: 14px;
-        border: none;
-        background: #F9EEF1;
-        color: #7A4A55;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans KR', 'Microsoft YaHei', sans-serif;
-        font-size: 14px;
-        font-weight: 700;
-        cursor: pointer;
-        transition: all 0.15s ease;
-        line-height: 1;
-        white-space: nowrap;
-    }
-    .bd-action-btn:hover {
-        background: #D97A8A;
-        color: #FFFFFF;
-    }
-    </style>
-    """
-
-    return f"""
-    {inline_css}
-    <div class='bd-table-wrapper'>
-        {table}
-    </div>
-    """
-
-
-def _html_escape(s: str) -> str:
-    if not isinstance(s, str):
-        s = str(s)
-    return (s.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;"))
-
-
-def _bd_home_cell(url: str) -> str:
-    if url:
-        return f"<p class='bd-td bd-center'><a href='{_html_escape(url)}' target='_blank' onclick='event.stopPropagation()'>主页</a></p>"
-    return "<p class='bd-td bd-empty bd-center'>-</p>"
-
-
-def _bd_action_btn(cid: str, action: str, label: str) -> str:
-    return f"<button class='bd-action-btn' data-cid='{cid}' data-action='{action}' type='button'>{label}</button>"
-
-
-def _bd_video_action_cell(r: dict) -> str:
-    vlink = r.get("video_link", "")
-    cid = r["channel_id"]
-    if vlink:
-        return (
-            f"<p class='bd-td bd-center'>"
-            f"<a href='{_html_escape(vlink)}' target='_blank' onclick='event.stopPropagation()'>视频</a>"
-            f"</p>"
-        )
-    return _bd_action_btn(cid, "add_video", "添加")
-
-
-def _bd_product_action_cell(r: dict) -> str:
-    plink = r.get("product_link", "")
-    cid = r["channel_id"]
-    if plink:
-        return (
-            f"<p class='bd-td bd-center'>"
-            f"<a href='{_html_escape(plink)}' target='_blank' onclick='event.stopPropagation()'>商品</a>"
-            f"</p>"
-        )
-    return "<p class='bd-td bd-empty bd-center'>-</p>"
-
-
 def render_bd_table():
+    st.header("BD 网红底库")
+
     db = st.session_state.bd_db
     records = db.get_all()
+
+    if not records:
+        st.info("底库为空，先去「添加网红」页添加，或点击上方「同步挖掘库」。")
+        return
 
     # 顶部操作：同步挖掘库（演示用）
     c1, c2 = st.columns([1, 4])
@@ -877,67 +267,14 @@ def render_bd_table():
     with c2:
         st.caption("只同步挖掘库中状态为「已引入」的网红。生产环境会自动触发，无需手动点击。")
 
-    if not records:
-        st.info("底库为空，先去「添加网红」页添加，或点击上方「同步挖掘库」。")
-        return
-
     st.divider()
 
-    # 搜索 + 筛选入口
-    sc1, sc2 = st.columns([4, 1])
-    with sc1:
-        search = st.text_input(
-            "搜索昵称 / 垂类 / 挖掘人",
-            placeholder="输入关键词筛选...",
-            key="bd_search",
-            label_visibility="collapsed",
-        )
-    with sc2:
-        if st.button("筛选", use_container_width=True, key="bd_filter_btn"):
-            filter_dialog(records)
-
-    # 从弹窗读取筛选条件
-    sel_status = st.session_state.get("filter_status", [])
-    sel_category = st.session_state.get("filter_category", [])
-    sel_recruiter = st.session_state.get("filter_recruiter", [])
-    sub_min = int(st.session_state.get("filter_sub_min", 0) or 0)
-    sub_max = int(st.session_state.get("filter_sub_max", 0) or 0)
-    gmv_min = float(st.session_state.get("filter_gmv_min", 0.0) or 0.0)
-    gmv_max = float(st.session_state.get("filter_gmv_max", 0.0) or 0.0)
-    has_video = st.session_state.get("filter_has_video", "全部")
-    has_product = st.session_state.get("filter_has_product", "全部")
-    sort_by = st.session_state.get("filter_sort", "默认")
-
-    # 应用筛选
-    def _match(rec):
-        if sel_status and rec.get("status") not in sel_status:
-            return False
-        if sel_category and rec.get("category") not in sel_category:
-            return False
-        if sel_recruiter and rec.get("recruiter") not in sel_recruiter:
-            return False
-        s = int(rec.get("subscribers") or 0)
-        if sub_min and s < sub_min:
-            return False
-        if sub_max and s > sub_max:
-            return False
-        g = float(rec.get("gmv") or 0)
-        if gmv_min and g < gmv_min:
-            return False
-        if gmv_max and g > gmv_max:
-            return False
-        if has_video == "有" and not rec.get("video_link"):
-            return False
-        if has_video == "无" and rec.get("video_link"):
-            return False
-        if has_product == "有" and not rec.get("product_link"):
-            return False
-        if has_product == "无" and rec.get("product_link"):
-            return False
-        return True
-
-    records = [r for r in records if _match(r)]
-
+    # 搜索筛选
+    search = st.text_input(
+        "搜索昵称 / 垂类 / 挖掘人",
+        placeholder="输入关键词筛选...",
+        key="bd_search",
+    )
     if search:
         query = search.lower()
         records = [
@@ -945,88 +282,93 @@ def render_bd_table():
             if any(query in str(r.get(k, "")).lower() for k in ("channel_name", "category", "recruiter"))
         ]
 
-    # 排序
-    if sort_by == "GMV 从高到低":
-        records = sorted(records, key=lambda x: float(x.get("gmv") or 0), reverse=True)
-    elif sort_by == "GMV 从低到高":
-        records = sorted(records, key=lambda x: float(x.get("gmv") or 0))
-    elif sort_by == "总播放 从高到低":
-        records = sorted(records, key=lambda x: int(x.get("total_views") or 0), reverse=True)
-    elif sort_by == "播放量 从高到低":
-        records = sorted(records, key=lambda x: int(x.get("video_views") or 0), reverse=True)
-    elif sort_by == "点赞数 从高到低":
-        records = sorted(records, key=lambda x: int(x.get("video_likes") or 0), reverse=True)
-    elif sort_by == "评论数 从高到低":
-        records = sorted(records, key=lambda x: int(x.get("video_comments") or 0), reverse=True)
-
     st.caption(f"共 {len(records)} 条")
 
-    # 读取 HTML 组件上一次返回的选中状态
-    selected_ids = st.session_state.get("bd_selected_ids", [])
+    # 表头：16 列扁平布局
+    cols = st.columns([1.4, 0.65, 0.65, 1.2, 0.7, 0.75, 0.75, 0.8, 0.6, 0.6, 0.6, 0.8, 0.6, 0.6, 0.6, 0.8])
+    headers = [
+        "昵称", "状态", "粉丝", "垂类", "主页", "分析", "邮件",
+        "视频回链", "播放", "点赞", "评论", "商品链接", "浏览", "点击", "转化", "GMV",
+    ]
+    for col, header in zip(cols, headers):
+        with col:
+            st.markdown(f"<p style='font-size:11px; color:#6e6e73; margin:0'>{header}</p>", unsafe_allow_html=True)
 
-    # 批量操作栏
-    bulk_cols = st.columns([0.12, 0.88])
-    with bulk_cols[0]:
-        if st.button("删除选中", key="bulk_delete_btn", type="primary"):
-            selected = [r for r in records if r["channel_id"] in selected_ids]
-            bulk_delete_dialog(selected)
-    with bulk_cols[1]:
-        if selected_ids:
-            st.caption(f"已选中 {len(selected_ids)} 位网红")
+    # 数据行：一个网红一行
+    for i, r in enumerate(records):
+        cols = st.columns([1.4, 0.65, 0.65, 1.2, 0.7, 0.75, 0.75, 0.8, 0.6, 0.6, 0.6, 0.8, 0.6, 0.6, 0.6, 0.8])
 
-    # 真实 HTML 表格：表头和数据在同一 <table> 内，严格对齐
-    table_html = _build_bd_table_html(records, selected_ids)
-    row_height = 52
-    header_height = 48
-    table_height = max(200, header_height + len(records) * row_height + 20)
+        with cols[0]:
+            st.markdown(f"<p style='font-size:12px; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis'>{r.get('channel_name', '-')}</p>", unsafe_allow_html=True)
 
-    result = bd_table(
-        records=records,
-        selected_ids=selected_ids,
-        height=table_height,
-        key="bd_table",
-        html=table_html,
-    )
+        with cols[1]:
+            status = r.get("status", "-")
+            if status == "已引入":
+                st.markdown("<p style='font-size:11px; color:#34c759; margin:0'>已引入</p>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<p style='font-size:11px; color:#6e6e73; margin:0'>{status}</p>", unsafe_allow_html=True)
 
-    # 处理表格组件返回的状态
-    data = result if isinstance(result, dict) else {}
+        with cols[2]:
+            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('subscribers'))}</p>", unsafe_allow_html=True)
 
-    new_selected = data.get("selected", [])
-    clicked = data.get("clicked")
-    action = data.get("action")  # {cid, type, ts}
+        with cols[3]:
+            cat = r.get("category", "-")
+            st.markdown(f"<p style='font-size:11px; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis' title='{cat}'>{cat}</p>", unsafe_allow_html=True)
 
-    if new_selected != selected_ids:
-        st.session_state.bd_selected_ids = new_selected
-        st.rerun()
+        with cols[4]:
+            url = r.get("channel_url", "")
+            if url:
+                st.markdown(f"<p style='font-size:11px; margin:0'><a href='{url}' target='_blank'>主页</a></p>", unsafe_allow_html=True)
+            else:
+                st.markdown("<p style='font-size:11px; color:#6e6e73; margin:0'>-</p>", unsafe_allow_html=True)
 
-    # 用 processed 记录上次已处理的动作/行点击，防止组件旧值反复弹窗
-    processed = st.session_state.setdefault("bd_processed", {})
+        with cols[5]:
+            if st.button("分析", key=f"viral_{r['channel_id']}", help="爆款分析"):
+                viral_dialog(r)
 
-    if action and action != processed.get("action"):
-        processed["action"] = action
-        action_cid = action.get("cid")
-        action_type = action.get("type")
-        action_record = next((r for r in records if r["channel_id"] == action_cid), None)
-        if action_record:
-            if action_type == "viral":
-                viral_dialog(action_record)
-            elif action_type == "script_email":
-                script_email_dialog(action_record)
-            elif action_type == "video_detail":
-                video_detail_dialog(action_record)
-            elif action_type == "add_video":
-                add_video_dialog(action_record)
-            elif action_type == "conversion_detail":
-                conversion_detail_dialog(action_record)
-            elif action_type == "edit":
-                edit_metrics_dialog(action_record)
+        with cols[6]:
+            if st.button("邮件", key=f"script_{r['channel_id']}", help="脚本/邮件"):
+                script_email_dialog(r)
 
-    clicked_id = clicked.get("cid") if isinstance(clicked, dict) else clicked
-    if clicked_id and clicked != processed.get("clicked"):
-        processed["clicked"] = clicked
-        clicked_record = next((r for r in records if r["channel_id"] == clicked_id), None)
-        if clicked_record:
-            row_detail_dialog(clicked_record)
+        with cols[7]:
+            vlink = r.get("video_link", "")
+            if vlink:
+                if st.button("视频", key=f"video_{r['channel_id']}", help="查看视频详情"):
+                    video_detail_dialog(r)
+            else:
+                st.markdown("<p style='font-size:11px; color:#6e6e73; margin:0'>-</p>", unsafe_allow_html=True)
+
+        with cols[8]:
+            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('video_views'))}</p>", unsafe_allow_html=True)
+
+        with cols[9]:
+            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('video_likes'))}</p>", unsafe_allow_html=True)
+
+        with cols[10]:
+            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('video_comments'))}</p>", unsafe_allow_html=True)
+
+        with cols[11]:
+            plink = r.get("product_link", "")
+            if plink:
+                if st.button("商品", key=f"product_{r['channel_id']}", help="查看转化详情"):
+                    conversion_detail_dialog(r)
+            else:
+                st.markdown("<p style='font-size:11px; color:#6e6e73; margin:0'>-</p>", unsafe_allow_html=True)
+
+        with cols[12]:
+            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('product_views'))}</p>", unsafe_allow_html=True)
+
+        with cols[13]:
+            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('product_clicks'))}</p>", unsafe_allow_html=True)
+
+        with cols[14]:
+            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('product_conversions'))}</p>", unsafe_allow_html=True)
+
+        with cols[15]:
+            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_money(r.get('gmv'))}</p>", unsafe_allow_html=True)
+
+        if i < len(records) - 1:
+            st.divider()
 
 
 def _sync_discovery_demo(db):
@@ -1038,7 +380,6 @@ def _sync_discovery_demo(db):
             "channel_url": "https://www.youtube.com/@sync_example",
             "category": "뷰티",
             "subscribers": 30000,
-            "total_views": 1500000,
             "discovered_by": "아이비",
             "status": "已引入",
         },
@@ -1051,234 +392,22 @@ def _sync_discovery_demo(db):
         st.error(f"同步失败：{e}")
 
 
-def _extract_dna_from_result(record: dict, result: dict) -> dict:
-    """从 YouTube 分析结果中解析内容 DNA"""
-    videos = []
-    for key in ("top_exposure", "top_engagement", "top_conversion"):
-        videos.extend(result.get(key, []))
-    # 去重
-    seen = set()
-    unique_videos = []
-    for v in videos:
-        vid = v.get("video_id")
-        if vid and vid not in seen:
-            seen.add(vid)
-            unique_videos.append(v)
-
-    # 合并标题、描述、评论
-    titles = [v.get("title", "") for v in unique_videos]
-    descriptions = [v.get("description", "") for v in unique_videos]
-    comments = []
-    for v in unique_videos:
-        comments.extend(v.get("comments", []))
-
-    corpus_text = " ".join(titles + descriptions + comments)
-
-    # 1. 内容基调
-    tone_keywords = {
-        "真实测评型": ["리뷰", "솔직", "후기", "정말", "진짜", "사용해", "써봤"],
-        "好物种草/推荐型": ["추천", "인생", "베스트", "TOP", "필수템", "템"],
-        "折扣拼团型": ["공구", "할인", "쿠폰", "세일", "가격", "원", "공동구매"],
-        "日常Vlog型": ["브이로그", "vlog", "일상", "하루", "루틴"],
-        "教程/干货型": ["꿀팁", "방법", "정리", "팁", "사용법", "설명"],
-        "对比/挑战型": ["VS", "비교", "차이", "대결", "테스트"],
-    }
-    tone_scores = Counter()
-    for tone, kws in tone_keywords.items():
-        for kw in kws:
-            tone_scores[tone] += corpus_text.lower().count(kw.lower())
-    content_tone = tone_scores.most_common(1)[0][0] if tone_scores else "亲切闺蜜型"
-
-    # 2. 粉丝称呼
-    fan_calls = ["여러분", "구독자님", "언니", "누나", "언님", "오빠", "형", "누님", "동생", "친구", "우리"]
-    fan_scores = Counter()
-    for c in fan_calls:
-        fan_scores[c] += corpus_text.count(c)
-    # 若评论区有明确称呼，优先用评论
-    for c in comments:
-        for call in fan_calls:
-            if call in c:
-                fan_scores[call] += 2
-    fan_nickname = fan_scores.most_common(1)[0][0] if fan_scores else "여러분"
-
-    # 3. 常用钩子
-    hook_keywords = {
-        "价格/折扣钩子": ["할인", "쿠폰", "세일", "공구", "가격", "원", "얼마"],
-        "提问/对比钩子": ["?", "왜", "어떻게", "VS", "비교", "차이", "뭐가"],
-        "震惊/好奇钩子": ["충격", "대박", "헐", "미친", "이런", "사실", "공개", "드디어"],
-        "推荐/种草钩子": ["추천", "인생", "필수템", "템", "베스트", "TOP"],
-    }
-    hook_scores = Counter()
-    for t in titles:
-        lower_t = t.lower()
-        for hook, kws in hook_keywords.items():
-            for kw in kws:
-                if kw.lower() in lower_t:
-                    hook_scores[hook] += 1
-                    break
-    top_hooks = dict(hook_scores.most_common(3))
-
-    # 4. 常用 CTA
-    cta_keywords = {
-        "구독/좋아요 요청": ["구독", "좋아요", "알림", "댓글"],
-        "더보기란/링크 언급": ["더보기", "링크", "고정댓글", "구매", "구매링크"],
-        "할인/쿠폰 안내": ["할인코드", "쿠폰", "코드"],
-    }
-    cta_scores = Counter()
-    for text in titles + descriptions + comments:
-        lower = text.lower()
-        for cta, kws in cta_keywords.items():
-            for kw in kws:
-                if kw.lower() in lower:
-                    cta_scores[cta] += 1
-                    break
-    top_ctas = dict(cta_scores.most_common(3))
-
-    # 5. 内容垂类/支柱
-    pillar_keywords = {
-        "뷰티/메이크업": ["메이크업", "화장", "스킨케어", "화장품", "립", "섀도우", "마스칼라"],
-        "패션/코디": ["옷", "패션", "코디", "룩", "ootd", "원피스", "가방"],
-        "라이프/홈": ["홈", "인테리어", "정리", "집", "생활", "주방", "청소"],
-        "푸드/요리": ["음식", "먹방", "요리", "레시피", "맛집", "디저트"],
-        "펫/반려동물": ["강아지", "고양이", "반려", "펫", "애견"],
-        "학생/데스크": ["학생", "학교", "데스크", "공부", "필기", "문구"],
-    }
-    pillar_scores = Counter()
-    for text in titles + descriptions:
-        lower = text.lower()
-        for pillar, kws in pillar_keywords.items():
-            for kw in kws:
-                if kw.lower() in lower:
-                    pillar_scores[pillar] += 1
-                    break
-    top_pillars = [p for p, _ in pillar_scores.most_common(3)]
-    if not top_pillars and record.get("category"):
-        top_pillars = [record.get("category")]
-
-    # 6. 视频形式
-    shorts_count = sum(1 for v in unique_videos if v.get("is_shorts"))
-    long_count = len(unique_videos) - shorts_count
-
-    return {
-        "content_tone": content_tone,
-        "fan_nickname": fan_nickname,
-        "top_hook_patterns": top_hooks,
-        "top_cta_patterns": top_ctas,
-        "content_pillars": top_pillars,
-        "shorts_count": shorts_count,
-        "long_count": long_count,
-        "best_reference": result.get("best_reference"),
-        "total_videos": result.get("total_videos", 0),
-    }
-
-
-def _fmt_dna_for_prompt(dna: dict) -> str:
-    """把 DNA 字典整理成给 AI 润色的 prompt"""
-    ref = dna.get("best_reference") or {}
-    ref_line = f"{ref.get('title', '-')} ({ref.get('view_count', 0):,} 播放)" if ref else "-"
-    return f"""你是一位韩国 YouTube 内容策略专家。请根据以下由程序从该博主近期视频中提取的初稿，生成一份更精炼、地道的内容 DNA 卡片。
-
-要求：
-1. 用中文输出，关键词可保留韩语原文。
-2. 包含：内容基调、粉丝称呼、Top 3 钩子类型、Top 3 CTA 方式、内容支柱、适合的视频形式。
-3. 语气像给 BD 团队看的内部画像，简洁有力。
-
-博主：{dna.get('channel_name', '')}
-初稿：
-- 内容基调：{dna.get('content_tone', '')}
-- 粉丝称呼：{dna.get('fan_nickname', '')}
-- 钩子类型：{', '.join(dna.get('top_hook_patterns', {}).keys()) or '-'}
-- CTA 方式：{', '.join(dna.get('top_cta_patterns', {}).keys()) or '-'}
-- 内容支柱：{', '.join(dna.get('content_pillars', [])) or '-'}
-- 视频形式：Shorts {dna.get('shorts_count', 0)} 支 / 长视频 {dna.get('long_count', 0)} 支
-- 最佳参考视频：{ref_line}
-"""
-
-
-def run_content_dna(record: dict, result: dict):
-    """内容 DNA：基于爆款分析结果生成博主内容画像"""
-    dna = _extract_dna_from_result(record, result)
-    dna["channel_name"] = record.get("channel_name", "-")
-
-    st.markdown("#### 🧬 内容 DNA 卡片")
-    st.caption("基于近期 30 条视频与评论自动提取，可在邮件/脚本生成时直接复用")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.metric("内容基调", dna["content_tone"])
-        st.metric("粉丝称呼", dna["fan_nickname"])
-    with c2:
-        st.metric("Shorts / 长视频", f"{dna['shorts_count']} / {dna['long_count']}")
-        ref = dna.get("best_reference")
-        if ref:
-            st.metric("最佳参考", f"{'Shorts' if ref.get('is_shorts') else '长视频'}")
-        else:
-            st.metric("最佳参考", "-")
-
-    st.markdown("**常用钩子类型**")
-    if dna["top_hook_patterns"]:
-        for hook, cnt in dna["top_hook_patterns"].items():
-            st.markdown(f"- {hook}（{cnt} 次）")
-    else:
-        st.markdown("- 暂无明确信号")
-
-    st.markdown("**常用 CTA 方式**")
-    if dna["top_cta_patterns"]:
-        for cta, cnt in dna["top_cta_patterns"].items():
-            st.markdown(f"- {cta}（{cnt} 次）")
-    else:
-        st.markdown("- 暂无明确信号")
-
-    st.markdown("**内容支柱**")
-    if dna["content_pillars"]:
-        st.markdown(", ".join([f"**{p}**" for p in dna["content_pillars"]]))
-    else:
-        st.markdown("- 暂无明确信号")
-
-    if ref:
-        st.markdown("**推荐参考视频**")
-        title = ref.get("title", "-")
-        url = ref.get("url", "")
-        st.markdown(f"[{title}]({url})")
-        st.caption(
-            f"播放量 {ref.get('view_count', 0):,} ｜ 点赞 {ref.get('like_count', 0):,} ｜ "
-            f"评论 {ref.get('comment_count', 0):,}"
-        )
-
-    # AI 润色（可选）
-    ai_key = st.session_state.get("ai_api_key", "")
-    provider = st.session_state.get("ai_provider", "dashscope")
-    model = st.session_state.get("ai_model", "") or None
-    if ai_key:
-        if st.button("✨ AI 精炼 DNA", key=f"refine_dna_{record['channel_id']}"):
-            with st.spinner("正在用 AI 精炼内容 DNA..."):
-                try:
-                    generator = AIEmailGenerator(provider=provider, api_key=ai_key, model=model)
-                    refined = generator.generate(_fmt_dna_for_prompt(dna))
-                    st.markdown("#### AI 精炼版")
-                    st.markdown(refined)
-                except Exception as e:
-                    st.error(f"AI 精炼失败：{e}")
-    else:
-        st.info("侧边栏配置 AI API Key 后可点击「AI 精炼 DNA」获得更地道的结果")
-
-
 def run_viral_analysis(record: dict):
-    """爆款分析：曝光 + 互动 + 内容 DNA"""
+    """爆款分析：曝光 + 互动维度"""
     api_key = st.session_state.get("youtube_api_key", "")
     if not api_key:
         st.error("请先配置 YouTube API Key")
         return
 
-    with st.spinner("正在分析爆款视频与内容 DNA..."):
+    with st.spinner("正在分析爆款视频..."):
         try:
             analyzer = YouTubeAnalyzer(api_key)
-            result = analyzer.analyze_channel(record["channel_url"], max_videos=30, max_comments=30)
+            result = analyzer.analyze_channel(record["channel_url"], max_videos=30, max_comments=0)
 
             st.subheader(f"🔥 {record['channel_name']} 爆款分析")
             st.caption(f"本次消耗配额：{result['quota_used']} units")
 
-            tab1, tab2, tab3 = st.tabs(["曝光最高", "互动最高", "内容 DNA"])
+            tab1, tab2 = st.tabs(["曝光最高", "互动最高"])
             with tab1:
                 for i, v in enumerate(result["top_exposure"], 1):
                     st.markdown(f"{i}. [{v['title']}]({v['url']})")
@@ -1287,8 +416,6 @@ def run_viral_analysis(record: dict):
                 for i, v in enumerate(result["top_engagement"], 1):
                     st.markdown(f"{i}. [{v['title']}]({v['url']})")
                     st.caption(f"点赞 {v['like_count']:,} ｜ 评论 {v['comment_count']:,} ｜ {'Shorts' if v['is_shorts'] else '长视频'}")
-            with tab3:
-                run_content_dna(record, result)
         except Exception as e:
             st.error(f"分析失败：{e}")
 
@@ -1371,11 +498,6 @@ def render_add_influencer():
         category = st.text_input("垂类", value="뷰티 & 헬스")
         recruiter = st.text_input("挖掘人", value=st.session_state.get("sender_name", "아이비"))
         subscribers = st.number_input("粉丝数", min_value=0, value=0, step=1000)
-        auto_fetch = st.toggle(
-            "自动抓取粉丝数+总播放（需配置 YouTube API Key）",
-            value=True,
-            help="开启后会自动从 YouTube Data API 抓取该频道的最新粉丝数和总播放量。",
-        )
         submitted = st.form_submit_button("添加")
 
     if submitted:
@@ -1384,34 +506,6 @@ def render_add_influencer():
             return
 
         channel_id = extract_channel_id(channel_url) or channel_url
-        subscribers_value = int(subscribers)
-        total_views_value = 0
-
-        if auto_fetch:
-            api_key = st.session_state.get("youtube_api_key", "")
-            if not api_key:
-                st.error("请先配置 YouTube Data API Key")
-                return
-
-            with st.spinner("正在抓取频道数据..."):
-                try:
-                    analyzer = YouTubeAnalyzer(api_key)
-                    resolved_id = channel_id
-                    # 如果输入的是 @handle，先解析成 UC ID
-                    if isinstance(resolved_id, str) and resolved_id.startswith("@"):
-                        resolved_id = analyzer.get_channel_id_by_handle(resolved_id)
-                        if not resolved_id:
-                            st.error("无法从主页链接解析出频道 ID")
-                            return
-
-                    stats = analyzer.get_channel_stats(resolved_id)
-                    subscribers_value = stats.get("subscriber_count", subscribers_value)
-                    total_views_value = stats.get("view_count", 0)
-                    st.info(f"已抓取：粉丝 {subscribers_value:,} · 总播放 {total_views_value:,}")
-                except Exception as e:
-                    st.error(f"自动抓取失败：{e}")
-                    return
-
         db = st.session_state.bd_db
         db.add({
             "channel_id": channel_id,
@@ -1419,8 +513,7 @@ def render_add_influencer():
             "channel_url": channel_url,
             "category": category,
             "recruiter": recruiter,
-            "subscribers": int(subscribers_value),
-            "total_views": int(total_views_value),
+            "subscribers": int(subscribers),
             "status": "已引入",
         })
         st.success(f"已添加 {channel_name} 到 BD 底库")
@@ -1563,309 +656,39 @@ def render_product_import():
 
 def main():
     st.set_page_config(
-        page_title="YTS 网红管理库",
+        page_title="BD 网红底库 Demo",
         layout="wide",
         initial_sidebar_state="collapsed",
     )
-    st.title("🎯 YTS 网红管理库")
+    st.title("🎯 BD 网红底库管理")
     st.caption("配置项默认收起，点击左上角 ☰ 可展开填写 API Key 等设置")
 
-    # Flat Design: 大胆扁平、色块结构、无阴影、Outfit 字体
+    # 让顶部 Tab 均匀分布，避免堆在左侧
+    # 表格整体压缩：按钮高度降低、行间距收紧、分隔线变细
     st.markdown(
         """
         <style>
-            @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap');
-
-            .stApp {
-                font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
-                background: #FFFFFF;
-                color: #111827;
-            }
-            .stApp * {
-                box-shadow: none !important;
-            }
-
-            /* Typography */
-            h1, h2, h3, h4, h5, h6, p, label, span, div, input, button, select, textarea {
-                font-family: 'Outfit', sans-serif;
-            }
-            h1 {
-                font-weight: 800;
-                letter-spacing: -0.02em;
-                font-size: 2.25rem;
-                color: #111827;
-            }
-            h2, h3 {
-                font-weight: 700;
-                letter-spacing: -0.02em;
-                color: #111827;
-            }
-
-            /* Container width */
-            .block-container {
-                max-width: 1400px;
-                padding-left: 2rem;
-                padding-right: 2rem;
-            }
-
-            /* Buttons */
-            [data-testid="stButton"] button {
-                font-family: 'Outfit', sans-serif;
-                font-weight: 600;
-                border-radius: 6px;
-                border: none;
-                background: #D97A8A;
-                color: #FFFFFF;
-                min-height: 2.25rem;
-                padding: 0 1rem;
-                transition: all 0.2s ease;
-            }
-            [data-testid="stButton"] button:hover {
-                background: #C35A6E;
-                transform: scale(1.05);
-            }
-            [data-testid="stButton"] button[kind="primary"] {
-                background: #D97A8A;
-                color: #FFFFFF;
-            }
-            [data-testid="stButton"] button[kind="secondary"] {
-                background: #F9EEF1;
-                color: #111827;
-            }
-            [data-testid="stButton"] button[kind="secondary"]:hover {
-                background: #EAD0D6;
-            }
-
-            /* Inputs */
-            [data-testid="stTextInput"] input,
-            [data-testid="stNumberInput"] input,
-            [data-testid="stTextArea"] textarea {
-                font-family: 'Outfit', sans-serif;
-                background: #F9EEF1;
-                border: 2px solid transparent;
-                border-radius: 6px;
-                color: #111827;
-                transition: all 0.2s ease;
-            }
-            [data-testid="stTextInput"] input:focus,
-            [data-testid="stNumberInput"] input:focus,
-            [data-testid="stTextArea"] textarea:focus {
-                background: #FFFFFF;
-                border: 2px solid #D97A8A;
-            }
-
-            /* Selectbox / Multiselect */
-            [data-testid="stSelectbox"] > div[data-baseweb="select"] > div,
-            [data-testid="stMultiselect"] > div[data-baseweb="select"] > div {
-                background: #F9EEF1;
-                border: 2px solid transparent;
-                border-radius: 6px;
-            }
-            [data-testid="stSelectbox"] > div[data-baseweb="select"] > div:focus-within,
-            [data-testid="stMultiselect"] > div[data-baseweb="select"] > div:focus-within {
-                background: #FFFFFF;
-                border: 2px solid #D97A8A;
-            }
-
-            /* Checkbox */
-            [data-testid="stCheckbox"] label {
-                font-family: 'Outfit', sans-serif;
-                font-weight: 500;
-            }
-            [data-testid="stCheckbox"] input[type="checkbox"] {
-                width: 18px;
-                height: 18px;
-                accent-color: #D97A8A;
-                cursor: pointer;
-            }
-
-            /* Tabs */
             [data-testid="stTabs"] [role="tablist"] {
                 display: flex;
                 justify-content: space-between;
-                background: #F9EEF1;
-                border-radius: 8px;
-                padding: 4px;
-                gap: 4px;
-                border-bottom: none;
             }
             [data-testid="stTabs"] [role="tablist"] button {
                 flex: 1;
                 text-align: center;
-                font-family: 'Outfit', sans-serif;
-                font-weight: 600;
-                font-size: 14px;
-                border-radius: 6px;
-                color: #8E6B72;
-                background: transparent;
-                border: none;
-                transition: all 0.2s ease;
             }
-            [data-testid="stTabs"] [role="tablist"] button:hover {
-                color: #111827;
-                background: #EAD0D6;
+            [data-testid="stButton"] button {
+                white-space: nowrap;
+                padding: 0.05rem 0.3rem;
+                min-width: auto;
+                min-height: 1.2rem;
+                font-size: 0.7rem;
+                line-height: 1.1;
             }
-            [data-testid="stTabs"] [role="tablist"] button[aria-selected="true"] {
-                background: #D97A8A;
-                color: #FFFFFF;
+            [data-testid="stHorizontalBlock"] {
+                margin-bottom: -0.4rem !important;
             }
-
-            /* Metrics / Cards */
-            [data-testid="stMetric"] {
-                background: #F9EEF1;
-                border-radius: 8px;
-                padding: 1rem;
-            }
-            [data-testid="stMetricLabel"] {
-                font-family: 'Outfit', sans-serif;
-                font-weight: 600;
-                color: #8E6B72;
-                text-transform: uppercase;
-                letter-spacing: 0.05em;
-                font-size: 12px;
-            }
-            [data-testid="stMetricValue"] {
-                font-family: 'Outfit', sans-serif;
-                font-weight: 700;
-                color: #111827;
-            }
-
-            /* Divider */
             hr {
-                border: none;
-                border-top: 2px solid #EAD0D6;
-                margin: 1.5rem 0;
-            }
-
-            /* Table */
-            .bd-table-wrapper {
-                overflow-x: auto;
-                width: 100%;
-                border-radius: 8px;
-                padding-bottom: 4px;
-            }
-            .bd-table-wrapper::-webkit-scrollbar {
-                height: 8px;
-            }
-            .bd-table-wrapper::-webkit-scrollbar-track {
-                background: #F9EEF1;
-                border-radius: 4px;
-            }
-            .bd-table-wrapper::-webkit-scrollbar-thumb {
-                background: #E8B4C0;
-                border-radius: 4px;
-            }
-            .bd-table-wrapper::-webkit-scrollbar-thumb:hover {
-                background: #B8989E;
-            }
-            .bd-table {
-                table-layout: fixed;
-                width: 1600px;
-                border-collapse: collapse;
-                font-family: 'Outfit', sans-serif;
-            }
-            .bd-table thead {
-                display: table-header-group;
-            }
-            .bd-table th {
-                font-size: 11px;
-                font-weight: 800;
-                color: #7A4A55;
-                text-transform: uppercase;
-                letter-spacing: 0.07em;
-                padding: 10px 8px;
-                line-height: 1.3;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                border-bottom: 3px solid #D97A8A;
-                background: #FFFFFF;
-                text-align: left;
-                vertical-align: middle;
-            }
-            .bd-table th input[type="checkbox"] {
-                width: 18px;
-                height: 18px;
-                accent-color: #D97A8A;
-                cursor: pointer;
-                margin: 0;
-            }
-            .bd-table td {
-                padding: 0;
-                border-bottom: 2px solid #F9EEF1;
-                vertical-align: middle;
-            }
-            .bd-table td p {
-                font-family: 'Outfit', sans-serif;
-                font-size: 13px;
-                font-weight: 500;
-                color: #111827;
-                margin: 0;
-                padding: 10px 8px;
-                line-height: 1.4;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-            .bd-table td p.bd-num {
-                font-variant-numeric: tabular-nums;
-                text-align: right;
-                font-weight: 600;
-            }
-            .bd-table td p.bd-center {
-                text-align: center;
-            }
-            .bd-table td p.bd-empty {
-                color: #B8989E;
-                font-weight: 400;
-            }
-            .bd-table td p.bd-status {
-                color: #D97A8A;
-                font-weight: 700;
-            }
-            .bd-table td a {
-                color: #D97A8A;
-                text-decoration: none;
-                font-weight: 600;
-            }
-            .bd-table td a:hover {
-                text-decoration: underline;
-            }
-            .bd-table tbody tr {
-                cursor: pointer;
-                transition: background 0.15s ease;
-            }
-            .bd-table tbody tr:hover {
-                background: #FDF6F8;
-            }
-            .bd-table tbody tr td:first-child {
-                text-align: center;
-            }
-            .bd-table tbody tr td:first-child input[type="checkbox"] {
-                width: 18px;
-                height: 18px;
-                accent-color: #D97A8A;
-                cursor: pointer;
-                margin: 0;
-            }
-
-            /* Caption */
-            .stCaption {
-                font-family: 'Outfit', sans-serif;
-                color: #8E6B72;
-            }
-
-            /* Alert boxes */
-            .stAlert {
-                border-radius: 8px;
-                border: 2px solid #EAD0D6;
-            }
-
-            /* Horizontal scroll for table */
-            .block-container {
-                max-width: 1400px;
-                padding-left: 1.5rem;
-                padding-right: 1.5rem;
+                margin: 0.15rem 0 !important;
             }
         </style>
         """,
@@ -1874,11 +697,10 @@ def main():
 
     render_sidebar()
     init_db()
-    if SEED_SAMPLE_DATA:
-        seed_sample_data()
+    seed_sample_data()
 
     tab_base, tab_add, tab_track, tab_import = st.tabs([
-        "📁 YTS 底库",
+        "📁 BD 底库",
         "➕ 添加网红",
         "📹 视频追踪",
         "📥 商品导入",
