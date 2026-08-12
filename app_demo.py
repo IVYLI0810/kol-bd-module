@@ -21,7 +21,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-from bd_database import LocalBDDB, SupabaseBDDB, SUPABASE_MIGRATION_SQL, get_bd_db
+from bd_database import get_bd_db
 from youtube_analyzer import YouTubeAnalyzer, extract_channel_id, extract_video_id
 from ai_email_generator import AIEmailGenerator
 from product_importer import generate_template_df, parse_upload_file, validate_and_transform
@@ -106,101 +106,94 @@ DEFAULT_BD_INFLUENCERS = [
 # 初始化
 # ---------------------------------------------------------------------------
 
+def _secret(key: str) -> str:
+    """优先读 Streamlit Secrets，其次环境变量"""
+    try:
+        if key in st.secrets:
+            return str(st.secrets[key])
+    except Exception:
+        pass
+    return os.environ.get(key, "")
+
+
+def get_yida_config() -> dict:
+    """组装宜搭连接配置（AK/SK 来自 Secrets/环境变量，其余写死）"""
+    return {
+        "access_key_id": _secret("YIDA_ACCESS_KEY_ID"),
+        "access_key_secret": _secret("YIDA_ACCESS_KEY_SECRET"),
+        "app_type": "APP_N85O3OPKB9OO52S4KCTD",
+        "system_token": "XE7668C13088ICWHNJPXODYLFX8Y2Y3Z02NSMBT",
+        "form_uuid": "FORM-2A64DBB4851A4301BAA4C0A5C39E752DHXL0",
+        "account_id": "550448",
+    }
+
+
 def init_db():
-    """初始化数据库连接"""
+    """初始化数据库连接（仅宜搭）"""
     if "bd_db" not in st.session_state:
-        use_yida = st.session_state.get("use_yida", False)
-        use_supabase = st.session_state.get("use_supabase", False)
-        if use_yida:
-            st.session_state.bd_db = get_bd_db(
-                use_yida=True,
-                yida_config={
-                    "access_key_id": st.session_state.get("yida_ak", "")
-                        or os.environ.get("YIDA_ACCESS_KEY_ID", ""),
-                    "access_key_secret": st.session_state.get("yida_sk", "")
-                        or os.environ.get("YIDA_ACCESS_KEY_SECRET", ""),
-                    "app_type": "APP_N85O3OPKB9OO52S4KCTD",
-                    "system_token": "XE7668C13088ICWHNJPXODYLFX8Y2Y3Z02NSMBT",
-                    "form_uuid": "FORM-2A64DBB4851A4301BAA4C0A5C39E752DHXL0",
-                    "account_id": "550448",
-                },
-            )
-        elif use_supabase:
-            st.session_state.bd_db = get_bd_db(
-                use_supabase=True,
-                supabase_url=st.session_state.get("supabase_url", ""),
-                supabase_key=st.session_state.get("supabase_key", ""),
-            )
-        else:
-            st.session_state.bd_db = LocalBDDB("bd_influencers_demo.db")
-
-
-def seed_sample_data():
-    """如果没有数据，写入三位示例网红"""
-    db = st.session_state.bd_db
-    existing = db.get_all()
-    if not existing:
-        for inf in DEFAULT_BD_INFLUENCERS:
-            db.add(inf)
+        st.session_state.bd_db = get_bd_db(
+            use_yida=True,
+            yida_config=get_yida_config(),
+        )
 
 
 # ---------------------------------------------------------------------------
 # UI 组件
 # ---------------------------------------------------------------------------
 
+def _key_hint(value: str) -> None:
+    """在输入框下方实时提示是否已填写"""
+    if value:
+        st.caption("✅ 已填写")
+    else:
+        st.caption("⬜ 未填写")
+
+
+def _test_connection() -> None:
+    """验证宜搭连通性，结果存入 session_state 供侧边栏展示"""
+    try:
+        records = st.session_state.bd_db.get_all()
+        st.session_state.conn_ok = True
+        st.session_state.conn_msg = f"宜搭连接成功，当前共 {len(records)} 条记录"
+    except Exception as e:
+        st.session_state.conn_ok = False
+        st.session_state.conn_msg = f"连接失败：{e}"
+
+
 def render_sidebar():
     with st.sidebar:
         st.title("⚙️ 配置")
-
-        st.session_state.use_yida = st.toggle("使用宜搭（团队共享）", value=False)
-        if st.session_state.use_yida:
-            st.session_state.yida_ak = st.text_input(
-                "宜搭 AccessKey ID",
-                value=os.environ.get("YIDA_ACCESS_KEY_ID", ""),
-                type="password",
-            )
-            st.session_state.yida_sk = st.text_input(
-                "宜搭 AccessKey Secret",
-                value=os.environ.get("YIDA_ACCESS_KEY_SECRET", ""),
-                type="password",
-            )
-            st.caption("💡 数据存储在钉钉宜搭，10 人共享一份数据")
-            st.session_state.use_supabase = False
-        else:
-            st.session_state.use_supabase = st.toggle("使用 Supabase", value=False)
-            if st.session_state.use_supabase:
-                st.session_state.supabase_url = st.text_input("Supabase URL", value="")
-                st.session_state.supabase_key = st.text_input("Supabase Key", value="", type="password")
-                with st.expander("查看 Supabase 建表 SQL"):
-                    st.code(SUPABASE_MIGRATION_SQL, language="sql")
-            else:
-                st.info("当前使用本地 SQLite 数据库（bd_influencers_demo.db）")
+        st.caption("数据源：钉钉宜搭（团队共享一份数据）")
 
         st.divider()
         st.session_state.youtube_api_key = st.text_input(
             "YouTube Data API Key",
-            value=os.environ.get("YOUTUBE_API_KEY", ""),
+            value=_secret("YOUTUBE_API_KEY"),
             type="password",
         )
+        _key_hint(st.session_state.youtube_api_key)
 
         st.divider()
-        st.subheader("AI 邮件生成配置")
-        st.session_state.ai_provider = st.selectbox(
-            "AI Provider",
-            ["openai", "gemini", "dashscope"],
-            index=2,
-        )
+        st.subheader("AI 邮件生成")
         st.session_state.ai_api_key = st.text_input(
-            f"{st.session_state.ai_provider.upper()} API Key",
-            value=os.environ.get(f"{st.session_state.ai_provider.upper()}_API_KEY", ""),
+            "AI API Key",
+            value=_secret("DASHSCOPE_API_KEY") or _secret("AI_API_KEY"),
             type="password",
         )
-        st.session_state.ai_model = st.text_input(
-            "模型名（留空用默认）",
-            value="",
-            placeholder="qwen-turbo / gpt-4o-mini / gemini-1.5-flash",
-        )
-        st.session_state.sender_name = st.text_input("发件人姓名", value="아이비")
+        _key_hint(st.session_state.ai_api_key)
+        with st.expander("高级选项"):
+            st.session_state.sender_name = st.text_input("发件人姓名", value="아이비")
+
+        st.divider()
+        if st.button("💾 保存并测试连接", use_container_width=True):
+            _test_connection()
+            st.rerun()
+
+        if "conn_msg" in st.session_state:
+            if st.session_state.get("conn_ok"):
+                st.success(st.session_state.conn_msg)
+            else:
+                st.error(st.session_state.conn_msg)
 
 
 def fmt_num(v):
@@ -294,7 +287,11 @@ def render_bd_table():
     st.header("BD 网红底库")
 
     db = st.session_state.bd_db
-    records = db.get_all()
+    try:
+        records = db.get_all()
+    except Exception as e:
+        st.error(f"无法连接宜搭：{e}\n\n请在左侧填写密钥后点「保存并测试连接」。")
+        return
 
     if not records:
         st.info("底库为空，先去「添加网红」页添加，或点击上方「同步挖掘库」。")
@@ -495,8 +492,8 @@ def run_conversion_analysis(record: dict):
 def run_script_email(record: dict):
     """脚本创作 + 韩文邮件生成"""
     api_key = st.session_state.get("ai_api_key", "")
-    provider = st.session_state.get("ai_provider", "dashscope")
-    model = st.session_state.get("ai_model", "") or None
+    provider = "dashscope"
+    model = None
     sender = st.session_state.get("sender_name", "아이비")
 
     if not api_key:
@@ -565,7 +562,11 @@ def render_video_tracker():
     st.header("📹 视频数据追踪")
 
     db = st.session_state.bd_db
-    records = db.get_all()
+    try:
+        records = db.get_all()
+    except Exception as e:
+        st.error(f"无法连接宜搭：{e}")
+        return
     if not records:
         st.info("底库为空，先去「添加网红」页添加。")
         return
@@ -630,7 +631,11 @@ def render_product_import():
     # 单个编辑
     with st.expander("单个编辑商品与视频数据"):
         db = st.session_state.bd_db
-        records = db.get_all()
+        try:
+            records = db.get_all()
+        except Exception as e:
+            st.error(f"无法连接宜搭：{e}")
+            records = []
         names = [r["channel_name"] for r in records]
         if not names:
             st.info("底库为空")
@@ -701,10 +706,10 @@ def main():
     st.set_page_config(
         page_title="BD 网红底库 Demo",
         layout="wide",
-        initial_sidebar_state="collapsed",
+        initial_sidebar_state="expanded",
     )
     st.title("🎯 BD 网红底库管理")
-    st.caption("配置项默认收起，点击左上角 ☰ 可展开填写 API Key 等设置")
+    st.caption("数据存储在钉钉宜搭，团队共享一份数据")
 
     # 让顶部 Tab 均匀分布，避免堆在左侧
     # 表格整体压缩：按钮高度降低、行间距收紧、分隔线变细
@@ -740,7 +745,6 @@ def main():
 
     render_sidebar()
     init_db()
-    seed_sample_data()
 
     tab_base, tab_add, tab_track, tab_import = st.tabs([
         "📁 BD 底库",
