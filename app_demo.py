@@ -17,6 +17,7 @@ BD 网红底库 - 独立 Streamlit Demo
 import json
 import os
 from datetime import datetime
+from io import BytesIO
 
 import pandas as pd
 import streamlit as st
@@ -596,35 +597,171 @@ def run_script_email(record: dict):
             st.error(f"生成失败：{e}")
 
 
+def _fetch_subscribers(channel_url: str):
+    """根据主页链接抓取频道粉丝数，回填到添加表单"""
+    api_key = st.session_state.get("youtube_api_key", "")
+    if not api_key:
+        st.error("请先在左侧填写 YouTube Data API Key")
+        return
+    if not channel_url:
+        st.error("请先填写 YouTube 主页链接")
+        return
+    with st.spinner("正在抓取粉丝数..."):
+        try:
+            analyzer = YouTubeAnalyzer(api_key)
+            cid = extract_channel_id(channel_url)
+            if not cid:
+                st.error("无法识别主页链接，请检查格式（如 https://www.youtube.com/@xxx）")
+                return
+            if not cid.startswith("UC"):
+                cid = analyzer.get_channel_id_by_handle(cid)
+            if not cid:
+                st.error("找不到该频道，请检查主页链接")
+                return
+            stats = analyzer.get_channel_stats(cid)
+            st.session_state["pending_fetch"] = {
+                "subs": stats["subscriber_count"],
+                "name": stats["title"],
+                "msg": f"抓取成功：{stats['title']} · 粉丝 {stats['subscriber_count']:,}",
+            }
+            st.rerun()
+        except Exception as e:
+            st.error(f"抓取失败：{e}")
+
+
+def _parse_bulk_add(df: pd.DataFrame) -> tuple[list[dict], list[dict]]:
+    """解析批量导入网红的表格，返回 (有效记录, 失败行)"""
+    col_map = {
+        "昵称": "channel_name", "channel_name": "channel_name",
+        "YouTube主页链接": "channel_url", "YouTube 主页链接": "channel_url",
+        "主页链接": "channel_url", "channel_url": "channel_url",
+        "垂类": "category", "category": "category",
+        "挖掘人": "recruiter", "recruiter": "recruiter",
+        "粉丝数": "subscribers", "粉丝": "subscribers", "subscribers": "subscribers",
+    }
+    df = df.rename(columns=col_map)
+    valid, invalid = [], []
+    for i, row in df.iterrows():
+        name = str(row.get("channel_name", "") or "").strip()
+        url = str(row.get("channel_url", "") or "").strip()
+        if not name or not url or name == "nan" or url == "nan":
+            invalid.append({"行号": i + 2, "原因": "昵称或主页链接为空", "内容": str(row.to_dict())})
+            continue
+        try:
+            subs = int(float(row.get("subscribers", 0) or 0))
+        except (TypeError, ValueError):
+            subs = 0
+        valid.append({
+            "channel_id": extract_channel_id(url) or url,
+            "channel_name": name,
+            "channel_url": url,
+            "category": str(row.get("category", "") or "").strip(),
+            "recruiter": str(row.get("recruiter", "") or "").strip(),
+            "subscribers": subs,
+            "status": "已引入",
+        })
+    return valid, invalid
+
+
 def render_add_influencer():
     st.header("➕ 添加网红到 BD 底库")
 
-    with st.form("add_influencer_form"):
-        channel_name = st.text_input("昵称")
-        channel_url = st.text_input("YouTube 主页链接")
-        category = st.text_input("垂类", value="뷰티 & 헬스")
-        recruiter = st.text_input("挖掘人", value=st.session_state.get("sender_name", "아이비"))
-        subscribers = st.number_input("粉丝数", min_value=0, value=0, step=1000)
-        submitted = st.form_submit_button("添加")
+    # 必须在控件实例化之前修改带 key 的 session_state
+    pf = st.session_state.pop("pending_fetch", None)
+    if pf:
+        st.session_state["add_subscribers"] = pf["subs"]
+        if not st.session_state.get("add_name"):
+            st.session_state["add_name"] = pf["name"]
+        st.success(pf["msg"])
+    if st.session_state.pop("pending_clear", False):
+        st.session_state["add_name"] = ""
+        st.session_state["add_url"] = ""
+        st.session_state["add_subscribers"] = 0
 
-    if submitted:
+    if st.session_state.get("add_success_msg"):
+        st.success(st.session_state.pop("add_success_msg"))
+
+    channel_name = st.text_input("昵称", key="add_name")
+    channel_url = st.text_input(
+        "YouTube 主页链接", key="add_url",
+        placeholder="https://www.youtube.com/@xxx",
+    )
+
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        fetch_clicked = st.button("⚡ 自动抓取粉丝数", use_container_width=True)
+    with c2:
+        st.caption("填好主页链接后点一下，自动填粉丝数和昵称（需左侧填 YouTube API Key）。")
+
+    if fetch_clicked:
+        _fetch_subscribers(channel_url)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        category = st.text_input("垂类", value="뷰티 & 헬스", key="add_cat")
+    with c2:
+        recruiter = st.text_input("挖掘人", value=st.session_state.get("sender_name", "아이비"), key="add_rec")
+    with c3:
+        subscribers = st.number_input(
+            "粉丝数", min_value=0,
+            value=int(st.session_state.get("add_subscribers", 0) or 0),
+        )
+
+    if st.button("➕ 添加", key="add_submit"):
         if not channel_name or not channel_url:
             st.error("昵称和主页链接必填")
-            return
+        else:
+            channel_id = extract_channel_id(channel_url) or channel_url
+            st.session_state.bd_db.add({
+                "channel_id": channel_id,
+                "channel_name": channel_name,
+                "channel_url": channel_url,
+                "category": category,
+                "recruiter": recruiter,
+                "subscribers": int(subscribers),
+                "status": "已引入",
+            })
+            st.session_state["add_success_msg"] = f"✅ {channel_name} 已成功加入 BD 底库，切到「BD 底库」即可查看。"
+            st.session_state["pending_clear"] = True
+            st.rerun()
 
-        channel_id = extract_channel_id(channel_url) or channel_url
-        db = st.session_state.bd_db
-        db.add({
-            "channel_id": channel_id,
-            "channel_name": channel_name,
-            "channel_url": channel_url,
-            "category": category,
-            "recruiter": recruiter,
-            "subscribers": int(subscribers),
-            "status": "已引入",
-        })
-        st.success(f"已添加 {channel_name} 到 BD 底库")
-        st.rerun()
+    st.divider()
+
+    # 批量导入网红
+    st.subheader("📥 批量导入网红（上传表格）")
+    template = pd.DataFrame([{
+        "昵称": "꿈아",
+        "YouTube主页链接": "https://www.youtube.com/@kkom_aah",
+        "垂类": "여성의류",
+        "挖掘人": "王修源",
+        "粉丝数": 12000,
+    }])
+    tpl_csv = template.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("下载导入模板", data=tpl_csv, file_name="bd_influencer_template.csv", mime="text/csv")
+
+    uploaded = st.file_uploader("上传 CSV 或 Excel", type=["csv", "xlsx", "xls"], key="bulk_add_upload")
+    if uploaded:
+        try:
+            if uploaded.name.endswith(".csv"):
+                df = pd.read_csv(uploaded)
+            else:
+                df = pd.read_excel(uploaded)
+            st.write("预览：")
+            st.dataframe(df.head(10), use_container_width=True)
+            if st.button("确认导入", key="bulk_add_confirm"):
+                valid, invalid = _parse_bulk_add(df)
+                ok = 0
+                for rec in valid:
+                    st.session_state.bd_db.add(rec)
+                    ok += 1
+                st.success(f"成功导入 {ok} 个网红")
+                if invalid:
+                    with st.expander("查看失败记录"):
+                        st.json(invalid)
+                st.session_state["add_success_msg"] = f"✅ 批量导入完成：成功 {ok} 个，失败 {len(invalid)} 行。"
+                st.rerun()
+        except Exception as e:
+            st.error(f"解析文件失败：{e}")
 
 
 def render_bulk_import():
@@ -651,6 +788,169 @@ def render_bulk_import():
     template = generate_template_df()
     csv = template.to_csv(index=False).encode("utf-8-sig")
     st.download_button("下载导入模板", data=csv, file_name="bd_product_template.csv", mime="text/csv")
+
+
+# ---------------------------------------------------------------------------
+# 数据分析模块
+# ---------------------------------------------------------------------------
+
+def _df_to_xlsx(dfs: dict) -> bytes:
+    """把多个 DataFrame 写成一个 Excel 的多个 sheet"""
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as w:
+        for name, df in dfs.items():
+            df.to_excel(w, sheet_name=name, index=False)
+    return bio.getvalue()
+
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def render_data_analysis():
+    st.header("📊 数据分析")
+
+    db = st.session_state.bd_db
+    try:
+        records = db.get_all()
+    except Exception as e:
+        st.error(f"无法连接宜搭：{e}")
+        return
+    if not records:
+        st.info("底库为空，先添加网红再来看分析。")
+        return
+
+    def num(v):
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # ---- 总体数据 ----
+    total_subs = sum(num(r.get("subscribers")) for r in records)
+    total_views = sum(num(r.get("video_views")) for r in records)
+    total_likes = sum(num(r.get("video_likes")) for r in records)
+    total_comments = sum(num(r.get("video_comments")) for r in records)
+    total_pviews = sum(num(r.get("product_views")) for r in records)
+    total_orders = sum(num(r.get("orders")) for r in records)
+    total_gmv = sum(num(r.get("gmv")) for r in records)
+
+    st.subheader("总体数据")
+    m = st.columns(7)
+    m[0].metric("网红数", len(records))
+    m[1].metric("总粉丝", fmt_num(total_subs))
+    m[2].metric("总播放", fmt_num(total_views))
+    m[3].metric("总点赞", fmt_num(total_likes))
+    m[4].metric("总评论", fmt_num(total_comments))
+    m[5].metric("总成交量", fmt_num(total_orders))
+    m[6].metric("总 GMV", fmt_money(total_gmv))
+
+    # ---- 分网红数据 ----
+    st.subheader("分网红数据")
+    rows = []
+    for r in records:
+        rows.append({
+            "昵称": r.get("channel_name", ""),
+            "垂类": r.get("category", ""),
+            "挖掘人": r.get("recruiter", ""),
+            "粉丝": int(num(r.get("subscribers"))),
+            "播放": int(num(r.get("video_views"))),
+            "点赞": int(num(r.get("video_likes"))),
+            "评论": int(num(r.get("video_comments"))),
+            "商品浏览": int(num(r.get("product_views"))),
+            "点击率": fmt_percent(r.get("ctr")),
+            "成交量": int(num(r.get("orders"))),
+            "GMV": num(r.get("gmv")),
+        })
+    df_kol = pd.DataFrame(rows)
+    st.dataframe(df_kol, use_container_width=True, hide_index=True)
+    st.download_button(
+        "导出分网红数据（Excel）",
+        data=_df_to_xlsx({"分网红数据": df_kol}),
+        file_name="yts_分网红数据.xlsx", mime=XLSX_MIME, key="dl_kol",
+    )
+
+    # ---- 分商品数据 ----
+    st.subheader("分商品数据")
+    prod = {}
+    for r in records:
+        link = str(r.get("product_link") or "").strip()
+        if not link:
+            continue
+        p = prod.setdefault(link, {
+            "商品链接": link, "关联网红": [], "浏览": 0, "成交量": 0, "GMV": 0.0, "点击率": "-",
+        })
+        p["关联网红"].append(str(r.get("channel_name", "")))
+        p["浏览"] += int(num(r.get("product_views")))
+        p["成交量"] += int(num(r.get("orders")))
+        p["GMV"] += num(r.get("gmv"))
+        if r.get("ctr"):
+            p["点击率"] = fmt_percent(r.get("ctr"))
+    if not prod:
+        st.info("暂无商品链接数据，去「BD 底库」行内「商品」按钮里补充。")
+        df_prod = None
+    else:
+        df_prod = pd.DataFrame([
+            {**v, "关联网红": "、".join(v["关联网红"])} for v in prod.values()
+        ])
+        st.dataframe(df_prod, use_container_width=True, hide_index=True)
+        st.download_button(
+            "导出分商品数据（Excel）",
+            data=_df_to_xlsx({"分商品数据": df_prod}),
+            file_name="yts_分商品数据.xlsx", mime=XLSX_MIME, key="dl_prod",
+        )
+
+    # ---- 一键导出全部 ----
+    df_total = pd.DataFrame([{
+        "指标": k, "数值": v
+    } for k, v in {
+        "网红数": len(records),
+        "总粉丝": total_subs,
+        "总播放": total_views,
+        "总点赞": total_likes,
+        "总评论": total_comments,
+        "总商品浏览": total_pviews,
+        "总成交量": total_orders,
+        "总GMV": total_gmv,
+    }.items()])
+    sheets = {"总体数据": df_total, "分网红数据": df_kol}
+    if df_prod is not None:
+        sheets["分商品数据"] = df_prod
+    st.download_button(
+        "📤 一键导出全部数据（Excel）",
+        data=_df_to_xlsx(sheets),
+        file_name="yts_数据分析.xlsx", mime=XLSX_MIME, key="dl_all",
+    )
+
+    # ---- AI 分析（可选） ----
+    st.divider()
+    st.subheader("🤖 AI 智能分析（可选）")
+    ai_key = st.session_state.get("ai_api_key", "")
+    if not ai_key:
+        st.caption("想用 AI 分析的话，先在左侧填写 AI API Key。")
+    else:
+        if st.button("🤖 生成 AI 分析报告", use_container_width=True):
+            with st.spinner("AI 正在分析数据..."):
+                try:
+                    summary_lines = [
+                        f"总体：网红{len(records)}个，总播放{total_views:.0f}，总点赞{total_likes:.0f}，"
+                        f"总评论{total_comments:.0f}，总成交量{total_orders:.0f}，总GMV {total_gmv:.0f}。",
+                        "分网红：",
+                        df_kol.to_string(index=False),
+                    ]
+                    if df_prod is not None:
+                        summary_lines += ["分商品：", df_prod.to_string(index=False)]
+                    prompt = (
+                        "你是韩国网红营销团队的数据分析师。请根据以下 BD 底库数据输出：\n"
+                        "1) 总体表现结论\n2) 每个网红的亮点与问题\n"
+                        "3) 下一步动作建议（复投/换内容/加折扣/加曝光）。\n"
+                        "用简洁中文，Markdown 格式。\n\n数据：\n" + "\n".join(summary_lines)
+                    )
+                    gen = AIEmailGenerator(provider="dashscope", api_key=ai_key, model=None)
+                    st.session_state["analysis_report"] = gen.generate(prompt)
+                except Exception as e:
+                    st.error(f"分析失败：{e}")
+    if st.session_state.get("analysis_report"):
+        st.markdown(st.session_state["analysis_report"])
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +987,9 @@ def main():
                 font-size: 0.7rem;
                 line-height: 1.1;
             }
+            div[data-testid="stNumberInput"] button {
+                display: none !important;
+            }
             [data-testid="stHorizontalBlock"] {
                 margin-bottom: -0.4rem !important;
             }
@@ -705,7 +1008,7 @@ def main():
     if "module" not in st.session_state:
         st.session_state.module = "base"
 
-    b1, b2 = st.columns(2)
+    b1, b2, b3 = st.columns(3)
     with b1:
         if st.button("📁 BD 底库", use_container_width=True,
                      type="primary" if st.session_state.module == "base" else "secondary"):
@@ -716,13 +1019,20 @@ def main():
                      type="primary" if st.session_state.module == "add" else "secondary"):
             st.session_state.module = "add"
             st.rerun()
+    with b3:
+        if st.button("📊 数据分析", use_container_width=True,
+                     type="primary" if st.session_state.module == "analysis" else "secondary"):
+            st.session_state.module = "analysis"
+            st.rerun()
 
     st.divider()
 
     if st.session_state.module == "base":
         render_bd_table()
-    else:
+    elif st.session_state.module == "add":
         render_add_influencer()
+    else:
+        render_data_analysis()
 
 
 if __name__ == "__main__":
