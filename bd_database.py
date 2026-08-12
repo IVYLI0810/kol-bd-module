@@ -29,7 +29,6 @@ CREATE TABLE IF NOT EXISTS bd_influencers (
     category TEXT,
     recruiter TEXT,
     subscribers INTEGER DEFAULT 0,
-    total_views INTEGER DEFAULT 0,
     status TEXT DEFAULT '已引入',
     notes TEXT,
     -- 追踪视频（给网红参考/回链）
@@ -40,11 +39,11 @@ CREATE TABLE IF NOT EXISTS bd_influencers (
     -- 商品效果数据
     product_link TEXT,
     product_views INTEGER DEFAULT 0,
-    product_clicks INTEGER DEFAULT 0,
-    product_conversions INTEGER DEFAULT 0,
     ctr REAL,
+    orders INTEGER DEFAULT 0,
     conversion_rate REAL,
     gmv REAL DEFAULT 0,
+    price REAL DEFAULT 0,
     created_at TEXT,
     updated_at TEXT
 );
@@ -70,13 +69,7 @@ class LocalBDDB:
     def _init_db(self):
         with self._connect() as conn:
             conn.execute(BD_INFLUENCERS_SCHEMA)
-            # 兼容旧数据库：如果 total_views 列不存在则添加
-            try:
-                conn.execute("ALTER TABLE bd_influencers ADD COLUMN total_views INTEGER DEFAULT 0")
-                conn.commit()
-            except sqlite3.OperationalError:
-                # 列已存在，忽略
-                pass
+            conn.commit()
 
     def add(self, record: dict) -> dict:
         """新增或更新 BD 网红记录"""
@@ -87,10 +80,10 @@ class LocalBDDB:
         # 仅保留表内存在的字段
         allowed = {
             "channel_id", "channel_name", "channel_url", "category",
-            "recruiter", "subscribers", "total_views", "status", "notes",
+            "recruiter", "subscribers", "status", "notes",
             "video_link", "video_views", "video_likes", "video_comments",
-            "product_link", "product_views", "product_clicks", "product_conversions",
-            "ctr", "conversion_rate", "gmv",
+            "product_link", "product_views", "ctr", "orders",
+            "conversion_rate", "gmv", "price",
             "created_at", "updated_at",
         }
         data = {k: v for k, v in record.items() if k in allowed}
@@ -107,7 +100,6 @@ class LocalBDDB:
                 category=COALESCE(excluded.category, bd_influencers.category),
                 recruiter=COALESCE(excluded.recruiter, bd_influencers.recruiter),
                 subscribers=COALESCE(excluded.subscribers, bd_influencers.subscribers),
-                total_views=COALESCE(excluded.total_views, bd_influencers.total_views),
                 status=COALESCE(excluded.status, bd_influencers.status),
                 notes=COALESCE(excluded.notes, bd_influencers.notes),
                 video_link=COALESCE(excluded.video_link, bd_influencers.video_link),
@@ -116,11 +108,11 @@ class LocalBDDB:
                 video_comments=COALESCE(excluded.video_comments, bd_influencers.video_comments),
                 product_link=COALESCE(excluded.product_link, bd_influencers.product_link),
                 product_views=COALESCE(excluded.product_views, bd_influencers.product_views),
-                product_clicks=COALESCE(excluded.product_clicks, bd_influencers.product_clicks),
-                product_conversions=COALESCE(excluded.product_conversions, bd_influencers.product_conversions),
                 ctr=COALESCE(excluded.ctr, bd_influencers.ctr),
+                orders=COALESCE(excluded.orders, bd_influencers.orders),
                 conversion_rate=COALESCE(excluded.conversion_rate, bd_influencers.conversion_rate),
-                gmv=COALESCE(excluded.gmv, bd_influencers.gmv)
+                gmv=COALESCE(excluded.gmv, bd_influencers.gmv),
+                price=COALESCE(excluded.price, bd_influencers.price)
         """
         with self._connect() as conn:
             conn.execute(sql, list(data.values()))
@@ -157,10 +149,10 @@ class LocalBDDB:
         updates["updated_at"] = datetime.now().isoformat()
         allowed = {
             "channel_name", "channel_url", "category", "recruiter",
-            "subscribers", "total_views", "status", "notes",
+            "subscribers", "status", "notes",
             "video_link", "video_views", "video_likes", "video_comments",
-            "product_link", "product_views", "product_clicks", "product_conversions",
-            "ctr", "conversion_rate", "gmv", "updated_at",
+            "product_link", "product_views", "ctr", "orders",
+            "conversion_rate", "gmv", "price", "updated_at",
         }
         fields = {k: v for k, v in updates.items() if k in allowed}
         if not fields:
@@ -191,8 +183,8 @@ class LocalBDDB:
         count = 0
         metric_fields = {
             "video_link", "video_views", "video_likes", "video_comments",
-            "product_link", "product_views", "product_clicks", "product_conversions",
-            "ctr", "conversion_rate", "gmv",
+            "product_link", "product_views", "ctr", "orders",
+            "conversion_rate", "gmv", "price",
         }
         with self._connect() as conn:
             for r in records:
@@ -229,7 +221,6 @@ class LocalBDDB:
                 "category": rec.get("category", ""),
                 "recruiter": rec.get("discovered_by", ""),
                 "subscribers": rec.get("subscribers", 0) or 0,
-                "total_views": rec.get("total_views", 0) or 0,
                 "status": "已引入",
             }
             if not mapped["channel_id"]:
@@ -324,7 +315,6 @@ class SupabaseBDDB:
                 "category": rec.get("category", ""),
                 "recruiter": rec.get("discovered_by", ""),
                 "subscribers": rec.get("subscribers", 0) or 0,
-                "total_views": rec.get("total_views", 0) or 0,
                 "status": "已引入",
             }
             if not mapped["channel_id"]:
@@ -338,8 +328,8 @@ class SupabaseBDDB:
         now = datetime.now().isoformat()
         metric_fields = {
             "video_link", "video_views", "video_likes", "video_comments",
-            "product_link", "product_views", "product_clicks", "product_conversions",
-            "ctr", "conversion_rate", "gmv",
+            "product_link", "product_views", "ctr", "orders",
+            "conversion_rate", "gmv", "price",
         }
         for r in records:
             cid = r.get("channel_id")
@@ -358,8 +348,18 @@ class SupabaseBDDB:
 # 统一入口
 # ---------------------------------------------------------------------------
 
-def get_bd_db(use_supabase: bool = False, supabase_url: str = "", supabase_key: str = "", db_path: str = "bd_influencers.db"):
-    """工厂函数：根据配置返回对应的数据库实例"""
+def get_bd_db(use_supabase: bool = False, supabase_url: str = "", supabase_key: str = "",
+              db_path: str = "bd_influencers.db",
+              use_yida: bool = False, yida_config: dict | None = None):
+    """工厂函数：根据配置返回对应的数据库实例
+
+    优先级：宜搭 > Supabase > 本地 SQLite
+    yida_config 需包含（阿里钉 aliding 网关）：
+      access_key_id, access_key_secret, app_type, system_token, form_uuid, account_id
+    """
+    if use_yida and yida_config:
+        from yida_bd_database import YidaBDDB
+        return YidaBDDB(**yida_config)
     if use_supabase and supabase_url and supabase_key:
         return SupabaseBDDB(supabase_url, supabase_key)
     return LocalBDDB(db_path)
@@ -389,11 +389,11 @@ CREATE TABLE IF NOT EXISTS bd_influencers (
   -- 商品效果数据
   product_link TEXT DEFAULT '',
   product_views BIGINT DEFAULT 0,
-  product_clicks BIGINT DEFAULT 0,
-  product_conversions BIGINT DEFAULT 0,
   ctr REAL,
+  orders BIGINT DEFAULT 0,
   conversion_rate REAL,
   gmv REAL DEFAULT 0,
+  price REAL DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );

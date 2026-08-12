@@ -21,8 +21,8 @@ REQUIRED_COLS = ["channel_id"]  # 主键，优先用 channel_id
 ALTERNATIVE_KEY = "channel_name"  # 备用匹配字段
 METRIC_COLS = [
     "video_link", "video_views", "video_likes", "video_comments",
-    "product_link", "product_views", "product_clicks", "product_conversions",
-    "ctr", "conversion_rate", "gmv",
+    "product_link", "product_views", "ctr", "orders",
+    "conversion_rate", "gmv", "price",
 ]
 
 
@@ -118,7 +118,7 @@ def validate_and_transform(df: pd.DataFrame) -> dict:
             errors.append("缺少 channel_id 或 channel_name")
 
         # 2. 转换指标字段
-        INT_METRICS = {"video_views", "video_likes", "video_comments", "product_views", "product_clicks", "product_conversions"}
+        INT_METRICS = {"video_views", "video_likes", "video_comments", "product_views", "orders"}
         LINK_METRICS = {"video_link", "product_link"}
         for col in METRIC_COLS:
             if col in df.columns and pd.notna(row.get(col)):
@@ -166,11 +166,11 @@ def generate_template_df() -> pd.DataFrame:
         "video_comments",
         "product_link",
         "product_views",
-        "product_clicks",
-        "product_conversions",
         "ctr",
+        "orders",
         "conversion_rate",
         "gmv",
+        "price",
     ])
 
 
