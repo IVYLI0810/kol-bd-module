@@ -1,106 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BD 网红底库 - 独立 Streamlit Demo
+YTS 网红管理库 - Streamlit 站（数据存钉钉宜搭，团队共享）
 
-大表单目标：
-- 与 kol-finder 挖掘库联动，状态为「已引入」的网红自动进入 BD 底库
-- 一页展示所有关键字段：
-  昵称 / 状态 / 粉丝 / 垂类 / 主页链接 / 分析 / 邮件 / 视频回链 / 播放 / 点赞 / 评论 / 商品链接 / 浏览 / 点击 / 转化 / GMV
-- 支持单个编辑、批量导入（CSV/Excel）、视频数据追踪后回写
-
-说明：
-- 默认使用本地 SQLite，方便 demo
-- 生产环境可切到 Supabase（在侧边栏配置）
+模块：
+- 活动履约：仅引入在 kol 挖掘网站标记「已发邮件」的网红；
+  左栏洽谈中固定，右栏按视频上传月份两列展示；
+  确认合作（报价必填）→ 三分支（指南/合同/选品）→ 下单 → 提交审核 → 闭环
+- 审核站：通过意见选填、驳回意见必填，审核记录只增不减
+- 添加网红 / 数据分析
 """
 
-import json
 import os
+import re
+import smtplib
+import ssl
 from datetime import datetime, date, timedelta
+from email.header import Header
+from email.mime.text import MIMEText
 from io import BytesIO
 
 import pandas as pd
 import streamlit as st
 
 from bd_database import get_bd_db
-from youtube_analyzer import YouTubeAnalyzer, extract_channel_id, extract_video_id
+from youtube_analyzer import YouTubeAnalyzer, extract_channel_id
 from ai_email_generator import AIEmailGenerator
-from product_importer import generate_template_df, parse_upload_file, validate_and_transform
-
-
-# ---------------------------------------------------------------------------
-# 常量 & 默认数据
-# ---------------------------------------------------------------------------
-
-SAMPLE_PRODUCT = {
-    "name": "메이크업 브러쉬 10종 세트",
-    "price": "12,900",
-    "original_price": "28,900",
-    "selling_points": [
-        "부드러운 인조모가 피부에 자극이 적어요",
-        "파우치 포함이라 여행/외출할 때 편해요",
-        "초보자도 바로 쓸 수 있는 기본 구성",
-        "세척 후에도 털이 빠지지 않아요",
-    ],
-}
-
-# 演示数据：把 kol-finder 里「已引入」的网红同步过来后的样子
-DEFAULT_BD_INFLUENCERS = [
-    {
-        "channel_id": "UC_sample_chiljjang",
-        "channel_name": "칠짱이",
-        "channel_url": "https://www.youtube.com/@7nolgo",
-        "category": "뷰티 & 헬스",
-        "recruiter": "아이비",
-        "subscribers": 15000,
-        "status": "已引入",
-        "video_link": "https://www.youtube.com/shorts/xxx",
-        "video_views": 120000,
-        "video_likes": 5600,
-        "video_comments": 320,
-        "product_link": "https://ko.aliexpress.com/item/xxx",
-        "product_views": 45000,
-        "ctr": 0.0267,
-        "orders": 180,
-        "gmv": 2322000,
-    },
-    {
-        "channel_id": "UC_sample_nailjip",
-        "channel_name": "네일집착걸",
-        "channel_url": "https://www.youtube.com/@obsess_nail",
-        "category": "뷰티 & 헬스",
-        "recruiter": "아이비",
-        "subscribers": 22000,
-        "status": "已引入",
-        "video_link": "https://www.youtube.com/watch?v=yyy",
-        "video_views": 89000,
-        "video_likes": 4100,
-        "video_comments": 210,
-        "product_link": "https://ko.aliexpress.com/item/yyy",
-        "product_views": 32000,
-        "ctr": 0.0297,
-        "orders": 140,
-        "gmv": 1806000,
-    },
-    {
-        "channel_id": "UC_sample_if",
-        "channel_name": "이프 if",
-        "channel_url": "https://www.youtube.com/@ifyoulovemeornot",
-        "category": "뷰티 & 헬스",
-        "recruiter": "아이비",
-        "subscribers": 18000,
-        "status": "已引入",
-        "video_link": "",
-        "video_views": 0,
-        "video_likes": 0,
-        "video_comments": 0,
-        "product_link": "",
-        "product_views": 0,
-        "ctr": 0,
-        "orders": 0,
-        "gmv": 0,
-    },
-]
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +111,33 @@ def render_sidebar():
             st.session_state.sender_name = st.text_input("发件人姓名", value="아이비")
 
         st.divider()
+        st.subheader("📨 发件邮箱（SMTP）")
+        st.caption("用于站内直接给网红发邮件。Gmail 需使用「应用专用密码」。")
+        SMTP_PRESETS = {
+            "Gmail": ("smtp.gmail.com", 587),
+            "Naver": ("smtp.naver.com", 587),
+            "QQ 邮箱": ("smtp.qq.com", 465),
+            "Outlook": ("smtp.office365.com", 587),
+        }
+        prov = st.selectbox(
+            "邮箱类型", list(SMTP_PRESETS.keys()) + ["自定义"],
+            key="smtp_prov",
+        )
+        if st.session_state.get("smtp_prov_prev") != prov:
+            if prov in SMTP_PRESETS:
+                st.session_state["smtp_host"] = SMTP_PRESETS[prov][0]
+                st.session_state["smtp_port"] = SMTP_PRESETS[prov][1]
+            st.session_state["smtp_prov_prev"] = prov
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            st.text_input("SMTP 服务器", key="smtp_host", value="smtp.gmail.com")
+        with c2:
+            st.number_input("端口", min_value=1, max_value=65535, key="smtp_port", value=587)
+        st.text_input("发件账号", key="smtp_user", value=_secret("SMTP_USER"))
+        st.text_input("密码 / 应用专用密码", key="smtp_pass", type="password",
+                      value=_secret("SMTP_PASS"))
+
+        st.divider()
         if st.button("💾 保存并测试连接", use_container_width=True):
             _test_connection()
             st.rerun()
@@ -234,367 +186,6 @@ def fmt_money(v):
     if n >= 1000:
         return f"{n / 1000:.1f}K"
     return f"{n:,.0f}"
-
-
-@st.dialog("视频回链")
-def video_edit_dialog(record: dict):
-    """弹窗内直接增加/修改/删除视频回链及数据"""
-    cid = record["channel_id"]
-    db = st.session_state.bd_db
-    rec = db.get_by_channel_id(cid) or record
-
-    vlink = st.text_input(
-        "视频回链",
-        value=rec.get("video_link", ""),
-        placeholder="https://www.youtube.com/watch?v=... 或 /shorts/...",
-    )
-    if st.button("⚡ 一键导入视频数据", use_container_width=True):
-        _import_video_stats(cid, vlink)
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        views = st.number_input("播放", min_value=0, value=int(rec.get("video_views") or 0), step=1000)
-    with c2:
-        likes = st.number_input("点赞", min_value=0, value=int(rec.get("video_likes") or 0), step=100)
-    with c3:
-        comments = st.number_input("评论", min_value=0, value=int(rec.get("video_comments") or 0), step=100)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("💾 保存", use_container_width=True):
-            db.update(cid, {
-                "video_link": vlink,
-                "video_views": views,
-                "video_likes": likes,
-                "video_comments": comments,
-            })
-            st.success("已保存")
-            st.rerun()
-    with c2:
-        if st.button("🗑 删除视频回链", use_container_width=True):
-            db.update(cid, {"video_link": "", "video_views": 0, "video_likes": 0, "video_comments": 0})
-            st.rerun()
-
-
-def _import_video_stats(cid: str, vlink: str):
-    """根据视频链接一键抓取播放/点赞/评论并回写"""
-    api_key = st.session_state.get("youtube_api_key", "")
-    if not api_key:
-        st.error("请先在侧边栏填写 YouTube API Key")
-        return
-    if not vlink:
-        st.error("请先填写视频回链")
-        return
-    vid = extract_video_id(vlink)
-    if not vid:
-        st.error("无法识别视频链接")
-        return
-    with st.spinner("抓取中..."):
-        try:
-            stats = YouTubeAnalyzer(api_key).get_video_stats(vid)
-            st.session_state.bd_db.update(cid, {
-                "video_link": stats["url"],
-                "video_views": stats["view_count"],
-                "video_likes": stats["like_count"],
-                "video_comments": stats["comment_count"],
-            })
-            st.success("视频数据已导入")
-            st.rerun()
-        except Exception as e:
-            st.error(f"导入失败：{e}")
-
-
-@st.dialog("商品链接")
-def product_edit_dialog(record: dict):
-    """弹窗内直接增加/修改/删除商品链接及效果数据"""
-    cid = record["channel_id"]
-    db = st.session_state.bd_db
-    rec = db.get_by_channel_id(cid) or record
-
-    plink = st.text_input(
-        "商品链接",
-        value=rec.get("product_link", ""),
-        placeholder="https://ko.aliexpress.com/item/...",
-    )
-    c1, c2 = st.columns(2)
-    with c1:
-        pviews = st.number_input("浏览", min_value=0, value=int(rec.get("product_views") or 0), step=1000)
-        ctr = st.number_input("点击率（小数）", min_value=0.0, value=float(rec.get("ctr") or 0.0), step=0.0001, format="%.4f")
-    with c2:
-        orders = st.number_input("成交量", min_value=0, value=int(rec.get("orders") or 0), step=10)
-        gmv = st.number_input("GMV (KRW)", min_value=0.0, value=float(rec.get("gmv") or 0), step=10000.0)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("💾 保存", use_container_width=True):
-            db.update(cid, {
-                "product_link": plink,
-                "product_views": pviews,
-                "ctr": ctr,
-                "orders": orders,
-                "gmv": gmv,
-            })
-            st.success("已保存")
-            st.rerun()
-    with c2:
-        if st.button("🗑 删除商品链接", use_container_width=True):
-            db.update(cid, {"product_link": "", "product_views": 0, "ctr": 0, "orders": 0, "gmv": 0})
-            st.rerun()
-
-
-@st.dialog("爆款分析")
-def viral_dialog(record: dict):
-    """弹窗展示爆款分析结果"""
-    run_viral_analysis(record)
-
-
-@st.dialog("脚本 + 邮件")
-def script_email_dialog(record: dict):
-    """弹窗展示拍摄框架与邀请邮件"""
-    run_script_email(record)
-
-
-def render_bd_table():
-    st.header("BD 网红底库")
-
-    db = st.session_state.bd_db
-    try:
-        records = db.get_all()
-    except Exception as e:
-        st.error(f"无法连接宜搭：{e}\n\n请在左侧填写密钥后点「保存并测试连接」。")
-        return
-
-    if not records:
-        st.info("底库为空，先去「添加网红」页添加，或点击上方「同步挖掘库」。")
-        return
-
-    # 顶部操作：同步挖掘库 + 一键导入
-    c1, c2, c3 = st.columns([1, 1, 3])
-    with c1:
-        if st.button("同步 kol-finder 挖掘库", use_container_width=True):
-            _sync_discovery_demo(db)
-    with c2:
-        if st.button("📥 一键导入", use_container_width=True):
-            st.session_state.show_import = not st.session_state.get("show_import", False)
-            st.rerun()
-    with c3:
-        st.caption("同步只拉「已引入」网红；一键导入用于批量更新商品/视频数据。")
-
-    if st.session_state.get("show_import"):
-        render_bulk_import()
-
-    st.divider()
-
-    # 搜索筛选
-    search = st.text_input(
-        "搜索昵称 / 垂类 / 挖掘人",
-        placeholder="输入关键词筛选...",
-        key="bd_search",
-    )
-    if search:
-        query = search.lower()
-        records = [
-            r for r in records
-            if any(query in str(r.get(k, "")).lower() for k in ("channel_name", "category", "recruiter"))
-        ]
-
-    st.caption(f"共 {len(records)} 条")
-
-    # 表头：16 列扁平布局
-    cols = st.columns([1.4, 0.65, 0.65, 1.2, 0.7, 0.75, 0.75, 0.8, 0.6, 0.6, 0.6, 0.8, 0.6, 0.6, 0.6, 0.8])
-    headers = [
-        "昵称", "状态", "粉丝", "垂类", "主页", "分析", "邮件",
-        "视频回链", "播放", "点赞", "评论", "商品链接", "浏览", "点击率", "成交量", "GMV",
-    ]
-    for col, header in zip(cols, headers):
-        with col:
-            st.markdown(f"<p style='font-size:11px; color:#6e6e73; margin:0'>{header}</p>", unsafe_allow_html=True)
-
-    # 数据行：一个网红一行
-    for i, r in enumerate(records):
-        cols = st.columns([1.4, 0.65, 0.65, 1.2, 0.7, 0.75, 0.75, 0.8, 0.6, 0.6, 0.6, 0.8, 0.6, 0.6, 0.6, 0.8])
-
-        with cols[0]:
-            st.markdown(f"<p style='font-size:12px; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis'>{r.get('channel_name', '-')}</p>", unsafe_allow_html=True)
-
-        with cols[1]:
-            status = r.get("status", "-")
-            if status == "已引入":
-                st.markdown("<p style='font-size:11px; color:#34c759; margin:0'>已引入</p>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<p style='font-size:11px; color:#6e6e73; margin:0'>{status}</p>", unsafe_allow_html=True)
-
-        with cols[2]:
-            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('subscribers'))}</p>", unsafe_allow_html=True)
-
-        with cols[3]:
-            cat = r.get("category", "-")
-            st.markdown(f"<p style='font-size:11px; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis' title='{cat}'>{cat}</p>", unsafe_allow_html=True)
-
-        with cols[4]:
-            url = r.get("channel_url", "")
-            if url:
-                st.markdown(f"<p style='font-size:11px; margin:0'><a href='{url}' target='_blank'>主页</a></p>", unsafe_allow_html=True)
-            else:
-                st.markdown("<p style='font-size:11px; color:#6e6e73; margin:0'>-</p>", unsafe_allow_html=True)
-
-        with cols[5]:
-            if st.button("分析", key=f"viral_{r['channel_id']}", help="爆款分析"):
-                viral_dialog(r)
-
-        with cols[6]:
-            if st.button("邮件", key=f"script_{r['channel_id']}", help="脚本/邮件"):
-                script_email_dialog(r)
-
-        with cols[7]:
-            if st.button("视频", key=f"video_{r['channel_id']}", help="视频回链：增加/修改/删除"):
-                video_edit_dialog(r)
-
-        with cols[8]:
-            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('video_views'))}</p>", unsafe_allow_html=True)
-
-        with cols[9]:
-            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('video_likes'))}</p>", unsafe_allow_html=True)
-
-        with cols[10]:
-            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('video_comments'))}</p>", unsafe_allow_html=True)
-
-        with cols[11]:
-            if st.button("商品", key=f"product_{r['channel_id']}", help="商品链接：增加/修改/删除"):
-                product_edit_dialog(r)
-
-        with cols[12]:
-            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('product_views'))}</p>", unsafe_allow_html=True)
-
-        with cols[13]:
-            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_percent(r.get('ctr'))}</p>", unsafe_allow_html=True)
-
-        with cols[14]:
-            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_num(r.get('orders'))}</p>", unsafe_allow_html=True)
-
-        with cols[15]:
-            st.markdown(f"<p style='font-size:12px; margin:0'>{fmt_money(r.get('gmv'))}</p>", unsafe_allow_html=True)
-
-        if i < len(records) - 1:
-            st.divider()
-
-
-def _sync_discovery_demo(db):
-    """演示：模拟从 kol-finder 挖掘库同步「已引入」网红"""
-    demo_discovery = [
-        {
-            "channel_id": "UC_demo_sync_1",
-            "channel_name": "同步示例网红",
-            "channel_url": "https://www.youtube.com/@sync_example",
-            "category": "뷰티",
-            "subscribers": 30000,
-            "discovered_by": "아이비",
-            "status": "已引入",
-        },
-    ]
-    try:
-        count = db.sync_from_discovery(demo_discovery)
-        st.success(f"已同步 {count} 条记录")
-        st.rerun()
-    except Exception as e:
-        st.error(f"同步失败：{e}")
-
-
-def run_viral_analysis(record: dict):
-    """爆款分析：曝光 + 互动维度"""
-    api_key = st.session_state.get("youtube_api_key", "")
-    if not api_key:
-        st.error("请先配置 YouTube API Key")
-        return
-
-    with st.spinner("正在分析爆款视频..."):
-        try:
-            analyzer = YouTubeAnalyzer(api_key)
-            result = analyzer.analyze_channel(record["channel_url"], max_videos=30, max_comments=0)
-
-            st.subheader(f"🔥 {record['channel_name']} 爆款分析")
-            st.caption(f"本次消耗配额：{result['quota_used']} units")
-
-            tab1, tab2 = st.tabs(["曝光最高", "互动最高"])
-            with tab1:
-                for i, v in enumerate(result["top_exposure"], 1):
-                    st.markdown(f"{i}. [{v['title']}]({v['url']})")
-                    st.caption(f"播放量 {v['view_count']:,} ｜ 点赞 {v['like_count']:,} ｜ {'Shorts' if v['is_shorts'] else '长视频'}")
-            with tab2:
-                for i, v in enumerate(result["top_engagement"], 1):
-                    st.markdown(f"{i}. [{v['title']}]({v['url']})")
-                    st.caption(f"点赞 {v['like_count']:,} ｜ 评论 {v['comment_count']:,} ｜ {'Shorts' if v['is_shorts'] else '长视频'}")
-        except Exception as e:
-            st.error(f"分析失败：{e}")
-
-
-def run_conversion_analysis(record: dict):
-    """转化分析：评论区信号"""
-    api_key = st.session_state.get("youtube_api_key", "")
-    if not api_key:
-        st.error("请先配置 YouTube API Key")
-        return
-
-    with st.spinner("正在抓取评论区并检测购买信号..."):
-        try:
-            analyzer = YouTubeAnalyzer(api_key)
-            result = analyzer.analyze_channel(record["channel_url"], max_videos=30, max_comments=100)
-
-            st.subheader(f"💰 {record['channel_name']} 转化分析")
-            st.caption(f"本次消耗配额：{result['quota_used']} units")
-
-            if not result["top_conversion"]:
-                st.warning("未检测到明显的购买意向评论信号")
-                return
-
-            for i, v in enumerate(result["top_conversion"], 1):
-                signals = v.get("conversion_signals", {}).get("signals", {})
-                signal_text = ", ".join([f"{k}: {c}" for k, c in signals.items() if c > 0])
-                st.markdown(f"{i}. [{v['title']}]({v['url']})")
-                st.caption(f"转化信号：{signal_text} ｜ {'Shorts' if v['is_shorts'] else '长视频'}")
-                with st.expander("查看信号评论"):
-                    for c in v.get("conversion_signals", {}).get("signal_comments", [])[:5]:
-                        st.markdown(f"- {c}")
-        except Exception as e:
-            st.error(f"分析失败：{e}")
-
-
-def run_script_email(record: dict):
-    """脚本创作 + 韩文邮件生成"""
-    api_key = st.session_state.get("ai_api_key", "")
-    provider = "dashscope"
-    model = None
-    sender = st.session_state.get("sender_name", "아이비")
-
-    if not api_key:
-        st.error(f"请先配置 {provider.upper()} API Key")
-        return
-
-    with st.spinner("正在生成韩文拍摄框架和邮件..."):
-        try:
-            # 构造一个简化版 DNA 卡片
-            dna_card = {
-                "channel_name": record["channel_name"],
-                "content_tone": "亲切闺蜜型",
-                "fan_nicknames": ["여러분"],
-                "top_hook_patterns": {"价格/折扣钩子": 1},
-                "top_cta_patterns": {"더보기란/링크 언급": 1},
-            }
-            generator = AIEmailGenerator(provider=provider, api_key=api_key, model=model)
-            res = generator.generate_framework_and_email(
-                dna_card=dna_card,
-                product_info=SAMPLE_PRODUCT,
-                sender_name=sender,
-            )
-
-            st.subheader(f"✉️ {record['channel_name']} 脚本 + 邮件")
-            tab1, tab2 = st.tabs(["拍摄框架", "邀请邮件"])
-            with tab1:
-                st.markdown(res["framework"])
-            with tab2:
-                st.text_area("邮件正文（可复制）", res["email"], height=400)
-        except Exception as e:
-            st.error(f"生成失败：{e}")
 
 
 def _fetch_subscribers(channel_url: str):
@@ -721,7 +312,7 @@ def render_add_influencer():
                 "subscribers": int(subscribers),
                 "status": "已引入",
             })
-            st.session_state["add_success_msg"] = f"✅ {channel_name} 已成功加入 BD 底库，切到「BD 底库」即可查看。"
+            st.session_state["add_success_msg"] = f"✅ {channel_name} 已成功加入底库。在 kol 挖掘网站标记「已发邮件」后，会自动进入「活动履约」看板。"
             st.session_state["pending_clear"] = True
             st.rerun()
 
@@ -762,32 +353,6 @@ def render_add_influencer():
                 st.rerun()
         except Exception as e:
             st.error(f"解析文件失败：{e}")
-
-
-def render_bulk_import():
-    st.subheader("📥 批量导入商品/视频数据")
-    uploaded = st.file_uploader("上传 CSV 或 Excel", type=["csv", "xlsx", "xls"])
-    if uploaded:
-        try:
-            df = parse_upload_file(uploaded)
-            st.write("预览：")
-            st.dataframe(df.head(), use_container_width=True)
-
-            if st.button("确认导入"):
-                result = validate_and_transform(df)
-                st.session_state.bd_db.bulk_update_metrics(result["valid"])
-                st.success(f"成功导入 {result['success_count']} 条，失败 {result['error_count']} 条")
-                if result["invalid"]:
-                    with st.expander("查看失败记录"):
-                        st.json(result["invalid"])
-                st.rerun()
-        except Exception as e:
-            st.error(f"解析文件失败：{e}")
-
-    # 下载模板
-    template = generate_template_df()
-    csv = template.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("下载导入模板", data=csv, file_name="bd_product_template.csv", mime="text/csv")
 
 
 # ---------------------------------------------------------------------------
@@ -954,6 +519,242 @@ def render_data_analysis():
 
 
 # ---------------------------------------------------------------------------
+# 站内直发网红邮件（AI 基于数据分析生成内容 + SMTP 发送）
+# ---------------------------------------------------------------------------
+
+def _get_contact_email(rec: dict) -> str:
+    m = re.search(r"CONTACT_EMAIL:\s*(\S+)", str(rec.get("notes") or ""))
+    return m.group(1) if m else ""
+
+
+def _set_contact_email(db, rec: dict, email: str) -> None:
+    notes = str(rec.get("notes") or "")
+    if "CONTACT_EMAIL:" in notes:
+        notes = re.sub(r"CONTACT_EMAIL:\s*\S+", f"CONTACT_EMAIL: {email}", notes)
+    else:
+        notes = (notes.rstrip() + "\n" if notes.strip() else "") + f"CONTACT_EMAIL: {email}"
+    db.update(rec["channel_id"], {"notes": notes})
+
+
+def _ensure_dna(rec: dict) -> dict:
+    """拿该网红的内容 DNA：优先缓存 → 真实抓取 → 模板模拟"""
+    cid = rec["channel_id"]
+    dna = st.session_state.get(f"dna_{cid}")
+    if dna:
+        return dna
+    api_key = st.session_state.get("youtube_api_key", "")
+    if api_key and rec.get("channel_url"):
+        try:
+            dna = _real_dna(rec, api_key)
+        except Exception:
+            dna = _tpl_dna(rec)
+    else:
+        dna = _tpl_dna(rec)
+    st.session_state[f"dna_{cid}"] = dna
+    return dna
+
+
+# 韩文版内容 DNA（发给韩国网红的邮件用韩文表述，避免中文混入）
+DNA_KO = {
+    "뷰티": {
+        "style": "실사용 전후 비교 + 부드러운 내레이션, 신뢰감 높은 추천",
+        "tags": ["실측 비교", "몰입형 스킨케어", "성분 분석", "꿀템 모음"],
+        "hook": "첫 15초 '사용 전후 비교'로 완주율 확보",
+    },
+    "여성의류": {
+        "style": "착장 쇼케이스 + 실착 리뷰, 상황 몰입감이 뛰어난 콘텐츠",
+        "tags": ["OOTD", "실착 리뷰", "출근룩", "작은 키 추천"],
+        "hook": "'한 벌로 여러 코디' 빠른 전환 오프닝",
+    },
+    "라이프스타일": {
+        "style": "브이로그 내러티브 + 감성 화면, 자연스러운 협찬 녹여내기",
+        "tags": ["room tour", "힐링 브이로그", "자취 생활", "수납 정리"],
+        "hook": "'ASMR 정리' 클립으로 몰입감 조성",
+    },
+    "요리": {
+        "style": "단계별 레시피 + 집밥 재료, 실용성 높아 저장률이 우수한 콘텐츠",
+        "tags": ["10분 요리", "초보 레시피", "도시락 밀프렙", "한 냄비 요리"],
+        "hook": "완성품 클로즈업 + ASMR 사운드로 식욕 자극",
+    },
+    "패션": {
+        "style": "트렌드 해석 + 코디 팁, 전문성 높은 인사이트 콘텐츠",
+        "tags": ["트렌드 해석", "코디 공식", "시즌 코디", "액세서리 디테일"],
+        "hook": "'유행 아이템 스트릿 스냅'으로 전문 이미지 구축",
+    },
+}
+
+
+def _tpl_email_ko(rec: dict, dna: "dict | None") -> str:
+    """无 AI Key 时的韩文模板邮件（仍基于数据分析填充）"""
+    name = rec.get("channel_name", "-")
+    sender = st.session_state.get("sender_name", "아이비")
+    deadline = rec.get("deadline") or ""
+    price = rec.get("price")
+    product_link = str(rec.get("product_link") or "").strip()
+    try:
+        price_txt = f"₩{int(float(price)):,}" if price not in (None, "") else "계약서 협의 시 안내드릴게요"
+    except (TypeError, ValueError):
+        price_txt = "계약서 협의 시 안내드릴게요"
+    ko = DNA_KO.get(str(rec.get("category") or "")) or {}
+    style = ko.get("style", "크리에이터님의 고유한 스타일")
+    hook = ko.get("hook", "")
+    tags = ", ".join(ko.get("tags", []))
+    L = [
+        f"{name} 크리에이터님, 안녕하세요!",
+        "",
+        f"YTS 에서 콜라보레이션을 담당하고 있는 {sender} 입니다. "
+        f"평소 채널을 눈여겨 봐왔는데, 「{style}」의 진정성 있는 매력이 정말 인상적이었어요. "
+        "이번에 준비 중인 협업과 크리에이터님의 영향력이 멋진 시너지를 낼 수 있다고 확신합니다.",
+        "",
+        "간단한 협업 안내 드립니다.",
+        "",
+        f"1. 협업 상품: {product_link or '선정 완료 후 별도 안내'}",
+        f"2. 콘텐츠 방향: 크리에이터님의 대표 스타일({tags or '기존 스타일'})을 자연스럽게 살려주시면 좋겠습니다."
+        + (f" 오프닝은 「{hook}」 방식도 참고해 주세요." if hook else ""),
+        f"3. 업로드 일정: {deadline or '협의 후 결정'}",
+        f"4. 보상: {price_txt}",
+        "",
+        "관심이 있으시다면 회신 가능한 일정을 알려주세요. 상세 가이드를 보내드리겠습니다. "
+        "크리에이터님의 창작을 최대한 지원해 드리겠습니다.",
+        "",
+        "감사합니다!",
+        f"{sender} 드림",
+    ]
+    return "\n".join(L)
+
+
+def _build_email_prompt(rec: dict, dna: dict) -> str:
+    """把网红数据分析结果喂给 AI，生成韩文邀请邮件"""
+    name = rec.get("channel_name", "-")
+    sender = st.session_state.get("sender_name", "아이비")
+    t = dna.get("tpl", {})
+    vids = dna.get("vids", [])
+    vid_txt = "、".join(v.get("title", "") for v in vids[:3]) or "无"
+    product_link = str(rec.get("product_link") or "").strip()
+    price = rec.get("price")
+    try:
+        price_txt = f"₩{int(float(price)):,}" if price not in (None, "") else "待定（以合同为准）"
+    except (TypeError, ValueError):
+        price_txt = "待定（以合同为准）"
+    return f"""你是韩国 MCN 的资深 BD。请根据以下网红的真实数据分析（内容 DNA），
+写一封韩语合作邀请邮件，直接输出邮件正文（含问候、正文、结尾署名 {sender}），不要任何解释。
+
+要求：
+- 语气礼貌真诚、简洁，不夸张；
+- 结合内容 DNA 具体夸赞其内容特点（不要空泛套话）；
+- 包含：合作来意、本期选品、内容方向建议、上传时间、报酬、邀请回复。
+
+网红数据分析：
+- 频道名：{name}
+- 垂类：{rec.get('category') or '未分类'}；粉丝：{fmt_num(rec.get('subscribers'))}
+- 内容风格：{t.get('style', '-')}
+- 受众画像：{t.get('audience', '-')}
+- 高频标签：{'、'.join(t.get('tags', []))}
+- 开场钩子：{t.get('hook', '-')}
+- 爆款视频主题：{vid_txt}
+
+本期合作信息：
+- 选品：{product_link or '选品完成后另行补充'}
+- 报酬：{price_txt}
+- 约定上传日期：{rec.get('deadline') or '另行协商'}
+"""
+
+
+def _send_smtp(to_addr: str, subject: str, body: str) -> None:
+    """用侧边栏配置的 SMTP 发送邮件"""
+    host = str(st.session_state.get("smtp_host") or "").strip()
+    port = int(st.session_state.get("smtp_port") or 0)
+    user = str(st.session_state.get("smtp_user") or "").strip()
+    pwd = str(st.session_state.get("smtp_pass") or "")
+    sender_name = st.session_state.get("sender_name", "아이비")
+    if not (host and port and user and pwd):
+        raise RuntimeError("请先在左侧「发件邮箱（SMTP）」配置发件账号和密码")
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = Header(subject, "utf-8")
+    msg["From"] = f"{Header(sender_name, 'utf-8')} <{user}>"
+    msg["To"] = to_addr
+    ctx = ssl.create_default_context()
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port, context=ctx, timeout=30) as s:
+            s.login(user, pwd)
+            s.sendmail(user, [to_addr], msg.as_string())
+    else:
+        with smtplib.SMTP(host, port, timeout=30) as s:
+            s.starttls(context=ctx)
+            s.login(user, pwd)
+            s.sendmail(user, [to_addr], msg.as_string())
+
+
+@st.dialog("AI 邮件")
+def email_dialog(rec: dict, preset_body: str = "", mark_status: str = ""):
+    """站内直发网红邮件：AI 基于数据分析生成 → 可编辑 → SMTP 发送"""
+    cid = rec["channel_id"]
+    db = st.session_state.bd_db
+    name = rec.get("channel_name", "-")
+    st.caption(f"网红：{name}。邮件内容由 AI 结合该网红的内容 DNA / 爆款数据 / 报价等分析生成，可修改后发送。")
+
+    email = st.text_input(
+        "网红邮箱", value=_get_contact_email(rec), key=f"mail_to_{cid}",
+        placeholder="creator@gmail.com",
+    )
+
+    if st.button("✨ 生成 / 刷新 AI 邮件", use_container_width=True, key=f"mail_gen_{cid}"):
+        with st.spinner("正在分析网红数据并生成邮件..."):
+            dna = _ensure_dna(rec)
+            ai_key = st.session_state.get("ai_api_key", "")
+            if ai_key:
+                try:
+                    gen = AIEmailGenerator(provider="dashscope", api_key=ai_key, model=None)
+                    st.session_state[f"mail_body_{cid}"] = gen.generate(_build_email_prompt(rec, dna))
+                    st.session_state[f"mail_src_{cid}"] = "✅ 已基于内容 DNA 等数据分析，由 AI 生成韩文邮件"
+                except Exception as e:
+                    st.session_state[f"mail_body_{cid}"] = _tpl_email_ko(rec, dna)
+                    st.session_state[f"mail_src_{cid}"] = f"AI 生成失败，已改用数据模板：{e}"
+            else:
+                st.session_state[f"mail_body_{cid}"] = _tpl_email_ko(rec, dna)
+                st.session_state[f"mail_src_{cid}"] = "未配置 AI API Key，本次使用基于数据分析的模板邮件"
+            if not st.session_state.get(f"mail_subject_{cid}"):
+                st.session_state[f"mail_subject_{cid}"] = f"[협력 제안] {name}님, YTS 콜라보레이션 초청"
+        # 注意：不要 st.rerun()，否则弹窗会关闭；
+        # 下方主题/正文 widget 在同一次运行中实例化，会自动读取刚写入的 session_state。
+
+    if preset_body and not st.session_state.get(f"mail_body_{cid}"):
+        st.session_state[f"mail_body_{cid}"] = preset_body
+        st.session_state[f"mail_src_{cid}"] = "正文为创作指南，可直接发送或修改"
+
+    if st.session_state.get(f"mail_src_{cid}"):
+        st.caption(st.session_state[f"mail_src_{cid}"])
+
+    subject = st.text_input(
+        "邮件主题", key=f"mail_subject_{cid}",
+        value=f"[협력 제안] {name}님, YTS 콜라보레이션 초청",
+    )
+    body = st.text_area("邮件正文", key=f"mail_body_{cid}", height=320, value="")
+
+    if st.button("📨 发送邮箱", use_container_width=True, type="primary", key=f"mail_send_{cid}"):
+        addr = email.strip()
+        if not re.match(r"^[\w.+-]+@[\w-]+\.[\w.-]+$", addr):
+            st.error("请先填写有效的网红邮箱")
+            return
+        if not body.strip():
+            st.error("正文为空，请先点「生成 / 刷新 AI 邮件」")
+            return
+        _set_contact_email(db, rec, addr)
+        try:
+            _send_smtp(addr, subject, body)
+        except Exception as e:
+            st.error(f"发送失败：{e}")
+            return
+        cur = str(rec.get("email_status") or "").strip()
+        new_status = mark_status or (cur if cur in MAILED_STATUSES else "已发送")
+        db.update(cid, {"email_status": new_status})
+        st.session_state["pending_mail_sent"] = (
+            f"✅ 邮件已发送给 {name}（{addr}），该网红已进入「活动履约」洽谈中栏。"
+        )
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # 活动履约模块（移植自 yts_demo.html 定稿流程）
 # ---------------------------------------------------------------------------
 
@@ -1003,18 +804,18 @@ DNA_TPL = {
 CAMP_CSS = """
 <style>
 .yts-card{background:#fff7f8;border:1px solid #ffdfe4;border-radius:12px;
- padding:12px 14px;margin-bottom:10px;}
-.yts-card h4{margin:0 0 4px 0;font-size:14px;font-weight:600;color:#1d1d1f;}
-.yts-sub{font-size:11.5px;color:#6e6e73;margin:0 0 6px 0;}
-.yts-pill{display:inline-block;font-size:10.5px;border-radius:999px;
- padding:1px 8px;margin:1px 4px 1px 0;font-weight:600;}
+ padding:14px 16px;margin-bottom:12px;}
+.yts-card h4{margin:0 0 6px 0;font-size:16px;font-weight:600;color:#1d1d1f;}
+.yts-sub{font-size:13px;color:#6e6e73;margin:0 0 8px 0;}
+.yts-pill{display:inline-block;font-size:12px;border-radius:999px;
+ padding:2px 10px;margin:2px 5px 2px 0;font-weight:600;}
 .pill-pink{background:#ffe3e8;color:#c2185b;}
 .pill-green{background:#e3f6e8;color:#1b7f3b;}
 .pill-gray{background:#f0f0f2;color:#6e6e73;}
 .pill-blue{background:#e5f0ff;color:#1a5fc9;}
 .pill-orange{background:#fff1dc;color:#b26a00;}
 .pill-red{background:#ffe5e5;color:#c62828;}
-.yts-month-h{font-size:13px;font-weight:600;color:#1d1d1f;margin:4px 0 8px 0;}
+.yts-month-h{font-size:15px;font-weight:600;color:#1d1d1f;margin:4px 0 10px 0;}
 </style>
 """
 
@@ -1037,6 +838,14 @@ def _stage_of(rec: dict) -> str:
     return str(rec.get("stage") or "").strip() or "洽谈中"
 
 
+# 挖掘库标记「已发邮件」后才会进入活动履约看板
+MAILED_STATUSES = ("已发送", "已发邮件", "指南已发送")
+
+
+def _is_mailed(rec: dict) -> bool:
+    return (str(rec.get("email_status") or "").strip()) in MAILED_STATUSES
+
+
 def _camp_summary_pills(rec: dict) -> str:
     """卡片上的状态小标签"""
     out = []
@@ -1044,10 +853,10 @@ def _camp_summary_pills(rec: dict) -> str:
         out.append(_pill(f"报价 ₩{fmt_money(rec['price'])}", "pink"))
     if rec.get("deadline"):
         out.append(_pill(f"上传 {rec['deadline']}", "blue"))
-    es = rec.get("email_status") or ""
+    es = str(rec.get("email_status") or "").strip()
     if es == "指南已发送":
         out.append(_pill("指南已发送", "green"))
-    elif es == "已发送":
+    elif es in MAILED_STATUSES:
         out.append(_pill("邮件已发送", "blue"))
     if rec.get("contract") == "已签署":
         out.append(_pill("合同已签署", "green"))
@@ -1291,11 +1100,7 @@ def render_analysis_guide(rec: dict):
                 if sent:
                     st.markdown(_pill("指南已发送", "green"), unsafe_allow_html=True)
                 elif st.button("✉️ 发送网红", key=f"btn_send_{cid}", use_container_width=True, type="primary"):
-                    try:
-                        st.session_state.bd_db.update(cid, {"email_status": "指南已发送"})
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"发送失败：{e}")
+                    email_dialog(rec, preset_body=guide, mark_status="指南已发送")
         else:
             st.caption("结合内容 DNA 与本期选品，生成可直接发给网红的完整指南文档。")
 
@@ -1465,7 +1270,10 @@ def render_campaign():
     """活动履约看板：左栏洽谈中固定，右栏按上传月份两列展示"""
     st.markdown(CAMP_CSS, unsafe_allow_html=True)
     st.header("🗓 活动履约")
-    st.caption("左栏「洽谈中」固定；右栏按视频上传月份分列（固定两列宽）。点击卡片进入履约详情。")
+    st.caption("仅引入在 kol 挖掘网站标记「已发邮件」的网红；左栏洽谈中固定，右栏按视频上传月份分列（两列宽）。点击卡片进入履约详情。")
+
+    if st.session_state.get("pending_mail_sent"):
+        st.success(st.session_state.pop("pending_mail_sent"))
 
     db = st.session_state.bd_db
     try:
@@ -1483,15 +1291,17 @@ def render_campaign():
             return
         st.session_state.pop("campaign_view", None)
 
-    negotiating, fulfilling, closed = [], [], []
+    negotiating, fulfilling, closed, unmailed = [], [], [], []
     for r in records:
         s = _stage_of(r)
         if s == "履约中":
             fulfilling.append(r)
         elif s == "已闭环":
             closed.append(r)
-        else:
+        elif _is_mailed(r):
             negotiating.append(r)
+        else:
+            unmailed.append(r)
 
     left, right = st.columns([1, 2.3], gap="large")
 
@@ -1499,25 +1309,31 @@ def render_campaign():
     with left:
         st.markdown(f"##### 💬 洽谈中（{len(negotiating)}）")
         if not negotiating:
-            st.caption("暂无洽谈中的网红，去「BD 底库」添加。")
+            st.caption("暂无。在 kol 挖掘网站标记「已发邮件」后，网红会自动进入这里。")
         for r in negotiating:
             st.markdown(_inf_card(r), unsafe_allow_html=True)
-            bc1, bc2 = st.columns(2)
-            with bc1:
-                if st.button("确认合作", key=f"camp_confirm_{r['channel_id']}",
+            if st.button("确认合作", key=f"camp_confirm_{r['channel_id']}",
+                         use_container_width=True, type="primary"):
+                confirm_collab_dialog(r)
+
+        st.divider()
+        st.markdown(f"##### 📮 待联系（{len(unmailed)}）")
+        if not unmailed:
+            st.caption("所有网红都已发邮件。")
+        st.caption("未发邮件的网红。可在站内直发 AI 邀请邮件，或在你自己邮箱发过后点「标记已发邮件」。")
+        for r in unmailed:
+            st.markdown(_inf_card(r), unsafe_allow_html=True)
+            e1, e2 = st.columns(2)
+            with e1:
+                if st.button("AI 邮件", key=f"camp_email_{r['channel_id']}",
                              use_container_width=True, type="primary"):
-                    confirm_collab_dialog(r)
-            with bc2:
-                mailed = (r.get("email_status") == "已发送")
-                if mailed:
-                    st.markdown(_pill("邮件已发送", "blue"), unsafe_allow_html=True)
-                elif st.button("标记已发邮件", key=f"camp_mail_{r['channel_id']}",
-                               use_container_width=True):
-                    try:
-                        db.update(r["channel_id"], {"email_status": "已发送", "stage": "洽谈中"})
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"操作失败：{e}")
+                    email_dialog(r)
+            with e2:
+                if st.button("标记已发邮件", key=f"camp_mailed_{r['channel_id']}",
+                             use_container_width=True,
+                             help="已在站外自己邮箱发过邮件时用"):
+                    db.update(r["channel_id"], {"email_status": "已发送"})
+                    st.rerun()
 
     # ---- 右栏：履约中（按上传月份分组，两列宽） ----
     with right:
@@ -1629,8 +1445,8 @@ def main():
     st.title("🎯 YTS网红管理库")
     st.caption("数据存储在钉钉宜搭，团队共享一份数据")
 
-    # 让顶部 Tab 均匀分布，避免堆在左侧
-    # 表格整体压缩：按钮高度降低、行间距收紧、分隔线变细
+    # 全局样式：保持默认字号（清晰易读），仅隐藏数字输入框的加减按钮、
+    # 让 Tabs 均匀分布
     st.markdown(
         """
         <style>
@@ -1642,22 +1458,8 @@ def main():
                 flex: 1;
                 text-align: center;
             }
-            [data-testid="stButton"] button {
-                white-space: nowrap;
-                padding: 0.05rem 0.3rem;
-                min-width: auto;
-                min-height: 1.2rem;
-                font-size: 0.7rem;
-                line-height: 1.1;
-            }
             div[data-testid="stNumberInput"] button {
                 display: none !important;
-            }
-            [data-testid="stHorizontalBlock"] {
-                margin-bottom: -0.4rem !important;
-            }
-            hr {
-                margin: 0.15rem 0 !important;
             }
         </style>
         """,
@@ -1669,10 +1471,9 @@ def main():
 
     # 模块切换：按钮形式
     if "module" not in st.session_state:
-        st.session_state.module = "base"
+        st.session_state.module = "campaign"
 
     modules = [
-        ("base", "📁 BD 底库"),
         ("campaign", "🗓 活动履约"),
         ("review", "✅ 审核站"),
         ("add", "➕ 添加网红"),
@@ -1689,9 +1490,7 @@ def main():
 
     st.divider()
 
-    if st.session_state.module == "base":
-        render_bd_table()
-    elif st.session_state.module == "campaign":
+    if st.session_state.module == "campaign":
         render_campaign()
     elif st.session_state.module == "review":
         render_review()
