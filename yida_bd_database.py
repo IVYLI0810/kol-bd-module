@@ -13,6 +13,7 @@
 """
 
 import json
+from datetime import datetime
 from typing import Optional
 
 from alibabacloud_aliding20230426.client import Client
@@ -47,6 +48,31 @@ FIELD_IDS = {
     "gmv": "numberField_msn2qhof",             # GMV
     "price": "numberField_mspqr44z",           # 报价
     "notes": "textareaField_msn2qhoj",         # 备注
+    # ---- 活动履约流程字段（2026-08-12 组件定义实测） ----
+    "stage": "selectField_mspwxzct",           # 合作阶段：洽谈中/履约中/已闭环
+    "email_status": "selectField_mspwxzcv",    # 邮件状态：已发送/指南已发送
+    "contract": "selectField_mspwxzd3",        # 合同状态：已签署/…
+    "order_status": "selectField_mspwxzd5",    # 下单状态：已下单/…
+    "deadline": "dateField_mspwxzd7",          # 交稿截止（=计划上传日期）
+    "submitted_at": "dateField_mspwxzd9",      # 实际提交时间
+    "review_status": "selectField_mspwxzdd",   # 审核状态：待审核/已通过/已驳回
+    "auth": "selectField_mspwxzdb",            # 投放授权
+    "group_link": "textField_mspwxzcz",        # 群链接
+    "settle": "selectField_mspwxzcx",          # 结算方式
+    "review_log": "tableField_mspwxzdf",       # 审核记录子表单
+}
+
+# 日期字段：写入须转毫秒时间戳，读取转回 YYYY-MM-DD
+DATE_FIELDS = {"deadline", "submitted_at"}
+
+# 子表单字段：值为对象数组，直接透传（内部日期同样转毫秒）
+TABLE_FIELDS = {"review_log"}
+
+# 审核子表单的列 fieldId（代码名 -> fieldId）
+REVIEW_LOG_CHILD = {
+    "date": "dateField_mspwxzdg",       # 审核日期
+    "result": "selectField_mspwxzdh",   # 审核结果：已通过/已驳回
+    "comment": "textareaField_mspwxzdi",  # 审核意见（驳回必填）
 }
 
 NUMBER_FIELDS = {
@@ -62,7 +88,34 @@ CODE_TO_LABEL = {
     "product_link": "商品链接", "product_views": "浏览量",
     "ctr": "点击率", "orders": "成交量",
     "conversion_rate": "转化率", "gmv": "GMV", "price": "报价", "notes": "备注",
+    "stage": "合作阶段", "email_status": "邮件状态", "contract": "合同状态",
+    "order_status": "下单状态", "deadline": "交稿截止", "submitted_at": "实际提交时间",
+    "review_status": "审核状态", "auth": "投放授权", "group_link": "群链接",
+    "settle": "结算方式", "review_log": "审核记录",
 }
+
+
+def _date_to_ms(value) -> Optional[int]:
+    """YYYY-MM-DD / YYYY-MM-DD HH:MM:SS / datetime -> 毫秒时间戳"""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return int(datetime.strptime(s, fmt).timestamp() * 1000)
+        except ValueError:
+            continue
+    return None
+
+
+def _ms_to_date(value) -> str:
+    """毫秒时间戳 -> YYYY-MM-DD（非法值原样转字符串）"""
+    try:
+        return datetime.fromtimestamp(float(value) / 1000).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OSError):
+        return str(value)
 
 
 class YidaBDDB:
@@ -104,6 +157,32 @@ class YidaBDDB:
                         value = int(value)
                 except (TypeError, ValueError):
                     continue
+            elif code in DATE_FIELDS:
+                ms = _date_to_ms(value)
+                if ms is None:
+                    continue
+                value = ms
+            elif code in TABLE_FIELDS and code == "review_log":
+                rows = []
+                for row in (value or []):
+                    item = {}
+                    for child_code, child_fid in REVIEW_LOG_CHILD.items():
+                        v = row.get(child_code)
+                        if v in (None, ""):
+                            continue
+                        if child_code == "date":
+                            ms = _date_to_ms(v)
+                            if ms is None:
+                                continue
+                            v = ms
+                        else:
+                            v = str(v)
+                        item[child_fid] = v
+                    if item:
+                        rows.append(item)
+                if not rows:
+                    continue
+                value = rows
             else:
                 value = str(value)
             out[fid] = value
@@ -111,11 +190,30 @@ class YidaBDDB:
 
     def _from_instance(self, inst: dict) -> dict:
         id_to_code = {v: k for k, v in FIELD_IDS.items() if v}
+        child_id_to_code = {v: k for k, v in REVIEW_LOG_CHILD.items()}
         raw = inst.get("FormData") or inst.get("formData") or {}
         rec = {"form_instance_id": inst.get("FormInstanceId") or inst.get("formInstanceId")}
         for fid, value in raw.items():
             code = id_to_code.get(fid)
-            if code:
+            if not code:
+                continue
+            if code in DATE_FIELDS and value not in (None, ""):
+                rec[code] = _ms_to_date(value)
+            elif code == "review_log" and isinstance(value, list):
+                rows = []
+                for item in value:
+                    if not isinstance(item, dict):
+                        continue
+                    row = {}
+                    for k, v in item.items():
+                        ccode = child_id_to_code.get(k)
+                        if not ccode:
+                            continue
+                        row[ccode] = _ms_to_date(v) if ccode == "date" else v
+                    if row:
+                        rows.append(row)
+                rec[code] = rows
+            else:
                 rec[code] = value
         for ts_key, ts_code in (("CreatedTimeGMT", "created_at"),
                                 ("ModifiedTimeGMT", "updated_at"),
@@ -273,3 +371,17 @@ class YidaBDDB:
             self.add(mapped)
             count += 1
         return count
+
+    def append_review_log(self, channel_id: str, result: str,
+                          comment: str = "", date: str = "") -> Optional[dict]:
+        """追加一条审核记录（只增不减），并返回更新后的记录"""
+        rec = self.get_by_channel_id(channel_id)
+        if not rec:
+            return None
+        rows = list(rec.get("review_log") or [])
+        rows.append({
+            "date": date or datetime.now().strftime("%Y-%m-%d"),
+            "result": result,
+            "comment": comment or "",
+        })
+        return self.update(channel_id, {"review_log": rows})

@@ -16,7 +16,7 @@ BD 网红底库 - 独立 Streamlit Demo
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from io import BytesIO
 
 import pandas as pd
@@ -954,6 +954,669 @@ def render_data_analysis():
 
 
 # ---------------------------------------------------------------------------
+# 活动履约模块（移植自 yts_demo.html 定稿流程）
+# ---------------------------------------------------------------------------
+
+DNA_TPL = {
+    "뷰티": {
+        "style": "真实测评对比 + 温柔口播，信任感种草",
+        "tags": ["实测对比", "沉浸式护肤", "成分解析", "好物合集"],
+        "len": "8-12 分钟", "time": "周四/周日 19:00-21:00",
+        "audience": "女性 25-34 为主（约 72%）",
+        "hook": "开头 15 秒「使用前后对比」锁定完播",
+        "titles": ["爆火新品实测 30 天，真相是…", "沉浸式晚间护肤｜跟我一起用", "平价宝藏合集，学生党闭眼入"],
+    },
+    "여성의류": {
+        "style": "穿搭展示 + 实穿测评，场景代入感强",
+        "tags": ["OOTD", "实穿测评", "通勤穿搭", "小个子友好"],
+        "len": "6-10 分钟", "time": "周五/周六 12:00-14:00",
+        "audience": "女性 20-30 为主（约 68%）",
+        "hook": "「一衣多穿」快切开场提升留存",
+        "titles": ["一周通勤穿搭不重样，全平价", "155cm 小个子实穿｜春天这样穿", "一条连衣裙的 5 种搭法"],
+    },
+    "라이프스타일": {
+        "style": "vlog 叙事 + 治愈画面，软性植入自然",
+        "tags": ["room tour", "治愈 vlog", "独居生活", "收纳整理"],
+        "len": "10-15 分钟", "time": "周末 20:00-22:00",
+        "audience": "女性 18-29 为主（约 64%）",
+        "hook": "「ASMR 整理」片段开场营造沉浸感",
+        "titles": ["独居周末｜做饭、收纳、好好生活", "房间改造计划，预算 3 万韩元挑战", "我的晨间 routine"],
+    },
+    "요리": {
+        "style": "步骤化教学 + 家常食材，实用收藏率高",
+        "tags": ["10分钟料理", "新手食谱", "便当备餐", "一锅端"],
+        "len": "8-12 分钟", "time": "周三/周日 17:00-19:00",
+        "audience": "女性 25-44 为主（约 61%）",
+        "hook": "成品特写 + ASMR 收音开场刺激食欲",
+        "titles": ["10 分钟料理｜懒人奶油意面", "一周便当备餐，预算 2 万韩元", "一锅端料理，洗碗不烦恼"],
+    },
+    "패션": {
+        "style": "趋势解读 + 搭配技巧，专业度输出强",
+        "tags": ["趋势解读", "搭配公式", "季节穿搭", "配饰细节"],
+        "len": "6-9 分钟", "time": "周六 11:00-13:00",
+        "audience": "女性 18-27 为主（约 70%）",
+        "hook": "「流行单品街拍」开场立专业人设",
+        "titles": ["今年秋天流行色，一条视频讲清", "显贵搭配公式 5 条", "配饰细节决定完成度"],
+    },
+}
+
+CAMP_CSS = """
+<style>
+.yts-card{background:#fff7f8;border:1px solid #ffdfe4;border-radius:12px;
+ padding:12px 14px;margin-bottom:10px;}
+.yts-card h4{margin:0 0 4px 0;font-size:14px;font-weight:600;color:#1d1d1f;}
+.yts-sub{font-size:11.5px;color:#6e6e73;margin:0 0 6px 0;}
+.yts-pill{display:inline-block;font-size:10.5px;border-radius:999px;
+ padding:1px 8px;margin:1px 4px 1px 0;font-weight:600;}
+.pill-pink{background:#ffe3e8;color:#c2185b;}
+.pill-green{background:#e3f6e8;color:#1b7f3b;}
+.pill-gray{background:#f0f0f2;color:#6e6e73;}
+.pill-blue{background:#e5f0ff;color:#1a5fc9;}
+.pill-orange{background:#fff1dc;color:#b26a00;}
+.pill-red{background:#ffe5e5;color:#c62828;}
+.yts-month-h{font-size:13px;font-weight:600;color:#1d1d1f;margin:4px 0 8px 0;}
+</style>
+"""
+
+
+def _pill(text: str, color: str = "gray") -> str:
+    return f"<span class='yts-pill pill-{color}'>{text}</span>"
+
+
+def _d(s) -> "date | None":
+    """'YYYY-MM-DD' -> datetime.date"""
+    if not s:
+        return None
+    try:
+        return datetime.strptime(str(s).strip()[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _stage_of(rec: dict) -> str:
+    return str(rec.get("stage") or "").strip() or "洽谈中"
+
+
+def _camp_summary_pills(rec: dict) -> str:
+    """卡片上的状态小标签"""
+    out = []
+    if rec.get("price"):
+        out.append(_pill(f"报价 ₩{fmt_money(rec['price'])}", "pink"))
+    if rec.get("deadline"):
+        out.append(_pill(f"上传 {rec['deadline']}", "blue"))
+    es = rec.get("email_status") or ""
+    if es == "指南已发送":
+        out.append(_pill("指南已发送", "green"))
+    elif es == "已发送":
+        out.append(_pill("邮件已发送", "blue"))
+    if rec.get("contract") == "已签署":
+        out.append(_pill("合同已签署", "green"))
+    if rec.get("order_status") == "已下单":
+        out.append(_pill("已下单", "green"))
+    rs = rec.get("review_status") or ""
+    if rs == "待审核":
+        out.append(_pill("待审核", "orange"))
+    elif rs == "已通过":
+        out.append(_pill("审核通过", "green"))
+    elif rs == "已驳回":
+        out.append(_pill("审核驳回", "red"))
+    return "".join(out) or _pill("未开始", "gray")
+
+
+def _inf_card(rec: dict, extra_buttons=None):
+    """看板卡片（纯 HTML 部分）"""
+    name = rec.get("channel_name", "-")
+    cat = rec.get("category") or "未分类"
+    subs = fmt_num(rec.get("subscribers"))
+    return (
+        f"<div class='yts-card'><h4>{name}</h4>"
+        f"<p class='yts-sub'>{cat} · 粉丝 {subs}</p>"
+        f"<p style='margin:2px 0 0 0'>{_camp_summary_pills(rec)}</p></div>"
+    )
+
+
+@st.dialog("确认合作")
+def confirm_collab_dialog(rec: dict):
+    """报价必填；同时可登记视频上传日期（=交稿截止）"""
+    db = st.session_state.bd_db
+    st.caption(f"网红：{rec.get('channel_name', '-')}")
+    price = st.text_input(
+        "网红报价（KRW）·必填", key=f"cf_price_{rec['channel_id']}",
+        placeholder="如 900000",
+    )
+    deadline = st.date_input(
+        "视频上传日期（可选）",
+        value=_d(rec.get("deadline")) or (date.today() + timedelta(days=14)),
+        key=f"cf_date_{rec['channel_id']}",
+    )
+    if st.button("✅ 确认合作", use_container_width=True, type="primary"):
+        try:
+            p = float(str(price).replace(",", "").strip())
+        except (TypeError, ValueError):
+            p = 0
+        if p <= 0:
+            st.error("请先填写网红报价（必填，且大于 0）")
+            return
+        updates = {"price": int(p), "stage": "履约中"}
+        if deadline:
+            updates["deadline"] = deadline.strftime("%Y-%m-%d")
+        try:
+            db.update(rec["channel_id"], updates)
+            st.success(f"已确认合作，报价 ₩{int(p):,}")
+            st.session_state.campaign_view = rec["channel_id"]
+            st.rerun()
+        except Exception as e:
+            st.error(f"保存失败：{e}")
+
+
+@st.dialog("审核通过")
+def review_pass_dialog(rec: dict):
+    comment = st.text_area("审核意见（选填）", key=f"rp_c_{rec['channel_id']}")
+    if st.button("✅ 确认通过", use_container_width=True, type="primary"):
+        try:
+            db = st.session_state.bd_db
+            db.update(rec["channel_id"], {"review_status": "已通过"})
+            db.append_review_log(rec["channel_id"], "已通过", comment.strip())
+            st.success("已通过审核，记录已写入审核日志")
+            st.rerun()
+        except Exception as e:
+            st.error(f"保存失败：{e}")
+
+
+@st.dialog("审核驳回")
+def review_reject_dialog(rec: dict):
+    comment = st.text_area("驳回原因（必填）", key=f"rj_c_{rec['channel_id']}")
+    if st.button("🚫 确认驳回", use_container_width=True):
+        if not comment.strip():
+            st.error("驳回必须填写审核意见")
+            return
+        try:
+            db = st.session_state.bd_db
+            db.update(rec["channel_id"], {"review_status": "已驳回"})
+            db.append_review_log(rec["channel_id"], "已驳回", comment.strip())
+            st.success("已驳回，意见已写入审核日志")
+            st.rerun()
+        except Exception as e:
+            st.error(f"保存失败：{e}")
+
+
+def _tpl_dna(rec: dict) -> dict:
+    """无 API Key / 抓取失败时的模板模拟 DNA"""
+    cat = str(rec.get("category") or "")
+    t = DNA_TPL.get(cat) or DNA_TPL["뷰티"]
+    base = float(rec.get("total_views") or rec.get("video_views") or 3000000)
+    dates = ["2026-05-14", "2026-03-02", "2026-01-21"]
+    vids = []
+    for k, tt in enumerate(t["titles"]):
+        v = int(base * (0.085 - k * 0.022))
+        vids.append({"title": tt, "views": v, "likes": int(v * 0.055),
+                     "comments": int(v * 0.004), "date": dates[k], "url": ""})
+    return {"tpl": t, "vids": vids, "src": "tpl",
+            "gen_at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+
+
+def _real_dna(rec: dict, api_key: str) -> dict:
+    """用 YouTube API 抓真实爆款 TOP3，画像部分仍用垂类模板"""
+    analyzer = YouTubeAnalyzer(api_key)
+    result = analyzer.analyze_channel(rec["channel_url"], max_videos=30, max_comments=0)
+    cat = str(rec.get("category") or "")
+    t = DNA_TPL.get(cat) or DNA_TPL["뷰티"]
+    vids = [
+        {"title": v["title"], "views": v["view_count"], "likes": v["like_count"],
+         "comments": v["comment_count"], "date": v.get("published_at", "")[:10],
+         "url": v["url"]}
+        for v in result["top_exposure"][:3]
+    ]
+    return {"tpl": t, "vids": vids, "src": "real",
+            "gen_at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+
+
+def _build_guide(rec: dict, dna: "dict | None") -> str:
+    """生成可发给网红的创作指南（Markdown 文本）"""
+    name = rec.get("channel_name", "-")
+    deadline = rec.get("deadline") or ""
+    plan_month = deadline[:7] if deadline else ""
+    price = rec.get("price")
+    product_link = str(rec.get("product_link") or "").strip()
+    L = []
+    L.append(f"【{name}】本期合作视频创作指南")
+    L.append("")
+    L.append(f"{name} 您好！感谢参与本期合作。为帮助您更高效地创作，我们整理了以下指南，供创作时参考。")
+    L.append("")
+    L.append("一、合作背景与流程")
+    L.append(f"1. 计划上线月份：{plan_month or '待定'}；约定视频上传日期：{deadline or '另行确认'}。")
+    L.append("2. 流程：提交未公开视频链接 → 我方审核通过 → 正式发布并回传公开链接。")
+    L.append("")
+    L.append("二、本期合作选品")
+    if product_link:
+        L.append(f"1. 合作商品链接：{product_link}")
+        L.append("2. 卖点以商品详情页为准，请真实体验后口播 2-3 个核心卖点。")
+    else:
+        L.append("（尚未选品，待选品完成后另行补充。）")
+    L.append("")
+    L.append("三、内容方向建议")
+    if dna:
+        t = dna["tpl"]
+        L.append(f"1. 建议延续您一贯的「{t['style']}」风格，保持人设真实感。")
+        L.append(f"2. 视频时长建议 {t['len']}；发布于高互动时段 {t['time']}。")
+        L.append(f"3. 开场可参考：{t['hook']}。")
+        L.append(f"4. 可融入您的高频标签：{'、'.join(t['tags'])}。")
+    else:
+        L.append("1. 建议以您一贯的风格呈现，保证真实体验感。")
+        L.append("2. 视频时长与发布时段参考您过往爆款数据。")
+    L.append("")
+    L.append("四、必须包含的信息（必填）")
+    L.append("1. 口播专属折扣码，并引导观众查看描述区/评论区链接。")
+    L.append("2. 每个选品需有真实使用画面与卖点口播。")
+    L.append("3. 片尾加入购买链接引导画面（不少于 3 秒）。")
+    L.append("")
+    L.append("五、拍摄与合规要求")
+    L.append("1. 画质不低于 1080p，收音清晰，无其他平台水印。")
+    L.append("2. 不使用「第一」「最」等绝对化用语，功效表述以商品页为准。")
+    L.append("3. 请在视频或描述中明确标注合作关系（遵循平台规范）。")
+    L.append("")
+    L.append("六、报酬与联系")
+    try:
+        price_txt = f"₩{int(float(price)):,}" if price not in (None, "") else "以合同为准"
+    except (TypeError, ValueError):
+        price_txt = "以合同为准"
+    L.append(f"1. 本期合作报价：{price_txt}。")
+    L.append("2. 有任何疑问请随时联系对接 BD，期待您的大作！")
+    return "\n".join(L)
+
+
+def render_analysis_guide(rec: dict):
+    """分析与指南：内容 DNA（左）+ 创作指南（右）"""
+    cid = rec["channel_id"]
+    c1, c2 = st.columns(2, gap="large")
+
+    with c1:
+        st.markdown("##### 🧬 内容 DNA")
+        dna = st.session_state.get(f"dna_{cid}")
+        if st.button("生成 / 刷新内容 DNA", key=f"btn_dna_{cid}", use_container_width=True):
+            api_key = st.session_state.get("youtube_api_key", "")
+            if api_key and rec.get("channel_url"):
+                with st.spinner("正在抓取该网红爆款视频与数据..."):
+                    try:
+                        st.session_state[f"dna_{cid}"] = _real_dna(rec, api_key)
+                    except Exception as e:
+                        st.session_state[f"dna_{cid}"] = _tpl_dna(rec)
+                        st.warning(f"真实数据抓取失败，已改用模板模拟：{e}")
+            else:
+                st.session_state[f"dna_{cid}"] = _tpl_dna(rec)
+                st.caption("未配置 YouTube API Key，本次为模板模拟画像。")
+            st.rerun()
+        if dna:
+            t = dna["tpl"]
+            src = "真实爆款数据" if dna["src"] == "real" else "模板模拟"
+            st.caption(f"生成时间 {dna['gen_at']} · 来源：{src}")
+            st.markdown(
+                f"**风格定位**：{t['style']}  \n"
+                f"**受众画像**：{t['audience']}  \n"
+                f"**建议时长**：{t['len']} · **高互动时段**：{t['time']}  \n"
+                f"**开场钩子**：{t['hook']}  \n"
+                f"**高频标签**：{'、'.join(t['tags'])}"
+            )
+            st.markdown("**爆款 TOP3**")
+            for i, v in enumerate(dna["vids"], 1):
+                title = v["title"]
+                if v.get("url"):
+                    st.markdown(f"{i}. [{title}]({v['url']})")
+                else:
+                    st.markdown(f"{i}. {title}")
+                st.caption(f"播放 {fmt_num(v['views'])} ｜ 点赞 {fmt_num(v['likes'])} ｜ 评论 {fmt_num(v['comments'])}")
+        else:
+            st.caption("点击上方按钮，抓取爆款视频并生成内容 DNA 画像。")
+
+    with c2:
+        st.markdown("##### 📝 创作指南")
+        guide = st.session_state.get(f"guide_{cid}")
+        if st.button("生成 / 刷新创作指南", key=f"btn_guide_{cid}", use_container_width=True):
+            dna_now = st.session_state.get(f"dna_{cid}")
+            st.session_state[f"guide_{cid}"] = _build_guide(rec, dna_now)
+            st.rerun()
+        if guide:
+            st.code(guide, language="markdown")
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1:
+                st.download_button(
+                    "⬇️ 下载 .md", data=guide.encode("utf-8"),
+                    file_name=f"{rec.get('channel_name', 'kol')}_创作指南.md",
+                    mime="text/markdown", key=f"dl_guide_{cid}", use_container_width=True,
+                )
+            with cc2:
+                st.caption("💡 代码块右上角可一键复制")
+            with cc3:
+                sent = (rec.get("email_status") == "指南已发送")
+                if sent:
+                    st.markdown(_pill("指南已发送", "green"), unsafe_allow_html=True)
+                elif st.button("✉️ 发送网红", key=f"btn_send_{cid}", use_container_width=True, type="primary"):
+                    try:
+                        st.session_state.bd_db.update(cid, {"email_status": "指南已发送"})
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"发送失败：{e}")
+        else:
+            st.caption("结合内容 DNA 与本期选品，生成可直接发给网红的完整指南文档。")
+
+
+def render_campaign_detail(rec: dict):
+    """履约详情页：基本信息卡 + 流程进度 + 三分支 + 下单/提交审核/闭环"""
+    cid = rec["channel_id"]
+    db = st.session_state.bd_db
+
+    if st.button("← 返回活动模块", key="camp_back"):
+        st.session_state.pop("campaign_view", None)
+        st.rerun()
+
+    st.subheader(f"{rec.get('channel_name', '-')} · 履约详情")
+    st.markdown(_camp_summary_pills(rec) + _pill(_stage_of(rec), "pink"), unsafe_allow_html=True)
+
+    # ---- 基本信息卡 ----
+    st.markdown("#### 基本信息")
+    m = st.columns(5)
+    m[0].metric("粉丝", fmt_num(rec.get("subscribers")))
+    m[1].metric("垂类", rec.get("category") or "-")
+    m[2].metric("频道总播放", fmt_num(rec.get("total_views")))
+    m[3].metric("挖掘人", rec.get("recruiter") or "-")
+    m[4].metric("网红报价", f"₩{fmt_money(rec.get('price'))}" if rec.get("price") else "-")
+
+    ic1, ic2, ic3 = st.columns([1.2, 1.2, 1.6])
+    with ic1:
+        new_price = st.number_input(
+            "修改报价（KRW）", min_value=0, step=10000,
+            value=int(float(rec.get("price") or 0)), key=f"det_price_{cid}",
+        )
+        if st.button("保存报价", key=f"det_price_save_{cid}", use_container_width=True):
+            if new_price <= 0:
+                st.error("报价必须大于 0")
+            else:
+                db.update(cid, {"price": int(new_price)})
+                st.success(f"报价已更新：₩{int(new_price):,}")
+                st.rerun()
+    with ic2:
+        new_deadline = st.date_input(
+            "视频上传日期", value=_d(rec.get("deadline")) or date.today(),
+            key=f"det_date_{cid}",
+        )
+        if st.button("保存上传日期", key=f"det_date_save_{cid}", use_container_width=True):
+            db.update(cid, {"deadline": new_deadline.strftime("%Y-%m-%d")})
+            st.success(f"上传日期已登记：{new_deadline}")
+            st.rerun()
+    with ic3:
+        st.caption("「视频上传日期」即交稿截止，活动看板按此日期分月份展示。")
+
+    # ---- 流程进度 chips ----
+    st.markdown("#### 流程进度")
+    done_quote = bool(rec.get("price"))
+    done_guide = (rec.get("email_status") == "指南已发送")
+    done_contract = (rec.get("contract") == "已签署")
+    done_product = bool(str(rec.get("product_link") or "").strip())
+    done_order = (rec.get("order_status") == "已下单")
+    done_submit = bool(rec.get("review_status"))
+    passed = (rec.get("review_status") == "已通过")
+    closed = (_stage_of(rec) == "已闭环")
+
+    def step(name, ok, active_color="green"):
+        return _pill(("✅ " if ok else "○ ") + name, active_color if ok else "gray")
+
+    flow = (
+        step("确认合作", done_quote)
+        + step("指南已发送", done_guide)
+        + step("合同签署", done_contract)
+        + step("选品完成", done_product)
+        + step("已下单", done_order)
+        + step("提交审核", done_submit)
+        + step("审核通过", passed)
+        + step("已闭环", closed)
+    )
+    st.markdown(flow, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ---- 并行准备：分析与指南（分支A） ----
+    with st.expander("🧬 分析与指南（分支A：发送创作指南）", expanded=True):
+        render_analysis_guide(rec)
+
+    # ---- 分支B / 分支C / 下单 ----
+    st.markdown("#### 并行准备（分支 B / C）与下单")
+    b1, b2, b3 = st.columns(3, gap="large")
+    with b1:
+        st.markdown("**分支 B · 合同**")
+        if done_contract:
+            st.markdown(_pill("合同已签署", "green"), unsafe_allow_html=True)
+        elif st.button("✍️ 标记合同已签署", key=f"btn_contract_{cid}", use_container_width=True):
+            db.update(cid, {"contract": "已签署"})
+            st.rerun()
+    with b2:
+        st.markdown("**分支 C · 选品（商品链接）**")
+        plink = st.text_input(
+            "商品链接", value=rec.get("product_link", ""),
+            placeholder="https://ko.aliexpress.com/item/...",
+            key=f"camp_plink_{cid}", label_visibility="collapsed",
+        )
+        if st.button("💾 保存选品链接", key=f"btn_plink_{cid}", use_container_width=True):
+            db.update(cid, {"product_link": plink.strip()})
+            st.rerun()
+        if st.session_state.get(f"gmc_{cid}"):
+            st.markdown(_pill("GMC 已登记（模拟）", "green"), unsafe_allow_html=True)
+        elif st.button("🛒 提交 GMC 登记（模拟）", key=f"btn_gmc_{cid}", use_container_width=True):
+            if not plink.strip() and not done_product:
+                st.error("请先保存商品链接，再提交 GMC 登记")
+            else:
+                st.session_state[f"gmc_{cid}"] = True
+                st.success("已模拟提交 GMC 登记（真实 GMC 接口后续接入），预计 1-2 个工作日审核。")
+    with b3:
+        st.markdown("**下单**")
+        if done_order:
+            st.markdown(_pill("已下单", "green"), unsafe_allow_html=True)
+        elif st.button("📦 标记已下单", key=f"btn_order_{cid}", use_container_width=True):
+            db.update(cid, {"order_status": "已下单"})
+            st.rerun()
+        st.caption("建议分支 A/B/C 至少完成一项后再下单。")
+
+    st.divider()
+
+    # ---- 提交审核 ----
+    st.markdown("#### 提交审核")
+    s1, s2, s3 = st.columns([2, 1, 1])
+    with s1:
+        vlink = st.text_input(
+            "视频回链", value=rec.get("video_link", ""),
+            placeholder="网红提交的未公开视频链接", key=f"camp_vlink_{cid}",
+        )
+    with s2:
+        sub_date = st.date_input("提交日期", value=_d(rec.get("submitted_at")) or date.today(),
+                                 key=f"camp_subdate_{cid}")
+    with s3:
+        st.write("")
+        if st.button("📤 提交审核", key=f"btn_submit_{cid}", use_container_width=True, type="primary"):
+            if not vlink.strip():
+                st.error("请先填写视频回链")
+            else:
+                db.update(cid, {
+                    "video_link": vlink.strip(),
+                    "submitted_at": sub_date.strftime("%Y-%m-%d"),
+                    "review_status": "待审核",
+                })
+                st.success("已提交审核，请前往「审核站」处理。")
+                st.rerun()
+    rs = rec.get("review_status") or ""
+    if rs == "待审核":
+        st.markdown(_pill("当前状态：待审核", "orange"), unsafe_allow_html=True)
+    elif rs == "已通过":
+        st.markdown(_pill("当前状态：审核已通过", "green"), unsafe_allow_html=True)
+    elif rs == "已驳回":
+        st.markdown(_pill("当前状态：审核已驳回（请修改后重新提交）", "red"), unsafe_allow_html=True)
+
+    # ---- 闭环 ----
+    st.divider()
+    if closed:
+        st.markdown(_pill("本单合作已闭环 🎉", "green"), unsafe_allow_html=True)
+    elif st.button("🏁 标记已闭环", key=f"btn_close_{cid}", use_container_width=True,
+                   disabled=(not passed)):
+        db.update(cid, {"stage": "已闭环"})
+        st.rerun()
+    if not passed and not closed:
+        st.caption("审核通过后即可闭环。")
+
+
+def render_campaign():
+    """活动履约看板：左栏洽谈中固定，右栏按上传月份两列展示"""
+    st.markdown(CAMP_CSS, unsafe_allow_html=True)
+    st.header("🗓 活动履约")
+    st.caption("左栏「洽谈中」固定；右栏按视频上传月份分列（固定两列宽）。点击卡片进入履约详情。")
+
+    db = st.session_state.bd_db
+    try:
+        records = db.get_all()
+    except Exception as e:
+        st.error(f"无法连接宜搭：{e}")
+        return
+
+    # 详情路由
+    view_id = st.session_state.get("campaign_view")
+    if view_id:
+        rec = next((r for r in records if r.get("channel_id") == view_id), None)
+        if rec:
+            render_campaign_detail(rec)
+            return
+        st.session_state.pop("campaign_view", None)
+
+    negotiating, fulfilling, closed = [], [], []
+    for r in records:
+        s = _stage_of(r)
+        if s == "履约中":
+            fulfilling.append(r)
+        elif s == "已闭环":
+            closed.append(r)
+        else:
+            negotiating.append(r)
+
+    left, right = st.columns([1, 2.3], gap="large")
+
+    # ---- 左栏：洽谈中 ----
+    with left:
+        st.markdown(f"##### 💬 洽谈中（{len(negotiating)}）")
+        if not negotiating:
+            st.caption("暂无洽谈中的网红，去「BD 底库」添加。")
+        for r in negotiating:
+            st.markdown(_inf_card(r), unsafe_allow_html=True)
+            bc1, bc2 = st.columns(2)
+            with bc1:
+                if st.button("确认合作", key=f"camp_confirm_{r['channel_id']}",
+                             use_container_width=True, type="primary"):
+                    confirm_collab_dialog(r)
+            with bc2:
+                mailed = (r.get("email_status") == "已发送")
+                if mailed:
+                    st.markdown(_pill("邮件已发送", "blue"), unsafe_allow_html=True)
+                elif st.button("标记已发邮件", key=f"camp_mail_{r['channel_id']}",
+                               use_container_width=True):
+                    try:
+                        db.update(r["channel_id"], {"email_status": "已发送", "stage": "洽谈中"})
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"操作失败：{e}")
+
+    # ---- 右栏：履约中（按上传月份分组，两列宽） ----
+    with right:
+        st.markdown(f"##### 🚚 履约中（{len(fulfilling)}）")
+        months: dict = {}
+        for r in fulfilling:
+            dl = str(r.get("deadline") or "")[:7]
+            months.setdefault(dl or "未排期", []).append(r)
+        order = sorted(k for k in months if k != "未排期")
+        if "未排期" in months:
+            order.append("未排期")
+        if not order:
+            st.caption("右栏暂无履约中的网红。在左栏点「确认合作」后自动进入本月看板。")
+        for i in range(0, len(order), 2):
+            pair = order[i:i + 2]
+            cols = st.columns(2, gap="large")
+            for col, month in zip(cols, pair):
+                with col:
+                    label = month if month != "未排期" else "未排期（未登记上传日期）"
+                    st.markdown(f"<p class='yts-month-h'>📅 {label}（{len(months[month])}）</p>",
+                                unsafe_allow_html=True)
+                    for r in months[month]:
+                        st.markdown(_inf_card(r), unsafe_allow_html=True)
+                        if st.button("查看履约详情 →", key=f"camp_open_{r['channel_id']}",
+                                     use_container_width=True):
+                            st.session_state.campaign_view = r["channel_id"]
+                            st.rerun()
+
+    # ---- 已闭环归档 ----
+    if closed:
+        st.divider()
+        with st.expander(f"🗂 已闭环（{len(closed)}）"):
+            for r in closed:
+                c1, c2 = st.columns([3, 1])
+                with c1:
+                    st.markdown(
+                        f"**{r.get('channel_name', '-')}** · {r.get('category') or '-'} · "
+                        f"报价 ₩{fmt_money(r.get('price'))}"
+                    )
+                with c2:
+                    if st.button("查看", key=f"camp_closed_{r['channel_id']}", use_container_width=True):
+                        st.session_state.campaign_view = r["channel_id"]
+                        st.rerun()
+
+
+def render_review():
+    """审核站：待审核列表 + 通过/驳回（驳回必填意见）+ 审核日志"""
+    st.markdown(CAMP_CSS, unsafe_allow_html=True)
+    st.header("✅ 审核站")
+    st.caption("网红提交视频后在此审核。通过意见选填，驳回意见必填；每次审核自动追加审核记录（只增不减）。")
+
+    db = st.session_state.bd_db
+    try:
+        records = db.get_all()
+    except Exception as e:
+        st.error(f"无法连接宜搭：{e}")
+        return
+
+    pending = [r for r in records if r.get("review_status") == "待审核"]
+    st.markdown(f"##### ⏳ 待审核（{len(pending)}）")
+    if not pending:
+        st.info("暂无待审核视频。网红在「活动履约」里提交审核后，会出现在这里。")
+    for r in pending:
+        st.markdown(_inf_card(r), unsafe_allow_html=True)
+        vlink = str(r.get("video_link") or "").strip()
+        if vlink:
+            st.markdown(f"视频回链：[{vlink}]({vlink})")
+        else:
+            st.caption("视频回链：未填写")
+        if r.get("submitted_at"):
+            st.caption(f"提交日期：{r['submitted_at']}")
+        bc1, bc2, bc3 = st.columns([1, 1, 3])
+        with bc1:
+            if st.button("✅ 通过", key=f"rv_pass_{r['channel_id']}", use_container_width=True, type="primary"):
+                review_pass_dialog(r)
+        with bc2:
+            if st.button("🚫 驳回", key=f"rv_reject_{r['channel_id']}", use_container_width=True):
+                review_reject_dialog(r)
+        st.divider()
+
+    # ---- 审核日志 ----
+    st.markdown("##### 📒 审核记录")
+    logs = []
+    for r in records:
+        for row in (r.get("review_log") or []):
+            logs.append({
+                "网红": r.get("channel_name", "-"),
+                "审核日期": row.get("date", ""),
+                "审核结果": row.get("result", ""),
+                "审核意见": row.get("comment", ""),
+            })
+    if not logs:
+        st.caption("暂无审核记录。")
+    else:
+        logs.sort(key=lambda x: x["审核日期"], reverse=True)
+        st.dataframe(pd.DataFrame(logs), use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------
 
@@ -1008,27 +1671,30 @@ def main():
     if "module" not in st.session_state:
         st.session_state.module = "base"
 
-    b1, b2, b3 = st.columns(3)
-    with b1:
-        if st.button("📁 BD 底库", use_container_width=True,
-                     type="primary" if st.session_state.module == "base" else "secondary"):
-            st.session_state.module = "base"
-            st.rerun()
-    with b2:
-        if st.button("➕ 添加网红", use_container_width=True,
-                     type="primary" if st.session_state.module == "add" else "secondary"):
-            st.session_state.module = "add"
-            st.rerun()
-    with b3:
-        if st.button("📊 数据分析", use_container_width=True,
-                     type="primary" if st.session_state.module == "analysis" else "secondary"):
-            st.session_state.module = "analysis"
-            st.rerun()
+    modules = [
+        ("base", "📁 BD 底库"),
+        ("campaign", "🗓 活动履约"),
+        ("review", "✅ 审核站"),
+        ("add", "➕ 添加网红"),
+        ("analysis", "📊 数据分析"),
+    ]
+    cols = st.columns(len(modules))
+    for col, (key, label) in zip(cols, modules):
+        with col:
+            if st.button(label, use_container_width=True,
+                         type="primary" if st.session_state.module == key else "secondary",
+                         key=f"mod_{key}"):
+                st.session_state.module = key
+                st.rerun()
 
     st.divider()
 
     if st.session_state.module == "base":
         render_bd_table()
+    elif st.session_state.module == "campaign":
+        render_campaign()
+    elif st.session_state.module == "review":
+        render_review()
     elif st.session_state.module == "add":
         render_add_influencer()
     else:
