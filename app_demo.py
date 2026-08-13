@@ -225,7 +225,107 @@ def render_data_analysis():
         st.error(f"无法连接宜搭：{e}")
         return
     if not records:
-        st.info("底库为空，先添加网红再来看分析。")
+        st.info("底库为空，请先在下方导入网红活动数据。")
+
+    # ---- 数据导入：一个网红 × 一个活动 = 一行 ----
+    with st.expander("📥 导入网红活动数据（CSV / Excel）", expanded=not records):
+        st.caption(
+            "每一行 = 一个网红 × 一个活动；重复导入会按「频道ID × 活动名称」覆盖更新。"
+            "月份写法会自动映射为活动名称，如 2026-08 / 2026年8月 / 2608 → 2608活动。"
+        )
+        tpl = pd.DataFrame([{
+            "昵称": "如 꼼아",
+            "频道ID": "如 @kkom_aah（必填）",
+            "YouTube主页": "https://www.youtube.com/@kkom_aah",
+            "活动（月份）": "如 2026-08 或 2608活动",
+            "报价": "900000",
+            "挖掘人": "选填",
+        }])
+        st.download_button(
+            "⬇️ 下载导入模板", data=_df_to_xlsx({"导入模板": tpl}),
+            file_name="yts_导入模板.xlsx", mime=XLSX_MIME, key="dl_tpl_import",
+        )
+
+        def _cell(row, k):
+            v = row.get(k)
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return ""
+            return str(v).strip()
+
+        up = st.file_uploader("选择文件", type=["csv", "xlsx", "xls"],
+                              key="import_file", label_visibility="collapsed")
+        if up is not None:
+            fkey = f"{up.name}:{up.size}"
+            if st.session_state.get("import_done") == fkey:
+                st.caption("该文件已导入完成。如需重新导入，请更换文件或刷新页面。")
+            else:
+                try:
+                    if up.name.lower().endswith(".csv"):
+                        df_in = pd.read_csv(up, dtype=str)
+                    else:
+                        df_in = pd.read_excel(up, dtype=str)
+                except Exception as e:
+                    st.error(f"文件解析失败：{e}")
+                    df_in = None
+                if df_in is not None:
+                    alias = {
+                        "昵称": "channel_name", "网红": "channel_name", "频道名称": "channel_name",
+                        "频道ID": "channel_id", "channel_id": "channel_id",
+                        "YouTube主页": "channel_url", "频道链接": "channel_url", "链接": "channel_url",
+                        "活动": "activity", "活动名称": "activity", "月份": "activity",
+                        "活动（月份）": "activity",
+                        "报价": "price", "网红报价": "price",
+                        "挖掘人": "recruiter", "挖掘者": "recruiter",
+                    }
+                    df_in.columns = [alias.get(str(c).strip(), str(c).strip()) for c in df_in.columns]
+                    by_name, by_cid = {}, {}
+                    for r0 in records:
+                        nm = str(r0.get("channel_name") or "").strip()
+                        if nm and nm not in by_name:
+                            by_name[nm] = r0
+                        cid0 = str(r0.get("channel_id") or "").strip()
+                        if cid0:
+                            by_cid.setdefault(cid0, r0)
+                    ok, skip = 0, []
+                    for _, irow in df_in.iterrows():
+                        cid = _cell(irow, "channel_id")
+                        cname = _cell(irow, "channel_name")
+                        act = _norm_activity(_cell(irow, "activity"))
+                        base = by_cid.get(cid) or by_name.get(cname) or {}
+                        if not cid:
+                            cid = str(base.get("channel_id") or "").strip()
+                        if not cid or not act:
+                            skip.append(cname or "未命名行")
+                            continue
+                        upd = {
+                            "channel_id": cid,
+                            "activity_name": act,
+                            "channel_name": cname or str(base.get("channel_name") or ""),
+                            "channel_url": _cell(irow, "channel_url") or str(base.get("channel_url") or ""),
+                            "category": str(base.get("category") or ""),
+                            "recruiter": _cell(irow, "recruiter") or str(base.get("recruiter") or ""),
+                            "subscribers": base.get("subscribers") or 0,
+                            "status": str(base.get("status") or "已引入"),
+                        }
+                        pr = _cell(irow, "price").replace(",", "")
+                        if pr:
+                            try:
+                                upd["price"] = int(float(pr))
+                            except ValueError:
+                                pass
+                        db.add(upd)
+                        ok += 1
+                    msg = f"✅ 导入完成：成功写入 {ok} 行（按「频道 × 活动」覆盖更新）"
+                    if skip:
+                        msg += f"；跳过 {len(skip)} 行（缺频道ID或活动）：{'、'.join(skip[:5])}"
+                    st.session_state.import_done = fkey
+                    st.session_state["pending_import_msg"] = msg
+                    st.rerun()
+
+    if st.session_state.get("pending_import_msg"):
+        st.success(st.session_state.pop("pending_import_msg"))
+
+    if not records:
         return
 
     def num(v):
@@ -244,23 +344,28 @@ def render_data_analysis():
     total_gmv = sum(num(r.get("gmv")) for r in records)
 
     st.subheader("总体数据")
-    m = st.columns(7)
-    m[0].metric("网红数", len(records))
-    m[1].metric("总粉丝", fmt_num(total_subs))
-    m[2].metric("总播放", fmt_num(total_views))
-    m[3].metric("总点赞", fmt_num(total_likes))
-    m[4].metric("总评论", fmt_num(total_comments))
-    m[5].metric("总成交量", fmt_num(total_orders))
-    m[6].metric("总 GMV", fmt_money(total_gmv))
+    n_kol = len({str(r.get("channel_id") or "") for r in records})
+    m = st.columns(8)
+    m[0].metric("网红数", n_kol)
+    m[1].metric("活动记录数", len(records))
+    m[2].metric("总粉丝", fmt_num(total_subs))
+    m[3].metric("总播放", fmt_num(total_views))
+    m[4].metric("总点赞", fmt_num(total_likes))
+    m[5].metric("总评论", fmt_num(total_comments))
+    m[6].metric("总成交量", fmt_num(total_orders))
+    m[7].metric("总 GMV", fmt_money(total_gmv))
 
     # ---- 分网红数据 ----
     st.subheader("分网红数据")
+    st.caption("每一行 = 一个网红 × 一个活动；同一网红重复参加活动会单独列出。")
     rows = []
     for r in records:
         rows.append({
             "昵称": r.get("channel_name", ""),
+            "活动名称": str(r.get("activity_name") or "").strip() or "-",
             "垂类": r.get("category", ""),
             "挖掘人": r.get("recruiter", ""),
+            "报价": int(num(r.get("price"))),
             "粉丝": int(num(r.get("subscribers"))),
             "播放": int(num(r.get("video_views"))),
             "点赞": int(num(r.get("video_likes"))),
@@ -312,7 +417,8 @@ def render_data_analysis():
     df_total = pd.DataFrame([{
         "指标": k, "数值": v
     } for k, v in {
-        "网红数": len(records),
+        "网红数": n_kol,
+        "活动记录数": len(records),
         "总粉丝": total_subs,
         "总播放": total_views,
         "总点赞": total_likes,
@@ -341,7 +447,7 @@ def render_data_analysis():
             with st.spinner("AI 正在分析数据..."):
                 try:
                     summary_lines = [
-                        f"总体：网红{len(records)}个，总播放{total_views:.0f}，总点赞{total_likes:.0f}，"
+                        f"总体：网红{n_kol}人、活动记录{len(records)}条，总播放{total_views:.0f}，总点赞{total_likes:.0f}，"
                         f"总评论{total_comments:.0f}，总成交量{total_orders:.0f}，总GMV {total_gmv:.0f}。",
                         "分网红：",
                         df_kol.to_string(index=False),
@@ -377,7 +483,7 @@ def _set_contact_email(db, rec: dict, email: str) -> None:
         notes = re.sub(r"CONTACT_EMAIL:\s*\S+", f"CONTACT_EMAIL: {email}", notes)
     else:
         notes = (notes.rstrip() + "\n" if notes.strip() else "") + f"CONTACT_EMAIL: {email}"
-    db.update(rec["channel_id"], {"notes": notes})
+    db.update(rec["channel_id"], {"notes": notes}, rec.get("activity_name"))
 
 
 def _ensure_dna(rec: dict) -> dict:
@@ -591,7 +697,7 @@ def email_dialog(rec: dict, preset_body: str = "", mark_status: str = ""):
             return
         cur = str(rec.get("email_status") or "").strip()
         new_status = mark_status or (cur if cur in MAILED_STATUSES else "已发送")
-        db.update(cid, {"email_status": new_status})
+        db.update(cid, {"email_status": new_status}, rec.get("activity_name"))
         st.session_state["pending_mail_sent"] = (
             f"✅ 邮件已发送给 {name}（{addr}），该网红已进入「活动履约」洽谈中栏。"
         )
@@ -659,6 +765,7 @@ CAMP_CSS = """
 .pill-blue{background:#e5f0ff;color:#1a5fc9;}
 .pill-orange{background:#fff1dc;color:#b26a00;}
 .pill-red{background:#ffe5e5;color:#c62828;}
+.pill-purple{background:#f0e5ff;color:#6a1bc9;}
 .yts-month-h{font-size:15px;font-weight:600;color:#1d1d1f;margin:4px 0 10px 0;}
 </style>
 """
@@ -690,9 +797,42 @@ def _is_mailed(rec: dict) -> bool:
     return (str(rec.get("email_status") or "").strip()) in MAILED_STATUSES
 
 
+def _norm_activity(v) -> str:
+    """把月份/活动写法统一映射为「YYMM活动」：
+    2026-08 / 2026年8月 / 202608 / 2608 / 2608活动 / 8月 → 2608活动；
+    其他自定义文本（如「国庆专场」）原样保留。"""
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    if re.fullmatch(r"\d{4}活动", s):
+        return s
+    m = re.fullmatch(r"(20\d{2})[-./年](\d{1,2})月?", s)
+    if not m:
+        m = re.fullmatch(r"20(\d{2})(\d{2})", s) or re.fullmatch(r"(\d{2})(\d{2})", s)
+    if m and 1 <= int(m.group(2)) <= 12:
+        return f"{m.group(1)[2:] if len(m.group(1)) == 4 else m.group(1)}{int(m.group(2)):02d}活动"
+    m = re.fullmatch(r"(\d{1,2})月", s)
+    if m:
+        return f"{datetime.now().strftime('%y')}{int(m.group(1)):02d}活动"
+    return s
+
+
+def _activity_options(records: list) -> list:
+    """已有活动名称去重排序"""
+    return sorted({str(r.get("activity_name") or "").strip()
+                   for r in records if str(r.get("activity_name") or "").strip()})
+
+
+def _row_key(rec: dict) -> str:
+    """同一网红可能有多条活动记录，widget key 需按 频道×活动 唯一"""
+    return f"{rec.get('channel_id', '')}::{str(rec.get('activity_name') or '').strip()}"
+
+
 def _camp_summary_pills(rec: dict) -> str:
     """卡片上的状态小标签"""
     out = []
+    if rec.get("activity_name"):
+        out.append(_pill(rec["activity_name"], "purple"))
     if rec.get("price"):
         out.append(_pill(f"报价 ₩{fmt_money(rec['price'])}", "pink"))
     if rec.get("deadline"):
@@ -729,20 +869,44 @@ def _inf_card(rec: dict, extra_buttons=None):
 
 
 @st.dialog("确认合作")
-def confirm_collab_dialog(rec: dict):
-    """报价必填；同时可登记视频上传日期（=交稿截止）"""
+def confirm_collab_dialog(rec: dict, records: list | None = None):
+    """报价必填；选择/新增本次活动；可登记视频上传日期（=交稿截止）"""
     db = st.session_state.bd_db
+    cid = rec["channel_id"]
     st.caption(f"网红：{rec.get('channel_name', '-')}")
+
+    cur_act = str(rec.get("activity_name") or "").strip()
+    opts = _activity_options(records or [])
+    if cur_act and cur_act not in opts:
+        opts.append(cur_act)
+    NEW = "➕ 新增活动"
+    act_choice = st.selectbox(
+        "本次合作所属活动 · 必选", options=opts + [NEW],
+        index=(opts + [NEW]).index(cur_act) if cur_act in opts else 0,
+        key=f"cf_act_{cid}",
+    )
+    if act_choice == NEW:
+        act_raw = st.text_input(
+            "新活动名称", key=f"cf_act_new_{cid}",
+            placeholder="如 2609活动（或填 2026-09 / 9月 自动映射）",
+        )
+        activity = _norm_activity(act_raw)
+    else:
+        activity = act_choice
+
     price = st.text_input(
-        "网红报价（KRW）·必填", key=f"cf_price_{rec['channel_id']}",
+        "网红报价（KRW）·必填", key=f"cf_price_{cid}",
         placeholder="如 900000",
     )
     deadline = st.date_input(
         "视频上传日期（可选）",
         value=_d(rec.get("deadline")) or (date.today() + timedelta(days=14)),
-        key=f"cf_date_{rec['channel_id']}",
+        key=f"cf_date_{cid}",
     )
     if st.button("✅ 确认合作", use_container_width=True, type="primary"):
+        if not activity:
+            st.error("请先选择或填写本次合作所属活动")
+            return
         try:
             p = float(str(price).replace(",", "").strip())
         except (TypeError, ValueError):
@@ -750,16 +914,56 @@ def confirm_collab_dialog(rec: dict):
         if p <= 0:
             st.error("请先填写网红报价（必填，且大于 0）")
             return
-        updates = {"price": int(p), "stage": "履约中"}
+        updates = {"price": int(p), "stage": "履约中", "activity_name": activity}
         if deadline:
             updates["deadline"] = deadline.strftime("%Y-%m-%d")
         try:
-            db.update(rec["channel_id"], updates)
-            st.success(f"已确认合作，报价 ₩{int(p):,}")
-            st.session_state.campaign_view = rec["channel_id"]
+            db.update(cid, updates, rec.get("activity_name"))
+            st.success(f"已确认合作（{activity}），报价 ₩{int(p):,}")
+            st.session_state.campaign_view = (cid, activity)
             st.rerun()
         except Exception as e:
             st.error(f"保存失败：{e}")
+
+
+@st.dialog("报名新活动")
+def signup_activity_dialog(rec: dict, records: list | None = None):
+    """同一网红参加新活动：生成一条独立记录，走完整 邮件→洽谈→履约 流程"""
+    db = st.session_state.bd_db
+    cid = rec["channel_id"]
+    st.caption(f"网红：{rec.get('channel_name', '-')}。将生成一条新的活动记录（邮件状态空白），进入待联系池。")
+    opts = _activity_options(records or [])
+    NEW = "➕ 新增活动"
+    act_choice = st.selectbox("报名活动", options=opts + [NEW], index=0, key=f"su_act_{cid}")
+    if act_choice == NEW:
+        activity = _norm_activity(st.text_input(
+            "新活动名称", key=f"su_act_new_{cid}",
+            placeholder="如 2609活动（或 2026-09 / 9月 自动映射）",
+        ))
+    else:
+        activity = act_choice
+    if st.button("✅ 生成报名记录", use_container_width=True, type="primary"):
+        if not activity:
+            st.error("请先选择或填写活动")
+            return
+        if db.get_by_channel_id(cid, activity):
+            st.error(f"该网红已有「{activity}」的记录，不能重复报名")
+            return
+        db.add({
+            "channel_id": cid,
+            "channel_name": rec.get("channel_name", ""),
+            "channel_url": rec.get("channel_url", ""),
+            "category": rec.get("category", ""),
+            "recruiter": rec.get("recruiter", ""),
+            "subscribers": rec.get("subscribers") or 0,
+            "notes": rec.get("notes", ""),
+            "activity_name": activity,
+            "status": "已引入",
+        })
+        st.session_state["pending_mail_sent"] = (
+            f"✅ 已生成 {rec.get('channel_name', '-')} 的「{activity}」记录，进入待联系池。"
+        )
+        st.rerun()
 
 
 # 注：审核（通过/驳回）已移至独立审核站 app_review.py，供审核同学使用。
@@ -921,7 +1125,7 @@ def render_analysis_guide(rec: dict):
             st.caption("结合内容 DNA 与本期选品，生成可直接发给网红的完整指南文档。")
 
 
-def render_campaign_detail(rec: dict):
+def render_campaign_detail(rec: dict, records: list | None = None):
     """履约详情页：基本信息卡 + 流程进度 + 三分支 + 下单/提交审核/闭环"""
     cid = rec["channel_id"]
     db = st.session_state.bd_db
@@ -930,7 +1134,14 @@ def render_campaign_detail(rec: dict):
         st.session_state.pop("campaign_view", None)
         st.rerun()
 
-    st.subheader(f"{rec.get('channel_name', '-')} · 履约详情")
+    h1, h2 = st.columns([5, 1])
+    h1.subheader(f"{rec.get('channel_name', '-')} · 履约详情")
+    with h2:
+        if st.button("📝 报名新活动", key=f"camp_signup_{_row_key(rec)}",
+                     use_container_width=True,
+                     help="该网红参加新一期活动时，生成一条独立记录走完整流程"):
+            signup_activity_dialog(rec, records or [])
+
     st.markdown(_camp_summary_pills(rec) + _pill(_stage_of(rec), "pink"), unsafe_allow_html=True)
 
     # ---- 基本信息卡 ----
@@ -952,7 +1163,7 @@ def render_campaign_detail(rec: dict):
             if new_price <= 0:
                 st.error("报价必须大于 0")
             else:
-                db.update(cid, {"price": int(new_price)})
+                db.update(cid, {"price": int(new_price)}, rec.get("activity_name"))
                 st.success(f"报价已更新：₩{int(new_price):,}")
                 st.rerun()
     with ic2:
@@ -961,11 +1172,11 @@ def render_campaign_detail(rec: dict):
             key=f"det_date_{cid}",
         )
         if st.button("保存上传日期", key=f"det_date_save_{cid}", use_container_width=True):
-            db.update(cid, {"deadline": new_deadline.strftime("%Y-%m-%d")})
+            db.update(cid, {"deadline": new_deadline.strftime("%Y-%m-%d")}, rec.get("activity_name"))
             st.success(f"上传日期已登记：{new_deadline}")
             st.rerun()
     with ic3:
-        st.caption("「视频上传日期」即交稿截止，活动看板按此日期分月份展示。")
+        st.caption("「视频上传日期」即交稿截止；看板按活动分组展示。")
 
     # ---- 流程进度 chips ----
     st.markdown("#### 流程进度")
@@ -1007,7 +1218,7 @@ def render_campaign_detail(rec: dict):
         if done_contract:
             st.markdown(_pill("合同已签署", "green"), unsafe_allow_html=True)
         elif st.button("✍️ 标记合同已签署", key=f"btn_contract_{cid}", use_container_width=True):
-            db.update(cid, {"contract": "已签署"})
+            db.update(cid, {"contract": "已签署"}, rec.get("activity_name"))
             st.rerun()
     with b2:
         st.markdown("**分支 C · 选品（商品链接）**")
@@ -1017,7 +1228,7 @@ def render_campaign_detail(rec: dict):
             key=f"camp_plink_{cid}", label_visibility="collapsed",
         )
         if st.button("💾 保存选品链接", key=f"btn_plink_{cid}", use_container_width=True):
-            db.update(cid, {"product_link": plink.strip()})
+            db.update(cid, {"product_link": plink.strip()}, rec.get("activity_name"))
             st.rerun()
         if st.session_state.get(f"gmc_{cid}"):
             st.markdown(_pill("GMC 已登记（模拟）", "green"), unsafe_allow_html=True)
@@ -1032,7 +1243,7 @@ def render_campaign_detail(rec: dict):
         if done_order:
             st.markdown(_pill("已下单", "green"), unsafe_allow_html=True)
         elif st.button("📦 标记已下单", key=f"btn_order_{cid}", use_container_width=True):
-            db.update(cid, {"order_status": "已下单"})
+            db.update(cid, {"order_status": "已下单"}, rec.get("activity_name"))
             st.rerun()
         st.caption("建议分支 A/B/C 至少完成一项后再下单。")
 
@@ -1059,7 +1270,7 @@ def render_campaign_detail(rec: dict):
                     "video_link": vlink.strip(),
                     "submitted_at": sub_date.strftime("%Y-%m-%d"),
                     "review_status": "待审核",
-                })
+                }, rec.get("activity_name"))
                 st.success("已提交审核，请前往「审核站」处理。")
                 st.rerun()
     rs = rec.get("review_status") or ""
@@ -1076,17 +1287,17 @@ def render_campaign_detail(rec: dict):
         st.markdown(_pill("本单合作已闭环 🎉", "green"), unsafe_allow_html=True)
     elif st.button("🏁 标记已闭环", key=f"btn_close_{cid}", use_container_width=True,
                    disabled=(not passed)):
-        db.update(cid, {"stage": "已闭环"})
+        db.update(cid, {"stage": "已闭环"}, rec.get("activity_name"))
         st.rerun()
     if not passed and not closed:
         st.caption("审核通过后即可闭环。")
 
 
 def render_campaign():
-    """活动履约看板：左栏洽谈中固定，右栏按上传月份两列展示"""
+    """活动履约看板：左栏洽谈中固定，右栏按活动分组（两列宽）"""
     st.markdown(CAMP_CSS, unsafe_allow_html=True)
     st.header("🗓 活动履约")
-    st.caption("仅引入在 kol 挖掘网站标记「已发邮件」的网红；左栏洽谈中固定，右栏按视频上传月份分列（两列宽）。点击卡片进入履约详情。")
+    st.caption("仅引入在 kol 挖掘网站标记「已发邮件」的网红；左栏洽谈中固定，右栏按活动分组展示（两列宽）。同一网红参加多期活动时，每期一条独立记录。点击卡片进入履约详情。")
 
     db = st.session_state.bd_db
     try:
@@ -1127,12 +1338,18 @@ def render_campaign():
     if st.session_state.get("pending_mail_sent"):
         st.success(st.session_state.pop("pending_mail_sent"))
 
-    # 详情路由
-    view_id = st.session_state.get("campaign_view")
-    if view_id:
-        rec = next((r for r in records if r.get("channel_id") == view_id), None)
+    # 详情路由：campaign_view 为 (channel_id, activity_name) 复合键
+    view = st.session_state.get("campaign_view")
+    if view:
+        if isinstance(view, (tuple, list)):
+            vid, vact = str(view[0]), str(view[1] or "").strip()
+            rec = next((r for r in records
+                        if r.get("channel_id") == vid
+                        and str(r.get("activity_name") or "").strip() == vact), None)
+        else:
+            rec = next((r for r in records if r.get("channel_id") == view), None)
         if rec:
-            render_campaign_detail(rec)
+            render_campaign_detail(rec, records)
             return
         st.session_state.pop("campaign_view", None)
 
@@ -1156,10 +1373,11 @@ def render_campaign():
         if not negotiating:
             st.caption("暂无。在 kol 挖掘网站标记「已发邮件」后，网红会自动进入这里。")
         for r in negotiating:
+            rk = _row_key(r)
             st.markdown(_inf_card(r), unsafe_allow_html=True)
-            if st.button("确认合作", key=f"camp_confirm_{r['channel_id']}",
+            if st.button("确认合作", key=f"camp_confirm_{rk}",
                          use_container_width=True, type="primary"):
-                confirm_collab_dialog(r)
+                confirm_collab_dialog(r, records)
 
         st.divider()
         st.markdown(f"##### 📮 待联系（{len(unmailed)}）")
@@ -1167,44 +1385,47 @@ def render_campaign():
             st.caption("所有网红都已发邮件。")
         st.caption("未发邮件的网红。可在站内直发 AI 邀请邮件，或在你自己邮箱发过后点「标记已发邮件」。")
         for r in unmailed:
+            rk = _row_key(r)
             st.markdown(_inf_card(r), unsafe_allow_html=True)
             e1, e2 = st.columns(2)
             with e1:
-                if st.button("AI 邮件", key=f"camp_email_{r['channel_id']}",
+                if st.button("AI 邮件", key=f"camp_email_{rk}",
                              use_container_width=True, type="primary"):
                     email_dialog(r)
             with e2:
-                if st.button("标记已发邮件", key=f"camp_mailed_{r['channel_id']}",
+                if st.button("标记已发邮件", key=f"camp_mailed_{rk}",
                              use_container_width=True,
                              help="已在站外自己邮箱发过邮件时用"):
-                    db.update(r["channel_id"], {"email_status": "已发送"})
+                    db.update(r["channel_id"], {"email_status": "已发送"}, r.get("activity_name"))
                     st.rerun()
 
-    # ---- 右栏：履约中（按上传月份分组，两列宽） ----
+    # ---- 右栏：履约中（按活动分组，两列宽） ----
     with right:
         st.markdown(f"##### 🚚 履约中（{len(fulfilling)}）")
-        months: dict = {}
+        groups: dict = {}
         for r in fulfilling:
-            dl = str(r.get("deadline") or "")[:7]
-            months.setdefault(dl or "未排期", []).append(r)
-        order = sorted(k for k in months if k != "未排期")
-        if "未排期" in months:
-            order.append("未排期")
+            act = str(r.get("activity_name") or "").strip() or "未分配活动"
+            groups.setdefault(act, []).append(r)
+        order = sorted(k for k in groups if k != "未分配活动")
+        if "未分配活动" in groups:
+            order.append("未分配活动")
         if not order:
-            st.caption("右栏暂无履约中的网红。在左栏点「确认合作」后自动进入本月看板。")
+            st.caption("右栏暂无履约中的网红。在左栏点「确认合作」后自动进入对应活动看板。")
         for i in range(0, len(order), 2):
             pair = order[i:i + 2]
             cols = st.columns(2, gap="large")
-            for col, month in zip(cols, pair):
+            for col, act in zip(cols, pair):
                 with col:
-                    label = month if month != "未排期" else "未排期（未登记上传日期）"
-                    st.markdown(f"<p class='yts-month-h'>📅 {label}（{len(months[month])}）</p>",
+                    label = act if act != "未分配活动" else "未分配活动（确认合作时请选择活动）"
+                    st.markdown(f"<p class='yts-month-h'>🎯 {label}（{len(groups[act])}）</p>",
                                 unsafe_allow_html=True)
-                    for r in months[month]:
+                    for r in groups[act]:
+                        rk = _row_key(r)
                         st.markdown(_inf_card(r), unsafe_allow_html=True)
-                        if st.button("查看履约详情 →", key=f"camp_open_{r['channel_id']}",
+                        if st.button("查看履约详情 →", key=f"camp_open_{rk}",
                                      use_container_width=True):
-                            st.session_state.campaign_view = r["channel_id"]
+                            st.session_state.campaign_view = (
+                                r["channel_id"], str(r.get("activity_name") or "").strip())
                             st.rerun()
 
     # ---- 已闭环归档 ----
@@ -1212,15 +1433,19 @@ def render_campaign():
         st.divider()
         with st.expander(f"🗂 已闭环（{len(closed)}）"):
             for r in closed:
+                rk = _row_key(r)
                 c1, c2 = st.columns([3, 1])
                 with c1:
+                    act = str(r.get("activity_name") or "").strip()
                     st.markdown(
-                        f"**{r.get('channel_name', '-')}** · {r.get('category') or '-'} · "
+                        f"**{r.get('channel_name', '-')}**"
+                        + (f" · {act}" if act else "")
+                        + f" · {r.get('category') or '-'} · "
                         f"报价 ₩{fmt_money(r.get('price'))}"
                     )
                 with c2:
-                    if st.button("查看", key=f"camp_closed_{r['channel_id']}", use_container_width=True):
-                        st.session_state.campaign_view = r["channel_id"]
+                    if st.button("查看", key=f"camp_closed_{rk}", use_container_width=True):
+                        st.session_state.campaign_view = (r["channel_id"], act)
                         st.rerun()
 
 

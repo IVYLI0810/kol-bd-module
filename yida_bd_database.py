@@ -28,7 +28,7 @@ ENDPOINT = "aliding.aliyuncs.com"
 # 代码名 -> fieldId
 # ---------------------------------------------------------------------------
 FIELD_IDS = {
-    "channel_id": "textField_msn2qhnb",        # 频道ID（唯一）
+    "channel_id": "textField_msn2qhnb",        # 频道ID（与活动名称组合唯一）
     "channel_name": "textField_msn2qhnd",      # 昵称
     "channel_url": "textField_msn2qhnh",       # YouTube主页
     "category": "selectField_msn2qhnj",        # 垂类
@@ -48,6 +48,7 @@ FIELD_IDS = {
     "gmv": "numberField_msn2qhof",             # GMV
     "price": "numberField_mspqr44z",           # 报价
     "notes": "textareaField_msn2qhoj",         # 备注
+    "activity_name": "textField_msrcwjcr",     # 活动名称（如 2608活动；同一网红每活动一行）
     # ---- 活动履约流程字段（2026-08-12 组件定义实测） ----
     "stage": "selectField_mspwxzct",           # 合作阶段：洽谈中/履约中/已闭环
     "email_status": "selectField_mspwxzcv",    # 邮件状态：已发送/指南已发送
@@ -88,6 +89,7 @@ CODE_TO_LABEL = {
     "product_link": "商品链接", "product_views": "浏览量",
     "ctr": "点击率", "orders": "成交量",
     "conversion_rate": "转化率", "gmv": "GMV", "price": "报价", "notes": "备注",
+    "activity_name": "活动名称",
     "stage": "合作阶段", "email_status": "邮件状态", "contract": "合同状态",
     "order_status": "下单状态", "deadline": "交稿截止", "submitted_at": "实际提交时间",
     "review_status": "审核状态", "auth": "投放授权", "group_link": "群链接",
@@ -239,18 +241,40 @@ class YidaBDDB:
             request, self._headers("SearchFormDatas"), self._runtime)
         return resp.body.to_map()
 
-    def _find_instance(self, channel_id: str) -> Optional[dict]:
-        data = self._search_page({FIELD_IDS["channel_id"]: str(channel_id)}, size=1)
-        rows = data.get("Data") or data.get("data") or []
-        return rows[0] if rows else None
+    def _find_instances(self, channel_id: str) -> list:
+        """同一频道可能有多行（每个活动一行），全部取回"""
+        data = self._search_page({FIELD_IDS["channel_id"]: str(channel_id)}, size=100)
+        return data.get("Data") or data.get("data") or []
+
+    def _find_instance(self, channel_id: str, activity: Optional[str] = None) -> Optional[dict]:
+        rows = self._find_instances(channel_id)
+        if not rows:
+            return None
+        if activity is not None:
+            fid = FIELD_IDS["activity_name"]
+            for row in rows:
+                raw = row.get("FormData") or row.get("formData") or {}
+                if str(raw.get(fid) or "").strip() == str(activity).strip():
+                    return row
+            return None
+        if len(rows) == 1:
+            return rows[0]
+        # 多行且未指定活动：优先返回未填活动名称的行（兼容旧调用）
+        fid = FIELD_IDS["activity_name"]
+        for row in rows:
+            raw = row.get("FormData") or row.get("formData") or {}
+            if not str(raw.get(fid) or "").strip():
+                return row
+        return rows[0]
 
     # ------------------------- 业务接口（与 LocalBDDB 对齐） -------------------------
 
     def add(self, record: dict) -> dict:
-        """新增或更新（以 channel_id 为主键的 upsert）"""
+        """新增或更新（以 channel_id × 活动名称 为复合主键的 upsert）"""
         if not record.get("channel_id"):
             raise ValueError("channel_id 为必填字段")
-        existing = self._find_instance(record["channel_id"])
+        activity = record.get("activity_name")
+        existing = self._find_instance(record["channel_id"], activity)
         form_data = self._to_form_data(record)
         if existing:
             instance_id = existing.get("FormInstanceId") or existing.get("formInstanceId")
@@ -274,10 +298,10 @@ class YidaBDDB:
             )
             self._client.save_form_data_with_options(
                 request, self._headers("SaveFormData"), self._runtime)
-        return self.get_by_channel_id(record["channel_id"]) or record
+        return self.get_by_channel_id(record["channel_id"], activity) or record
 
-    def get_by_channel_id(self, channel_id: str) -> Optional[dict]:
-        inst = self._find_instance(channel_id)
+    def get_by_channel_id(self, channel_id: str, activity: Optional[str] = None) -> Optional[dict]:
+        inst = self._find_instance(channel_id, activity)
         return self._from_instance(inst) if inst else None
 
     def get_all(self, filters: Optional[dict] = None) -> list:
@@ -301,8 +325,8 @@ class YidaBDDB:
         results.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
         return results
 
-    def update(self, channel_id: str, updates: dict) -> Optional[dict]:
-        inst = self._find_instance(channel_id)
+    def update(self, channel_id: str, updates: dict, activity: Optional[str] = None) -> Optional[dict]:
+        inst = self._find_instance(channel_id, activity)
         if not inst:
             return None
         instance_id = inst.get("FormInstanceId") or inst.get("formInstanceId")
@@ -316,21 +340,27 @@ class YidaBDDB:
         )
         self._client.update_form_data_with_options(
             request, self._headers("UpdateFormData"), self._runtime)
-        return self.get_by_channel_id(channel_id)
+        return self.get_by_channel_id(channel_id, activity)
 
-    def delete(self, channel_id: str) -> bool:
-        inst = self._find_instance(channel_id)
-        if not inst:
+    def delete(self, channel_id: str, activity: Optional[str] = None) -> bool:
+        rows = self._find_instances(channel_id)
+        if activity is not None:
+            fid = FIELD_IDS["activity_name"]
+            rows = [r for r in rows
+                    if str((r.get("FormData") or r.get("formData") or {}).get(fid) or "").strip()
+                    == str(activity).strip()]
+        if not rows:
             return False
-        instance_id = inst.get("FormInstanceId") or inst.get("formInstanceId")
-        request = aliding_models.DeleteFormDataRequest(
-            app_type=self.app_type,
-            system_token=self.system_token,
-            form_instance_id=instance_id,
-            language="zh_CN",
-        )
-        self._client.delete_form_data_with_options(
-            request, self._headers("DeleteFormData"), self._runtime)
+        for inst in rows:
+            instance_id = inst.get("FormInstanceId") or inst.get("formInstanceId")
+            request = aliding_models.DeleteFormDataRequest(
+                app_type=self.app_type,
+                system_token=self.system_token,
+                form_instance_id=instance_id,
+                language="zh_CN",
+            )
+            self._client.delete_form_data_with_options(
+                request, self._headers("DeleteFormData"), self._runtime)
         return True
 
     def bulk_update_metrics(self, records: list) -> int:
@@ -373,9 +403,10 @@ class YidaBDDB:
         return count
 
     def append_review_log(self, channel_id: str, result: str,
-                          comment: str = "", date: str = "") -> Optional[dict]:
+                          comment: str = "", date: str = "",
+                          activity: Optional[str] = None) -> Optional[dict]:
         """追加一条审核记录（只增不减），并返回更新后的记录"""
-        rec = self.get_by_channel_id(channel_id)
+        rec = self.get_by_channel_id(channel_id, activity)
         if not rec:
             return None
         rows = list(rec.get("review_log") or [])
@@ -384,4 +415,4 @@ class YidaBDDB:
             "result": result,
             "comment": comment or "",
         })
-        return self.update(channel_id, {"review_log": rows})
+        return self.update(channel_id, {"review_log": rows}, activity)
