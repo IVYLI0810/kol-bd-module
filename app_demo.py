@@ -4,11 +4,14 @@
 YTS 网红管理库 - Streamlit 站（数据存钉钉宜搭，团队共享）
 
 模块：
-- 活动履约：仅引入在 kol 挖掘网站标记「已发邮件」的网红；
+- 活动履约：进入前必须选择「我是谁」（挖掘人，选项来自挖掘网站写入的挖掘人字段），
+  只管理自己挖掘的网红；仅引入在 kol 挖掘网站标记「已发邮件」的网红；
   左栏洽谈中固定，右栏按视频上传月份两列展示；
-  确认合作（报价必填）→ 三分支（指南/合同/选品）→ 下单 → 提交审核 → 闭环
-- 审核站：通过意见选填、驳回意见必填，审核记录只增不减
-- 添加网红 / 数据分析
+  确认合作（报价必填）→ 三分支（指南/合同/选品）→ 下单 → 提交审核 → 闭环；
+  站内 AI 邮件直发（SMTP）
+- 挖掘：跳转 kol 挖掘网站（带 ?u=当前姓名）
+- 数据分析
+审核已独立为 app_review.py（审核同学专用站）。
 """
 
 import os
@@ -19,12 +22,13 @@ from datetime import datetime, date, timedelta
 from email.header import Header
 from email.mime.text import MIMEText
 from io import BytesIO
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
 
 from bd_database import get_bd_db
-from youtube_analyzer import YouTubeAnalyzer, extract_channel_id
+from youtube_analyzer import YouTubeAnalyzer
 from ai_email_generator import AIEmailGenerator
 
 
@@ -52,6 +56,10 @@ def get_yida_config() -> dict:
         "form_uuid": "FORM-2A64DBB4851A4301BAA4C0A5C39E752DHXL0",
         "account_id": "550448",
     }
+
+
+# kol 挖掘网站（独立站点）；选了身份后跳转带 ?u=姓名
+FINDER_URL = "https://kol-finder-jzzxccqf9jk5soivat6bdf.streamlit.app/"
 
 
 def init_db():
@@ -188,171 +196,7 @@ def fmt_money(v):
     return f"{n:,.0f}"
 
 
-def _fetch_subscribers(channel_url: str):
-    """根据主页链接抓取频道粉丝数，回填到添加表单"""
-    api_key = st.session_state.get("youtube_api_key", "")
-    if not api_key:
-        st.error("请先在左侧填写 YouTube Data API Key")
-        return
-    if not channel_url:
-        st.error("请先填写 YouTube 主页链接")
-        return
-    with st.spinner("正在抓取粉丝数..."):
-        try:
-            analyzer = YouTubeAnalyzer(api_key)
-            cid = extract_channel_id(channel_url)
-            if not cid:
-                st.error("无法识别主页链接，请检查格式（如 https://www.youtube.com/@xxx）")
-                return
-            if not cid.startswith("UC"):
-                cid = analyzer.get_channel_id_by_handle(cid)
-            if not cid:
-                st.error("找不到该频道，请检查主页链接")
-                return
-            stats = analyzer.get_channel_stats(cid)
-            st.session_state["pending_fetch"] = {
-                "subs": stats["subscriber_count"],
-                "name": stats["title"],
-                "msg": f"抓取成功：{stats['title']} · 粉丝 {stats['subscriber_count']:,}",
-            }
-            st.rerun()
-        except Exception as e:
-            st.error(f"抓取失败：{e}")
-
-
-def _parse_bulk_add(df: pd.DataFrame) -> tuple[list[dict], list[dict]]:
-    """解析批量导入网红的表格，返回 (有效记录, 失败行)"""
-    col_map = {
-        "昵称": "channel_name", "channel_name": "channel_name",
-        "YouTube主页链接": "channel_url", "YouTube 主页链接": "channel_url",
-        "主页链接": "channel_url", "channel_url": "channel_url",
-        "垂类": "category", "category": "category",
-        "挖掘人": "recruiter", "recruiter": "recruiter",
-        "粉丝数": "subscribers", "粉丝": "subscribers", "subscribers": "subscribers",
-    }
-    df = df.rename(columns=col_map)
-    valid, invalid = [], []
-    for i, row in df.iterrows():
-        name = str(row.get("channel_name", "") or "").strip()
-        url = str(row.get("channel_url", "") or "").strip()
-        if not name or not url or name == "nan" or url == "nan":
-            invalid.append({"行号": i + 2, "原因": "昵称或主页链接为空", "内容": str(row.to_dict())})
-            continue
-        try:
-            subs = int(float(row.get("subscribers", 0) or 0))
-        except (TypeError, ValueError):
-            subs = 0
-        valid.append({
-            "channel_id": extract_channel_id(url) or url,
-            "channel_name": name,
-            "channel_url": url,
-            "category": str(row.get("category", "") or "").strip(),
-            "recruiter": str(row.get("recruiter", "") or "").strip(),
-            "subscribers": subs,
-            "status": "已引入",
-        })
-    return valid, invalid
-
-
-def render_add_influencer():
-    st.header("➕ 添加网红到 BD 底库")
-
-    # 必须在控件实例化之前修改带 key 的 session_state
-    pf = st.session_state.pop("pending_fetch", None)
-    if pf:
-        st.session_state["add_subscribers"] = pf["subs"]
-        if not st.session_state.get("add_name"):
-            st.session_state["add_name"] = pf["name"]
-        st.success(pf["msg"])
-    if st.session_state.pop("pending_clear", False):
-        st.session_state["add_name"] = ""
-        st.session_state["add_url"] = ""
-        st.session_state["add_subscribers"] = 0
-
-    if st.session_state.get("add_success_msg"):
-        st.success(st.session_state.pop("add_success_msg"))
-
-    channel_name = st.text_input("昵称", key="add_name")
-    channel_url = st.text_input(
-        "YouTube 主页链接", key="add_url",
-        placeholder="https://www.youtube.com/@xxx",
-    )
-
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        fetch_clicked = st.button("⚡ 自动抓取粉丝数", use_container_width=True)
-    with c2:
-        st.caption("填好主页链接后点一下，自动填粉丝数和昵称（需左侧填 YouTube API Key）。")
-
-    if fetch_clicked:
-        _fetch_subscribers(channel_url)
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        category = st.text_input("垂类", value="뷰티 & 헬스", key="add_cat")
-    with c2:
-        recruiter = st.text_input("挖掘人", value=st.session_state.get("sender_name", "아이비"), key="add_rec")
-    with c3:
-        subscribers = st.number_input(
-            "粉丝数", min_value=0,
-            value=int(st.session_state.get("add_subscribers", 0) or 0),
-        )
-
-    if st.button("➕ 添加", key="add_submit"):
-        if not channel_name or not channel_url:
-            st.error("昵称和主页链接必填")
-        else:
-            channel_id = extract_channel_id(channel_url) or channel_url
-            st.session_state.bd_db.add({
-                "channel_id": channel_id,
-                "channel_name": channel_name,
-                "channel_url": channel_url,
-                "category": category,
-                "recruiter": recruiter,
-                "subscribers": int(subscribers),
-                "status": "已引入",
-            })
-            st.session_state["add_success_msg"] = f"✅ {channel_name} 已成功加入底库。在 kol 挖掘网站标记「已发邮件」后，会自动进入「活动履约」看板。"
-            st.session_state["pending_clear"] = True
-            st.rerun()
-
-    st.divider()
-
-    # 批量导入网红
-    st.subheader("📥 批量导入网红（上传表格）")
-    template = pd.DataFrame([{
-        "昵称": "꿈아",
-        "YouTube主页链接": "https://www.youtube.com/@kkom_aah",
-        "垂类": "여성의류",
-        "挖掘人": "王修源",
-        "粉丝数": 12000,
-    }])
-    tpl_csv = template.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("下载导入模板", data=tpl_csv, file_name="bd_influencer_template.csv", mime="text/csv")
-
-    uploaded = st.file_uploader("上传 CSV 或 Excel", type=["csv", "xlsx", "xls"], key="bulk_add_upload")
-    if uploaded:
-        try:
-            if uploaded.name.endswith(".csv"):
-                df = pd.read_csv(uploaded)
-            else:
-                df = pd.read_excel(uploaded)
-            st.write("预览：")
-            st.dataframe(df.head(10), use_container_width=True)
-            if st.button("确认导入", key="bulk_add_confirm"):
-                valid, invalid = _parse_bulk_add(df)
-                ok = 0
-                for rec in valid:
-                    st.session_state.bd_db.add(rec)
-                    ok += 1
-                st.success(f"成功导入 {ok} 个网红")
-                if invalid:
-                    with st.expander("查看失败记录"):
-                        st.json(invalid)
-                st.session_state["add_success_msg"] = f"✅ 批量导入完成：成功 {ok} 个，失败 {len(invalid)} 行。"
-                st.rerun()
-        except Exception as e:
-            st.error(f"解析文件失败：{e}")
+# 注：「添加网红」模块已移除——新网红统一从 kol 挖掘网站入库。
 
 
 # ---------------------------------------------------------------------------
@@ -918,35 +762,7 @@ def confirm_collab_dialog(rec: dict):
             st.error(f"保存失败：{e}")
 
 
-@st.dialog("审核通过")
-def review_pass_dialog(rec: dict):
-    comment = st.text_area("审核意见（选填）", key=f"rp_c_{rec['channel_id']}")
-    if st.button("✅ 确认通过", use_container_width=True, type="primary"):
-        try:
-            db = st.session_state.bd_db
-            db.update(rec["channel_id"], {"review_status": "已通过"})
-            db.append_review_log(rec["channel_id"], "已通过", comment.strip())
-            st.success("已通过审核，记录已写入审核日志")
-            st.rerun()
-        except Exception as e:
-            st.error(f"保存失败：{e}")
-
-
-@st.dialog("审核驳回")
-def review_reject_dialog(rec: dict):
-    comment = st.text_area("驳回原因（必填）", key=f"rj_c_{rec['channel_id']}")
-    if st.button("🚫 确认驳回", use_container_width=True):
-        if not comment.strip():
-            st.error("驳回必须填写审核意见")
-            return
-        try:
-            db = st.session_state.bd_db
-            db.update(rec["channel_id"], {"review_status": "已驳回"})
-            db.append_review_log(rec["channel_id"], "已驳回", comment.strip())
-            st.success("已驳回，意见已写入审核日志")
-            st.rerun()
-        except Exception as e:
-            st.error(f"保存失败：{e}")
+# 注：审核（通过/驳回）已移至独立审核站 app_review.py，供审核同学使用。
 
 
 def _tpl_dna(rec: dict) -> dict:
@@ -1272,15 +1088,44 @@ def render_campaign():
     st.header("🗓 活动履约")
     st.caption("仅引入在 kol 挖掘网站标记「已发邮件」的网红；左栏洽谈中固定，右栏按视频上传月份分列（两列宽）。点击卡片进入履约详情。")
 
-    if st.session_state.get("pending_mail_sent"):
-        st.success(st.session_state.pop("pending_mail_sent"))
-
     db = st.session_state.bd_db
     try:
         records = db.get_all()
     except Exception as e:
         st.error(f"无法连接宜搭：{e}")
         return
+
+    # ---- 身份门：必须选择「我是谁」（挖掘人）才能进入 ----
+    names = sorted({str(r.get("recruiter") or "").strip()
+                    for r in records if str(r.get("recruiter") or "").strip()})
+    user = str(st.session_state.get("bd_user") or "").strip()
+    if user and user not in names:
+        st.session_state.pop("bd_user", None)
+        user = ""
+    if not user:
+        st.markdown("##### 🔐 进入前请先选择你是谁")
+        st.caption("身份选项为挖掘网站里的「挖掘人」名字；进入后只管理自己挖掘的网红。")
+        if not names:
+            st.warning("暂时还没有挖掘人记录，请先去挖掘网站挖掘网红。")
+            return
+        sel = st.selectbox("你是谁", options=names, key="bd_user_sel")
+        if st.button("进入活动履约", type="primary", key="bd_user_enter"):
+            st.session_state.bd_user = sel
+            st.rerun()
+        return
+
+    # 只看自己挖掘的网红
+    records = [r for r in records if str(r.get("recruiter") or "").strip() == user]
+
+    c_id, c_sw = st.columns([4, 1])
+    c_id.markdown(f"当前身份：**{user}**（仅管理自己挖掘的网红）")
+    with c_sw:
+        if st.button("🔄 切换身份", key="bd_user_switch"):
+            st.session_state.pop("bd_user", None)
+            st.rerun()
+
+    if st.session_state.get("pending_mail_sent"):
+        st.success(st.session_state.pop("pending_mail_sent"))
 
     # 详情路由
     view_id = st.session_state.get("campaign_view")
@@ -1379,59 +1224,6 @@ def render_campaign():
                         st.rerun()
 
 
-def render_review():
-    """审核站：待审核列表 + 通过/驳回（驳回必填意见）+ 审核日志"""
-    st.markdown(CAMP_CSS, unsafe_allow_html=True)
-    st.header("✅ 审核站")
-    st.caption("网红提交视频后在此审核。通过意见选填，驳回意见必填；每次审核自动追加审核记录（只增不减）。")
-
-    db = st.session_state.bd_db
-    try:
-        records = db.get_all()
-    except Exception as e:
-        st.error(f"无法连接宜搭：{e}")
-        return
-
-    pending = [r for r in records if r.get("review_status") == "待审核"]
-    st.markdown(f"##### ⏳ 待审核（{len(pending)}）")
-    if not pending:
-        st.info("暂无待审核视频。网红在「活动履约」里提交审核后，会出现在这里。")
-    for r in pending:
-        st.markdown(_inf_card(r), unsafe_allow_html=True)
-        vlink = str(r.get("video_link") or "").strip()
-        if vlink:
-            st.markdown(f"视频回链：[{vlink}]({vlink})")
-        else:
-            st.caption("视频回链：未填写")
-        if r.get("submitted_at"):
-            st.caption(f"提交日期：{r['submitted_at']}")
-        bc1, bc2, bc3 = st.columns([1, 1, 3])
-        with bc1:
-            if st.button("✅ 通过", key=f"rv_pass_{r['channel_id']}", use_container_width=True, type="primary"):
-                review_pass_dialog(r)
-        with bc2:
-            if st.button("🚫 驳回", key=f"rv_reject_{r['channel_id']}", use_container_width=True):
-                review_reject_dialog(r)
-        st.divider()
-
-    # ---- 审核日志 ----
-    st.markdown("##### 📒 审核记录")
-    logs = []
-    for r in records:
-        for row in (r.get("review_log") or []):
-            logs.append({
-                "网红": r.get("channel_name", "-"),
-                "审核日期": row.get("date", ""),
-                "审核结果": row.get("result", ""),
-                "审核意见": row.get("comment", ""),
-            })
-    if not logs:
-        st.caption("暂无审核记录。")
-    else:
-        logs.sort(key=lambda x: x["审核日期"], reverse=True)
-        st.dataframe(pd.DataFrame(logs), use_container_width=True, hide_index=True)
-
-
 # ---------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------
@@ -1469,33 +1261,34 @@ def main():
     render_sidebar()
     init_db()
 
-    # 模块切换：按钮形式
+    # 模块切换：按钮形式（挖掘为外链按钮，直达 kol 挖掘网站）
     if "module" not in st.session_state:
         st.session_state.module = "campaign"
 
-    modules = [
-        ("campaign", "🗓 活动履约"),
-        ("review", "✅ 审核站"),
-        ("add", "➕ 添加网红"),
-        ("analysis", "📊 数据分析"),
-    ]
-    cols = st.columns(len(modules))
-    for col, (key, label) in zip(cols, modules):
-        with col:
-            if st.button(label, use_container_width=True,
-                         type="primary" if st.session_state.module == key else "secondary",
-                         key=f"mod_{key}"):
-                st.session_state.module = key
-                st.rerun()
+    user = str(st.session_state.get("bd_user") or "").strip()
+    finder_url = FINDER_URL + ("?u=" + quote(user) if user else "?u")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("🗓 活动履约", use_container_width=True,
+                     type="primary" if st.session_state.module == "campaign" else "secondary",
+                     key="mod_campaign"):
+            st.session_state.module = "campaign"
+            st.rerun()
+    with c2:
+        st.link_button("⛏ 挖掘", finder_url, use_container_width=True, type="secondary",
+                       help="跳转 kol 挖掘网站")
+    with c3:
+        if st.button("📊 数据分析", use_container_width=True,
+                     type="primary" if st.session_state.module == "analysis" else "secondary",
+                     key="mod_analysis"):
+            st.session_state.module = "analysis"
+            st.rerun()
 
     st.divider()
 
     if st.session_state.module == "campaign":
         render_campaign()
-    elif st.session_state.module == "review":
-        render_review()
-    elif st.session_state.module == "add":
-        render_add_influencer()
     else:
         render_data_analysis()
 
