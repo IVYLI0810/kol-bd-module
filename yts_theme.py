@@ -109,6 +109,36 @@ a.act:hover, .act:hover {background: #fbdce7; text-decoration: none !important;}
     left: calc(50% + 18px); width: calc(100% - 36px); height: 2px; background: #efe3e8;}
 .ystep.done:not(:last-child)::after {background: #cdead8;}
 
+/* ---------- 原生可点流程条（隐形按钮覆盖，点击=轻量刷新） ---------- */
+.stepnode {display: flex; flex-direction: column; align-items: center;
+    min-width: 0; padding: 4px 0 2px 0;}
+.stepnode .dot {width: 28px; height: 28px; border-radius: 50%; display: flex;
+    align-items: center; justify-content: center; font-size: 12px; font-weight: 700;
+    background: #f3ecef; color: #a89aa1; border: 1px solid #ecdfe4;
+    position: relative; z-index: 1; transition: box-shadow .12s ease;}
+.stepnode.done .dot {background: #e5f6ec; color: #1a7f4b; border-color: #bfe6cf;}
+.stepnode.doing .dot {background: #fdeef3; color: #c2507a; border-color: #f0c3d4;}
+.stepnode .lbl {margin-top: 6px; font-size: 11.5px; font-weight: 600; color: #86868b;
+    text-align: center; line-height: 1.35; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 100%;}
+.stepnode.done .lbl {color: #1a7f4b;}
+.stepnode.doing .lbl {color: #c2507a;}
+div[data-testid="stColumn"]:has(.stepnode) {position: relative;}
+div[data-testid="stColumn"]:has(.stepnode):not(:last-child)::after {content: "";
+    position: absolute; top: 18px; left: calc(50% + 18px); right: calc(-50% + 18px);
+    height: 2px; background: #efe3e8;}
+div[data-testid="stColumn"]:has(.stepnode.done):not(:last-child)::after {background: #cdead8;}
+div[data-testid="stColumn"]:has(.stepnode):hover .dot {box-shadow: 0 2px 8px rgba(190,120,145,.25);}
+.stepnode.sel .dot {box-shadow: 0 0 0 3px #fff, 0 0 0 5px #dd8fa8;}
+.stepnode.sel .lbl {color: #1d1d1f;}
+div[data-testid="stColumn"]:has(.stepnode) button {position: absolute !important;
+    inset: 0 !important; width: 100% !important; height: 100% !important;
+    opacity: 0 !important; cursor: pointer; z-index: 6; margin: 0 !important;
+    padding: 0 !important; box-shadow: none !important;}
+div[data-testid="stColumn"]:has(.stepnode) button:focus,
+div[data-testid="stColumn"]:has(.stepnode) button:active {outline: none !important;
+    box-shadow: none !important;}
+
 /* 分支小卡 */
 .ybranch {border: 1px solid #f1e4e8; border-radius: 12px; background: #fff;
     padding: 10px 12px; height: 100%;}

@@ -13,6 +13,7 @@
 """
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from alibabacloud_aliding20230426.client import Client
@@ -254,15 +255,24 @@ class YidaBDDB:
                 if fid and value not in (None, ""):
                     search_field[fid] = str(value)
         results = []
-        page = 1
-        while True:
+
+        def fetch(page):
             data = self._search_page(search_field, page=page, size=100)
-            rows = data.get("Data") or data.get("data") or []
-            results.extend(self._from_instance(r) for r in rows)
-            # 注意：aliding 响应不带 TotalCount，须以「不满一页」作为结束条件
-            if len(rows) < 100:
-                break
-            page += 1
+            return data.get("Data") or data.get("data") or []
+
+        rows = fetch(1)
+        results.extend(self._from_instance(r) for r in rows)
+        # 注意：aliding 响应不带 TotalCount，须以「不满一页」作为结束条件；
+        # 第 2 页起每 4 页一批并行拉取，减少串行等待
+        next_page = 2
+        while len(rows) == 100:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                batch = list(ex.map(fetch, range(next_page, next_page + 4)))
+            for rows in batch:
+                results.extend(self._from_instance(r) for r in rows)
+                if len(rows) < 100:
+                    break
+            next_page += 4
         results.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
         return results
 

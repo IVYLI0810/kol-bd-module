@@ -48,7 +48,7 @@ def _today():
 class YTSStore:
     """与 demo 版 YTSStore 同接口，底层为宜搭（带 60 秒缓存，避免页面卡顿）"""
 
-    CACHE_TTL = 60  # 秒；写操作会 _invalidate 强制刷新
+    CACHE_TTL = 120  # 秒；写操作会 _invalidate 强制刷新
 
     def __init__(self, db=None):
         self.db = db or YidaBDDB(**_cfg())

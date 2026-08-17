@@ -371,6 +371,10 @@ def _flow_state(cond_done, cond_doing):
     return "done" if cond_done else ("doing" if cond_doing else "todo")
 
 
+def _set_detail_step(cid, i):
+    st.session_state.setdefault("detail_steps", {})[cid] = i
+
+
 def page_detail(collab_id):
     home_btn()
     c = store.get_collab(collab_id)
@@ -405,8 +409,17 @@ def page_detail(collab_id):
     sel = st.session_state.setdefault("detail_steps", {}) \
         .get(collab_id, cur_default)
     sel = max(0, min(sel, len(steps) - 1))
-    T.component_html(T.steps_bar(steps, selected=sel, nav_id=collab_id),
-                     height=86)
+    cols = st.columns(len(steps), gap="small")
+    for i, col in enumerate(cols):
+        label, state = steps[i]
+        icon = "✓" if state == "done" else str(i + 1)
+        selc = " sel" if i == sel else ""
+        with col:
+            st.markdown(f'<div class="stepnode {state}{selc}"><div class="dot">'
+                        f'{icon}</div><div class="lbl">{label}</div></div>',
+                        unsafe_allow_html=True)
+            st.button(label, key=f"stepnav{i}",
+                      on_click=_set_detail_step, args=(collab_id, i))
 
     meta = [f'计划上线 {T.badge(c["plan_month"] or "-")}']
     if c.get("email"):
