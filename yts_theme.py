@@ -130,7 +130,8 @@ a.act:hover, .act:hover {background: #fbdce7; text-decoration: none !important;}
 .stButton > button {
     border-radius: 10px !important; border: 1px solid #e8d8dd !important;
     background: #fff !important; color: #1d1d1f !important;
-    font-weight: 600 !important; font-size: 13px !important;
+    font-weight: 600 !important; font-size: 12.5px !important;
+    height: 34px !important; padding: 0 14px !important;
     box-shadow: none !important; transition: background .12s ease !important;
 }
 .stButton > button:hover {background: #fdf3f6 !important; border-color: #e3c4cf !important;}
@@ -142,7 +143,8 @@ a.act:hover, .act:hover {background: #fbdce7; text-decoration: none !important;}
 .stFormSubmitButton > button {
     border-radius: 10px !important; border: 1px solid #e8d8dd !important;
     background: #fff !important; color: #1d1d1f !important;
-    font-weight: 600 !important; font-size: 13px !important;
+    font-weight: 600 !important; font-size: 12.5px !important;
+    height: 34px !important; padding: 0 14px !important;
 }
 .stFormSubmitButton > button[kind="primaryFormSubmit"] {
     background: #dd8fa8 !important; border-color: #dd8fa8 !important;

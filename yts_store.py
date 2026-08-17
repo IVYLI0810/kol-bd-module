@@ -124,7 +124,15 @@ class YTSStore:
 
     # ---------------- 挖掘模块 ----------------
     def list_pool(self):
-        return self._load()["pool"]
+        data = self._load()
+        stages = {}
+        for c in data["collabs"]:
+            stages[c["influencer_id"]] = "洽谈中" if c["status"] == "洽谈中" else "已确认"
+        out = []
+        for inf in data["pool"]:
+            out.append({**inf, "stage": stages.get(
+                inf["id"], "已发邮件" if inf.get("emailed") else "")})
+        return out
 
     def add_influencer(self, rec):
         """新增网红到挖掘池（demo 本地版）"""
@@ -152,11 +160,16 @@ class YTSStore:
         return count
 
     def mark_emailed(self, inf_id):
-        """标记已发邮件 → 自动回流到活动模块左栏（洽谈中），按 id 去重"""
+        """标记已发邮件 → 留在挖掘池（待「标记洽谈中」后才流入活动）"""
         data = self._load()
         for inf in data["pool"]:
             if inf["id"] == inf_id:
                 inf["emailed"] = True
+        self._save(data)
+
+    def mark_negotiating(self, inf_id):
+        """标记洽谈中 → 流入活动模块洽谈栏，按 id 去重"""
+        data = self._load()
         exists = any(c["influencer_id"] == inf_id for c in data["collabs"])
         if not exists:
             inf = next(i for i in data["pool"] if i["id"] == inf_id)

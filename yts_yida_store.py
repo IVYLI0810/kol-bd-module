@@ -90,7 +90,8 @@ class YTSStore:
             review_status = audit_status or ""
         stage = r.get("stage") or ""
         plan_month = r.get("plan_month") or ""
-        status = "履约中" if plan_month else ("洽谈中" if r.get("email_status") == "已发送" else "未回流")
+        # 洽谈中闸门：挖掘页标记「洽谈中」后才流入活动模块（仅已发邮件不够）
+        status = "履约中" if plan_month else ("洽谈中" if stage == "洽谈中" else "未回流")
         return {
             "collab_id": r.get("channel_id"),
             "influencer_id": r.get("channel_id"),
@@ -158,6 +159,7 @@ class YTSStore:
                 "email": r.get("email") or "",
                 "recruiter": r.get("recruiter") or "",
                 "emailed": emailed,
+                "stage": r.get("stage") or "",
             })
         return out
 
@@ -168,8 +170,12 @@ class YTSStore:
         self._invalidate()
 
     def mark_emailed(self, inf_id):
-        """标记已发邮件 → 自动进入活动模块左栏（宜搭即单一数据源，天然去重）"""
+        """标记已发邮件 → 留在挖掘池（待「标记洽谈中」后才流入活动）"""
         self._upd(inf_id, {"email_status": "已发送", "stage": "已发邮件"})
+
+    def mark_negotiating(self, inf_id):
+        """标记洽谈中 → 流入活动模块洽谈栏"""
+        self._upd(inf_id, {"stage": "洽谈中"})
 
     # ---------------- 活动模块 ----------------
     def list_negotiating(self):

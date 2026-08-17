@@ -52,7 +52,7 @@ def page_home():
     ]), unsafe_allow_html=True)
 
     entries = [
-        ("dig", "🔍", "挖掘", "维护挖掘池，标记「已发邮件」后自动回流活动"),
+        ("dig", "🔍", "挖掘", "维护挖掘池：已发邮件 → 标记洽谈中，两步流入活动"),
         ("activity", "📋", "活动", "确认合作 → 三分支 → 下单 → 拍摄 → 审核 → 闭环"),
         ("analysis", "📊", "分析", "播放 / 点击率 / 成交量 / GMV 概览"),
     ]
@@ -163,18 +163,18 @@ def dlg_import():
 def page_dig():
     home_btn()
     st.markdown(T.header("挖掘模块",
-                         "标记「已发邮件」后，网红自动回流至活动模块洽谈列表"),
+                         "标记「已发邮件」留在池中；再标记「洽谈中」才流入活动模块"),
                 unsafe_allow_html=True)
     pool = store.list_pool()
 
-    c1, c2, c3, c4, c5, c6 = st.columns([2.4, 1.2, 1.2, 1.6, 1.1, 1.1])
+    c1, c2, c3, c4, c5, c6 = st.columns([2.2, 1.1, 1.1, 1.9, 1.1, 1.1])
     q = c1.text_input("搜索昵称 / 频道ID", key="dig_q", placeholder="🔍 输入关键词")
     cats = sorted({p.get("category") for p in pool if p.get("category")})
     cat = c2.selectbox("垂类", ["全部垂类"] + cats, key="dig_cat")
     recs = sorted({p.get("recruiter") for p in pool if p.get("recruiter")})
     rec = c3.selectbox("挖掘人", ["全部挖掘人"] + recs, key="dig_rec")
-    status = c4.pills("状态", ["全部", "未发邮件", "已发邮件"], default="全部",
-                      key="dig_status")
+    status = c4.pills("状态", ["全部", "未发邮件", "已发邮件", "洽谈中"],
+                      default="全部", key="dig_status")
     with c5:
         st.markdown('<div style="height:26px"></div>', unsafe_allow_html=True)
         if st.button("📥 批量导入", use_container_width=True, key="btn_import"):
@@ -194,9 +194,13 @@ def page_dig():
         rows = [p for p in rows if p.get("category") == cat]
     if rec != "全部挖掘人":
         rows = [p for p in rows if p.get("recruiter") == rec]
-    if status != "全部":
-        rows = [p for p in rows
-                if ("已发邮件" if p.get("emailed") else "未发邮件") == status]
+    if status == "未发邮件":
+        rows = [p for p in rows if not p.get("emailed")]
+    elif status == "已发邮件":
+        rows = [p for p in rows if p.get("emailed")
+                and (p.get("stage") or "") in ("", "已发邮件")]
+    elif status == "洽谈中":
+        rows = [p for p in rows if (p.get("stage") or "") == "洽谈中"]
 
     PAGE = 20
     total = len(rows)
@@ -210,11 +214,16 @@ def page_dig():
     else:
         trows = []
         for p in rows[(cur - 1) * PAGE: cur * PAGE]:
-            if p.get("emailed"):
-                st_cell = T.badge("已回流活动")
-            else:
+            if not p.get("emailed"):
                 st_cell = (f'<a class="act" data-nav="?act=mail&id={esc(p["id"])}">'
                            f'标记已发邮件</a>')
+            elif (p.get("stage") or "") in ("", "已发邮件"):
+                st_cell = (f'<a class="act" data-nav="?act=neg&id={esc(p["id"])}">'
+                           f'标记洽谈中</a>')
+            elif p.get("stage") == "洽谈中":
+                st_cell = T.badge("洽谈中")
+            else:
+                st_cell = T.badge("已流入活动")
             trows.append([
                 f'<b>{esc(p.get("name") or p.get("id"))}</b>',
                 esc(p.get("category") or "-"),
@@ -310,31 +319,31 @@ def page_activity():
         ("✅ 已闭环", len(closed), "c-green"),
     ]), unsafe_allow_html=True)
 
-    left, right = st.columns([2, 3])
+    left, right = st.columns([1, 2])
 
     with left:
         st.markdown(T.sub("💬 洽谈中"), unsafe_allow_html=True)
         if filter_by is None:
             st.markdown(T.empty_hint("请先在上方选择你的名字"), unsafe_allow_html=True)
         elif not negs:
-            st.markdown(T.empty_hint("暂无洽谈中网红，去挖掘模块标记「已发邮件」即可回流"),
+            st.markdown(T.empty_hint("暂无洽谈中网红，去挖掘模块标记「洽谈中」即可流入"),
                         unsafe_allow_html=True)
         for c in negs:
             with st.container():
                 st.markdown(T.ycard_open(), unsafe_allow_html=True)
                 st.markdown(
-                    f'<div class="nm" style="font-size:14px;font-weight:600">'
+                    f'<div class="nm" style="font-size:13px;font-weight:700">'
                     f'{esc(c["name"])}</div>'
-                    f'<div class="mt" style="font-size:12px;color:#86868b;'
-                    f'margin-top:3px">{esc(c.get("category") or "-")} · '
+                    f'<div class="mt" style="font-size:11px;color:#86868b;'
+                    f'margin-top:2px">{esc(c.get("category") or "-")} · '
                     f'{c.get("followers", 0):,} 粉丝</div>',
                     unsafe_allow_html=True)
-                m1, m2 = st.columns([1.4, 1])
+                m1, m2 = st.columns([1.5, 1])
                 month = m1.text_input("上线月份", NOW_MONTH,
                                       key=f"m_{c['collab_id']}",
                                       label_visibility="collapsed")
                 if m2.button("确认合作", key=f"ok_{c['collab_id']}",
-                             use_container_width=True, type="primary"):
+                             type="primary"):
                     store.confirm_collab(c["collab_id"], month)
                     st.toast(f"{c['name']} 已进入右栏（{month}）")
                     st.rerun()
@@ -628,13 +637,21 @@ if _qp.get("detail"):
     _d = _qp.get("detail")
     del st.query_params["detail"]
     go("detail", collab_id=_d)
+elif _qp.get("act") == "neg" and _qp.get("id"):
+    _i = _qp.get("id")
+    del st.query_params["act"]
+    del st.query_params["id"]
+    store.mark_negotiating(_i)
+    st.session_state.page = "dig"
+    st.toast("已标记「洽谈中」，网红已流入活动模块")
+    st.rerun()
 elif _qp.get("act") == "mail" and _qp.get("id"):
     _i = _qp.get("id")
     del st.query_params["act"]
     del st.query_params["id"]
     store.mark_emailed(_i)
     st.session_state.page = "dig"
-    st.toast("已标记「已发邮件」，网红已回流至活动模块")
+    st.toast("已标记「已发邮件」，留在挖掘池，待标记「洽谈中」")
     st.rerun()
 
 page = st.session_state.page
