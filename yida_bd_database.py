@@ -13,7 +13,6 @@
 """
 
 import json
-from datetime import datetime
 from typing import Optional
 
 from alibabacloud_aliding20230426.client import Client
@@ -28,7 +27,7 @@ ENDPOINT = "aliding.aliyuncs.com"
 # 代码名 -> fieldId
 # ---------------------------------------------------------------------------
 FIELD_IDS = {
-    "channel_id": "textField_msn2qhnb",        # 频道ID（与活动名称组合唯一）
+    "channel_id": "textField_msn2qhnb",        # 频道ID（唯一）
     "channel_name": "textField_msn2qhnd",      # 昵称
     "channel_url": "textField_msn2qhnh",       # YouTube主页
     "category": "selectField_msn2qhnj",        # 垂类
@@ -48,32 +47,33 @@ FIELD_IDS = {
     "gmv": "numberField_msn2qhof",             # GMV
     "price": "numberField_mspqr44z",           # 报价
     "notes": "textareaField_msn2qhoj",         # 备注
-    "activity_name": "textField_msrcwjcr",     # 活动名称（如 2608活动；同一网红每活动一行）
-    # ---- 活动履约流程字段（2026-08-12 组件定义实测） ----
-    "stage": "selectField_mspwxzct",           # 合作阶段：洽谈中/履约中/已闭环
-    "email_status": "selectField_mspwxzcv",    # 邮件状态：已发送/指南已发送
-    "contract": "selectField_mspwxzd3",        # 合同状态：已签署/…
-    "order_status": "selectField_mspwxzd5",    # 下单状态：已下单/…
-    "deadline": "dateField_mspwxzd7",          # 交稿截止（=计划上传日期）
-    "submitted_at": "dateField_mspwxzd9",      # 实际提交时间
-    "review_status": "selectField_mspwxzdd",   # 审核状态：待审核/已通过/已驳回
-    "auth": "selectField_mspwxzdb",            # 投放授权
+    # ---- YTS 项目流程字段（2026-08-12 第二批实测） ----
+    "stage": "selectField_mspwxzct",           # 合作阶段
+    "email_status": "selectField_mspwxzcv",    # 邮件状态
+    "settlement": "selectField_mspwxzcx",      # 结算方式
     "group_link": "textField_mspwxzcz",        # 群链接
-    "settle": "selectField_mspwxzcx",          # 结算方式
-    "review_log": "tableField_mspwxzdf",       # 审核记录子表单
+    "contract_status": "selectField_mspwxzd3", # 合同状态
+    "order_status": "selectField_mspwxzd5",    # 下单状态
+    "submit_deadline": "dateField_mspwxzd7",   # 交稿截止
+    "submit_actual": "dateField_mspwxzd9",     # 实际提交时间
+    "ad_auth": "selectField_mspwxzdb",         # 投放授权
+    "audit_status": "selectField_mspwxzdd",    # 审核状态
+    "audit_log": "tableField_mspwxzdf",        # 子表单（审核记录）
+    # ---- YTS 正式版字段（2026-08-17 第三批实测） ----
+    "plan_month": "textField_mswndfpl",        # 计划上线月份
+    "shoot_status": "selectField_mswndfpm",    # 拍摄状态（未开始/拍摄中/已完成）
+    "recheck_video_url": "textField_mswndfpn", # 复审视频链接
+    "gmc_status": "selectField_mswndfpo",      # GMC校验状态（未校验/校验通过）
+    "product_list": "textareaField_mswndfpp",  # 选品清单（每行一个链接）
+    "guideline_status": "selectField_mswndfpr",# Guideline状态（未发送/已发送）
+    "email": "textField_mswndfpt",             # 联系邮箱
 }
 
-# 日期字段：写入须转毫秒时间戳，读取转回 YYYY-MM-DD
-DATE_FIELDS = {"deadline", "submitted_at"}
-
-# 子表单字段：值为对象数组，直接透传（内部日期同样转毫秒）
-TABLE_FIELDS = {"review_log"}
-
-# 审核子表单的列 fieldId（代码名 -> fieldId）
-REVIEW_LOG_CHILD = {
-    "date": "dateField_mspwxzdg",       # 审核日期
-    "result": "selectField_mspwxzdh",   # 审核结果：已通过/已驳回
-    "comment": "textareaField_mspwxzdi",  # 审核意见（驳回必填）
+# 子表（审核记录）内部字段映射
+AUDIT_SUB_FIELD_IDS = {
+    "audit_date": "dateField_mspwxzdg",        # 子表单-审核日期
+    "audit_result": "selectField_mspwxzdh",    # 子表单-审核结果
+    "audit_opinion": "textareaField_mspwxzdi", # 子表单-审核意见
 }
 
 NUMBER_FIELDS = {
@@ -89,35 +89,18 @@ CODE_TO_LABEL = {
     "product_link": "商品链接", "product_views": "浏览量",
     "ctr": "点击率", "orders": "成交量",
     "conversion_rate": "转化率", "gmv": "GMV", "price": "报价", "notes": "备注",
-    "activity_name": "活动名称",
-    "stage": "合作阶段", "email_status": "邮件状态", "contract": "合同状态",
-    "order_status": "下单状态", "deadline": "交稿截止", "submitted_at": "实际提交时间",
-    "review_status": "审核状态", "auth": "投放授权", "group_link": "群链接",
-    "settle": "结算方式", "review_log": "审核记录",
+    "stage": "合作阶段", "email_status": "邮件状态", "settlement": "结算方式",
+    "group_link": "群链接", "contract_status": "合同状态", "order_status": "下单状态",
+    "submit_deadline": "交稿截止", "submit_actual": "实际提交时间",
+    "ad_auth": "投放授权", "audit_status": "审核状态", "audit_log": "审核记录",
+    "plan_month": "计划上线月份", "shoot_status": "拍摄状态",
+    "recheck_video_url": "复审视频链接", "gmc_status": "GMC校验状态",
+    "product_list": "选品清单", "guideline_status": "Guideline状态",
+    "email": "联系邮箱",
 }
 
-
-def _date_to_ms(value) -> Optional[int]:
-    """YYYY-MM-DD / YYYY-MM-DD HH:MM:SS / datetime -> 毫秒时间戳"""
-    if value is None or value == "":
-        return None
-    if isinstance(value, (int, float)):
-        return int(value)
-    s = str(value).strip()
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d"):
-        try:
-            return int(datetime.strptime(s, fmt).timestamp() * 1000)
-        except ValueError:
-            continue
-    return None
-
-
-def _ms_to_date(value) -> str:
-    """毫秒时间戳 -> YYYY-MM-DD（非法值原样转字符串）"""
-    try:
-        return datetime.fromtimestamp(float(value) / 1000).strftime("%Y-%m-%d")
-    except (TypeError, ValueError, OSError):
-        return str(value)
+# 日期类字段（宜搭日期组件接受 YYYY-MM-DD 格式字符串）
+DATE_FIELDS = {"submit_deadline", "submit_actual"}
 
 
 class YidaBDDB:
@@ -160,63 +143,43 @@ class YidaBDDB:
                 except (TypeError, ValueError):
                     continue
             elif code in DATE_FIELDS:
-                ms = _date_to_ms(value)
-                if ms is None:
-                    continue
-                value = ms
-            elif code in TABLE_FIELDS and code == "review_log":
-                rows = []
-                for row in (value or []):
-                    item = {}
-                    for child_code, child_fid in REVIEW_LOG_CHILD.items():
-                        v = row.get(child_code)
-                        if v in (None, ""):
-                            continue
-                        if child_code == "date":
-                            ms = _date_to_ms(v)
-                            if ms is None:
-                                continue
-                            v = ms
-                        else:
-                            v = str(v)
-                        item[child_fid] = v
-                    if item:
-                        rows.append(item)
-                if not rows:
-                    continue
-                value = rows
+                value = str(value)
+            elif code == "audit_log":
+                # 子表：value 是列表，每项为 {"audit_date","audit_result","audit_opinion"}
+                value = [self._to_audit_row(row) for row in (value or [])]
             else:
                 value = str(value)
             out[fid] = value
         return out
 
+    @staticmethod
+    def _to_audit_row(row: dict) -> dict:
+        return {
+            AUDIT_SUB_FIELD_IDS["audit_date"]: str(row.get("audit_date", "")),
+            AUDIT_SUB_FIELD_IDS["audit_result"]: str(row.get("audit_result", "")),
+            AUDIT_SUB_FIELD_IDS["audit_opinion"]: str(row.get("audit_opinion", "")),
+        }
+
+    @staticmethod
+    def _from_audit_row(row: dict) -> dict:
+        rev = {v: k for k, v in AUDIT_SUB_FIELD_IDS.items()}
+        return {rev.get(fid, fid): value for fid, value in row.items()}
+
     def _from_instance(self, inst: dict) -> dict:
         id_to_code = {v: k for k, v in FIELD_IDS.items() if v}
-        child_id_to_code = {v: k for k, v in REVIEW_LOG_CHILD.items()}
         raw = inst.get("FormData") or inst.get("formData") or {}
         rec = {"form_instance_id": inst.get("FormInstanceId") or inst.get("formInstanceId")}
         for fid, value in raw.items():
             code = id_to_code.get(fid)
             if not code:
                 continue
-            if code in DATE_FIELDS and value not in (None, ""):
-                rec[code] = _ms_to_date(value)
-            elif code == "review_log" and isinstance(value, list):
-                rows = []
-                for item in value:
-                    if not isinstance(item, dict):
-                        continue
-                    row = {}
-                    for k, v in item.items():
-                        ccode = child_id_to_code.get(k)
-                        if not ccode:
-                            continue
-                        row[ccode] = _ms_to_date(v) if ccode == "date" else v
-                    if row:
-                        rows.append(row)
-                rec[code] = rows
+            if code == "audit_log":
+                # 子表返回的是行列表，每行 {fieldId: value}
+                rows = value if isinstance(value, list) else []
+                rec["audit_log"] = [self._from_audit_row(r) for r in rows]
             else:
                 rec[code] = value
+        rec.setdefault("audit_log", [])
         for ts_key, ts_code in (("CreatedTimeGMT", "created_at"),
                                 ("ModifiedTimeGMT", "updated_at"),
                                 ("createdTimeGMT", "created_at"),
@@ -241,40 +204,18 @@ class YidaBDDB:
             request, self._headers("SearchFormDatas"), self._runtime)
         return resp.body.to_map()
 
-    def _find_instances(self, channel_id: str) -> list:
-        """同一频道可能有多行（每个活动一行），全部取回"""
-        data = self._search_page({FIELD_IDS["channel_id"]: str(channel_id)}, size=100)
-        return data.get("Data") or data.get("data") or []
-
-    def _find_instance(self, channel_id: str, activity: Optional[str] = None) -> Optional[dict]:
-        rows = self._find_instances(channel_id)
-        if not rows:
-            return None
-        if activity is not None:
-            fid = FIELD_IDS["activity_name"]
-            for row in rows:
-                raw = row.get("FormData") or row.get("formData") or {}
-                if str(raw.get(fid) or "").strip() == str(activity).strip():
-                    return row
-            return None
-        if len(rows) == 1:
-            return rows[0]
-        # 多行且未指定活动：优先返回未填活动名称的行（兼容旧调用）
-        fid = FIELD_IDS["activity_name"]
-        for row in rows:
-            raw = row.get("FormData") or row.get("formData") or {}
-            if not str(raw.get(fid) or "").strip():
-                return row
-        return rows[0]
+    def _find_instance(self, channel_id: str) -> Optional[dict]:
+        data = self._search_page({FIELD_IDS["channel_id"]: str(channel_id)}, size=1)
+        rows = data.get("Data") or data.get("data") or []
+        return rows[0] if rows else None
 
     # ------------------------- 业务接口（与 LocalBDDB 对齐） -------------------------
 
     def add(self, record: dict) -> dict:
-        """新增或更新（以 channel_id × 活动名称 为复合主键的 upsert）"""
+        """新增或更新（以 channel_id 为主键的 upsert）"""
         if not record.get("channel_id"):
             raise ValueError("channel_id 为必填字段")
-        activity = record.get("activity_name")
-        existing = self._find_instance(record["channel_id"], activity)
+        existing = self._find_instance(record["channel_id"])
         form_data = self._to_form_data(record)
         if existing:
             instance_id = existing.get("FormInstanceId") or existing.get("formInstanceId")
@@ -298,10 +239,10 @@ class YidaBDDB:
             )
             self._client.save_form_data_with_options(
                 request, self._headers("SaveFormData"), self._runtime)
-        return self.get_by_channel_id(record["channel_id"], activity) or record
+        return self.get_by_channel_id(record["channel_id"]) or record
 
-    def get_by_channel_id(self, channel_id: str, activity: Optional[str] = None) -> Optional[dict]:
-        inst = self._find_instance(channel_id, activity)
+    def get_by_channel_id(self, channel_id: str) -> Optional[dict]:
+        inst = self._find_instance(channel_id)
         return self._from_instance(inst) if inst else None
 
     def get_all(self, filters: Optional[dict] = None) -> list:
@@ -318,15 +259,15 @@ class YidaBDDB:
             data = self._search_page(search_field, page=page, size=100)
             rows = data.get("Data") or data.get("data") or []
             results.extend(self._from_instance(r) for r in rows)
-            total = data.get("TotalCount") or data.get("totalCount") or len(results)
-            if len(results) >= total or not rows:
+            # 注意：aliding 响应不带 TotalCount，须以「不满一页」作为结束条件
+            if len(rows) < 100:
                 break
             page += 1
         results.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
         return results
 
-    def update(self, channel_id: str, updates: dict, activity: Optional[str] = None) -> Optional[dict]:
-        inst = self._find_instance(channel_id, activity)
+    def update(self, channel_id: str, updates: dict) -> Optional[dict]:
+        inst = self._find_instance(channel_id)
         if not inst:
             return None
         instance_id = inst.get("FormInstanceId") or inst.get("formInstanceId")
@@ -340,27 +281,21 @@ class YidaBDDB:
         )
         self._client.update_form_data_with_options(
             request, self._headers("UpdateFormData"), self._runtime)
-        return self.get_by_channel_id(channel_id, activity)
+        return self.get_by_channel_id(channel_id)
 
-    def delete(self, channel_id: str, activity: Optional[str] = None) -> bool:
-        rows = self._find_instances(channel_id)
-        if activity is not None:
-            fid = FIELD_IDS["activity_name"]
-            rows = [r for r in rows
-                    if str((r.get("FormData") or r.get("formData") or {}).get(fid) or "").strip()
-                    == str(activity).strip()]
-        if not rows:
+    def delete(self, channel_id: str) -> bool:
+        inst = self._find_instance(channel_id)
+        if not inst:
             return False
-        for inst in rows:
-            instance_id = inst.get("FormInstanceId") or inst.get("formInstanceId")
-            request = aliding_models.DeleteFormDataRequest(
-                app_type=self.app_type,
-                system_token=self.system_token,
-                form_instance_id=instance_id,
-                language="zh_CN",
-            )
-            self._client.delete_form_data_with_options(
-                request, self._headers("DeleteFormData"), self._runtime)
+        instance_id = inst.get("FormInstanceId") or inst.get("formInstanceId")
+        request = aliding_models.DeleteFormDataRequest(
+            app_type=self.app_type,
+            system_token=self.system_token,
+            form_instance_id=instance_id,
+            language="zh_CN",
+        )
+        self._client.delete_form_data_with_options(
+            request, self._headers("DeleteFormData"), self._runtime)
         return True
 
     def bulk_update_metrics(self, records: list) -> int:
@@ -402,17 +337,47 @@ class YidaBDDB:
             count += 1
         return count
 
-    def append_review_log(self, channel_id: str, result: str,
-                          comment: str = "", date: str = "",
-                          activity: Optional[str] = None) -> Optional[dict]:
-        """追加一条审核记录（只增不减），并返回更新后的记录"""
-        rec = self.get_by_channel_id(channel_id, activity)
+    # ------------------------- YTS 流程：审核流 -------------------------
+
+    def add_audit(self, channel_id: str, result: str, opinion: str,
+                  audit_date: str = "") -> bool:
+        """追加一条审核记录到子表，并同步更新「审核状态」主字段
+
+        result: 「已通过」或「未通过」
+        opinion: 审核意见
+        audit_date: 审核日期（YYYY-MM-DD），默认取当天
+        """
+        from datetime import date
+        rec = self.get_by_channel_id(channel_id)
         if not rec:
-            return None
-        rows = list(rec.get("review_log") or [])
-        rows.append({
-            "date": date or datetime.now().strftime("%Y-%m-%d"),
-            "result": result,
-            "comment": comment or "",
+            return False
+        audit_log = list(rec.get("audit_log") or [])
+        audit_log.append({
+            "audit_date": audit_date or date.today().isoformat(),
+            "audit_result": result,
+            "audit_opinion": opinion,
         })
-        return self.update(channel_id, {"review_log": rows}, activity)
+        self.update(channel_id, {
+            "audit_log": audit_log,
+            "audit_status": result,
+        })
+        return True
+
+    def get_audit_log(self, channel_id: str) -> list:
+        """读取某网红的审核历史（按写入顺序）"""
+        rec = self.get_by_channel_id(channel_id)
+        if not rec:
+            return []
+        return rec.get("audit_log") or []
+
+    # ------------------------- YTS 流程：批量导入 -------------------------
+
+    def bulk_add(self, records: list) -> int:
+        """一键导入：批量写入网红记录（upsert 语义，已存在则更新）"""
+        count = 0
+        for rec in records:
+            if not rec.get("channel_id"):
+                continue
+            self.add(rec)
+            count += 1
+        return count
