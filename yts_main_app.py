@@ -399,7 +399,14 @@ def page_detail(collab_id):
         ("闭环", _flow_state(c["is_closed"],
                              rs in ("已通过", "复审通过") and not c["is_closed"])),
     ]
-    st.markdown(T.steps_bar(steps), unsafe_allow_html=True)
+    # 点节点展开对应详情：默认停在当前进行中的步骤
+    cur_default = next((i for i, (_, s) in enumerate(steps) if s == "doing"),
+                       len(steps) - 1)
+    sel = st.session_state.setdefault("detail_steps", {}) \
+        .get(collab_id, cur_default)
+    sel = max(0, min(sel, len(steps) - 1))
+    T.component_html(T.steps_bar(steps, selected=sel, nav_id=collab_id),
+                     height=86)
 
     meta = [f'计划上线 {T.badge(c["plan_month"] or "-")}']
     if c.get("email"):
@@ -414,129 +421,141 @@ def page_detail(collab_id):
                 'margin-bottom:10px">' + "　·　".join(meta) + "</div>",
                 unsafe_allow_html=True)
 
-    _render_actions(collab_id, c)
-
-    log = c.get("audit_log") or []
-    if log:
-        with st.expander(f"📜 审核历史（{len(log)} 条）"):
-            lrows = [[esc(r.get("audit_date", "")),
-                      T.badge("已通过" if r.get("audit_result") == "已通过"
-                              else "未通过"),
-                      esc(r.get("audit_opinion", ""))] for r in log]
-            st.markdown(T.table(["日期", "结果", "意见"], lrows),
-                        unsafe_allow_html=True)
+    _render_actions(collab_id, c, sel)
 
 
-def _render_actions(cid, c):
+def _render_actions(cid, c, step):
     branches = c["branches"]
     unlocked = all(branches.values())
     rs = c["review_status"]
 
-    # 三分支
-    with st.container():
-        st.markdown(T.ycard_open(), unsafe_allow_html=True)
-        st.markdown(T.sub("① 三分支并行"), unsafe_allow_html=True)
-        st.caption("发Guideline / 签合同 / 选品+GMC校验，三者全部完成才解锁下单")
-        b1, b2, b3 = st.columns(3)
-        with b1:
-            st.markdown(T.branch_card("分支A · 发Guideline", branches["guideline"],
-                                      "已发送" if branches["guideline"] else "未发送"),
+    if step == 0:
+        with st.container():
+            st.markdown(T.ycard_open(), unsafe_allow_html=True)
+            st.markdown(T.sub("确认合作"), unsafe_allow_html=True)
+            st.markdown(f'合作已确认 · 计划上线 {T.badge(c["plan_month"] or "-")}',
                         unsafe_allow_html=True)
-            st.button("撤销" if branches["guideline"] else "标记已发送", key="gb",
-                      use_container_width=True,
-                      on_click=store.set_branch,
-                      args=(cid, "guideline", not branches["guideline"]))
-        with b2:
-            st.markdown(T.branch_card("分支B · 签合同", branches["contract"],
-                                      "已签署" if branches["contract"] else "未签署"),
-                        unsafe_allow_html=True)
-            st.button("撤销" if branches["contract"] else "标记已签署", key="cb",
-                      use_container_width=True,
-                      on_click=store.set_branch,
-                      args=(cid, "contract", not branches["contract"]))
-        with b3:
-            st.markdown(T.branch_card("分支C · 选品+GMC校验", branches["gmc"],
-                                      "校验通过" if branches["gmc"] else "待校验"),
-                        unsafe_allow_html=True)
-            st.button("撤销" if branches["gmc"] else "✅ GMC校验通过", key="gc",
-                      use_container_width=True,
-                      on_click=store.set_branch,
-                      args=(cid, "gmc", not branches["gmc"]))
-        prods = st.text_area("选品清单（每行一个链接）",
-                             value="\n".join(c["product_list"]), key="prods",
-                             height=80)
-        if st.button("💾 保存选品清单", key="sp"):
-            store.set_products(cid, [p.strip() for p in prods.splitlines()
-                                     if p.strip()])
-            st.toast("清单已保存，可增减后重新校验")
-            st.rerun()
+            st.caption("下一步：三分支并行（发Guideline / 签合同 / 选品+GMC校验）")
 
-    # 下单 → 收货 → 拍摄
-    with st.container():
-        st.markdown(T.ycard_open(), unsafe_allow_html=True)
-        st.markdown(T.sub("② 下单 → 收货 → 拍摄"), unsafe_allow_html=True)
-        if not unlocked:
-            st.markdown(T.empty_hint("三分支未全部完成，暂不可下单"),
-                        unsafe_allow_html=True)
-        else:
-            cc = st.columns(3)
-            cc[0].markdown(f'<div class="ycard" style="margin:4px 0">'
-                           f'<div class="bt" style="font-size:12.5px;font-weight:600">'
-                           f'下单</div><div class="bd" style="font-size:11.5px;'
-                           f'color:#86868b;margin-top:2px">'
-                           f'{"已下单" if c["order_done"] else "未下单"}</div></div>',
-                           unsafe_allow_html=True)
-            cc[1].markdown(f'<div class="ycard" style="margin:4px 0">'
-                           f'<div class="bt" style="font-size:12.5px;font-weight:600">'
-                           f'收货</div><div class="bd" style="font-size:11.5px;'
-                           f'color:#86868b;margin-top:2px">'
-                           f'{"已收货" if c["received"] else "未收货"}</div></div>',
-                           unsafe_allow_html=True)
-            cc[2].markdown(f'<div class="ycard" style="margin:4px 0">'
-                           f'<div class="bt" style="font-size:12.5px;font-weight:600">'
-                           f'拍摄</div><div class="bd" style="font-size:11.5px;'
-                           f'color:#86868b;margin-top:2px">'
-                           f'{esc(c["shoot_status"] or "未开始")}</div></div>',
-                           unsafe_allow_html=True)
-            aa = st.columns(4)
-            if aa[0].button("📦 标记已下单", key="od", type="primary",
-                            disabled=c["order_done"]):
-                store.mark_order(cid)
-                st.rerun()
-            if aa[1].button("🏠 标记已收货", key="rv", type="primary",
-                            disabled=not c["order_done"] or c["received"]):
-                store.mark_received(cid)
-                st.rerun()
-            if aa[2].button("🎬 拍摄中", key="s1",
-                            disabled=not c["received"]
-                            or c["shoot_status"] == "已完成"):
-                store.mark_shoot(cid, "拍摄中")
-                st.rerun()
-            if aa[3].button("✅ 拍摄完成", key="s2", type="primary",
-                            disabled=not c["received"]
-                            or c["shoot_status"] == "已完成"):
-                store.mark_shoot(cid, "已完成")
+    elif step == 1:
+        # 三分支
+        with st.container():
+            st.markdown(T.ycard_open(), unsafe_allow_html=True)
+            st.markdown(T.sub("三分支并行"), unsafe_allow_html=True)
+            st.caption("发Guideline / 签合同 / 选品+GMC校验，三者全部完成才解锁下单")
+            b1, b2, b3 = st.columns(3)
+            with b1:
+                st.markdown(T.branch_card("分支A · 发Guideline", branches["guideline"],
+                                          "已发送" if branches["guideline"] else "未发送"),
+                            unsafe_allow_html=True)
+                st.button("撤销" if branches["guideline"] else "标记已发送", key="gb",
+                          use_container_width=True,
+                          on_click=store.set_branch,
+                          args=(cid, "guideline", not branches["guideline"]))
+            with b2:
+                st.markdown(T.branch_card("分支B · 签合同", branches["contract"],
+                                          "已签署" if branches["contract"] else "未签署"),
+                            unsafe_allow_html=True)
+                st.button("撤销" if branches["contract"] else "标记已签署", key="cb",
+                          use_container_width=True,
+                          on_click=store.set_branch,
+                          args=(cid, "contract", not branches["contract"]))
+            with b3:
+                st.markdown(T.branch_card("分支C · 选品+GMC校验", branches["gmc"],
+                                          "校验通过" if branches["gmc"] else "待校验"),
+                            unsafe_allow_html=True)
+                st.button("撤销" if branches["gmc"] else "✅ GMC校验通过", key="gc",
+                          use_container_width=True,
+                          on_click=store.set_branch,
+                          args=(cid, "gmc", not branches["gmc"]))
+            prods = st.text_area("选品清单（每行一个链接）",
+                                 value="\n".join(c["product_list"]), key="prods",
+                                 height=80)
+            if st.button("💾 保存选品清单", key="sp"):
+                store.set_products(cid, [p.strip() for p in prods.splitlines()
+                                         if p.strip()])
+                st.toast("清单已保存，可增减后重新校验")
                 st.rerun()
 
-    # 提交审核
-    with st.container():
-        st.markdown(T.ycard_open(), unsafe_allow_html=True)
-        st.markdown(T.sub("③ 提交审核"), unsafe_allow_html=True)
-        if c["shoot_status"] != "已完成":
-            st.markdown(T.empty_hint("拍摄完成后，在此录入未公开视频链接推送到审核站"),
-                        unsafe_allow_html=True)
-        elif not c["video_url"]:
-            url = st.text_input("未公开视频链接", key="vurl")
-            if st.button("📨 提交审核", key="sr", type="primary") and url.strip():
-                store.submit_review(cid, url.strip())
-                st.toast("已推送至审核站，状态：待审核")
-                st.rerun()
-        else:
-            st.markdown(f'初审链接：<a class="yts-link" href="{esc(c["video_url"])}" '
-                        f'target="_blank">{esc(c["video_url"])}</a>　'
-                        + T.badge(rs or "待审核"), unsafe_allow_html=True)
-            if rs == "待审核":
-                st.caption("⏳ 等待审核同学在审核站操作…")
+    elif step == 2:
+        with st.container():
+            st.markdown(T.ycard_open(), unsafe_allow_html=True)
+            st.markdown(T.sub("下单"), unsafe_allow_html=True)
+            if not unlocked:
+                st.markdown(T.empty_hint("三分支未全部完成，暂不可下单"),
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(f'当前状态：{T.badge("已下单" if c["order_done"] else "未下单")}',
+                            unsafe_allow_html=True)
+                if st.button("📦 标记已下单", key="od", type="primary",
+                             disabled=c["order_done"]):
+                    store.mark_order(cid)
+                    st.rerun()
+
+    elif step == 3:
+        with st.container():
+            st.markdown(T.ycard_open(), unsafe_allow_html=True)
+            st.markdown(T.sub("收货"), unsafe_allow_html=True)
+            if not c["order_done"]:
+                st.markdown(T.empty_hint("先完成「下单」，才能标记收货"),
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(f'当前状态：{T.badge("已收货" if c["received"] else "未收货")}',
+                            unsafe_allow_html=True)
+                if st.button("🏠 标记已收货", key="rv", type="primary",
+                             disabled=c["received"]):
+                    store.mark_received(cid)
+                    st.rerun()
+
+    elif step == 4:
+        with st.container():
+            st.markdown(T.ycard_open(), unsafe_allow_html=True)
+            st.markdown(T.sub("拍摄"), unsafe_allow_html=True)
+            if not c["received"]:
+                st.markdown(T.empty_hint("先完成「收货」，才能开始拍摄"),
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(f'当前状态：{T.badge(c["shoot_status"] or "未开始")}',
+                            unsafe_allow_html=True)
+                s1, s2 = st.columns(2)
+                if s1.button("🎬 拍摄中", key="s1",
+                             disabled=c["shoot_status"] == "已完成"):
+                    store.mark_shoot(cid, "拍摄中")
+                    st.rerun()
+                if s2.button("✅ 拍摄完成", key="s2", type="primary",
+                             disabled=c["shoot_status"] == "已完成"):
+                    store.mark_shoot(cid, "已完成")
+                    st.rerun()
+
+    elif step == 5:
+        with st.container():
+            st.markdown(T.ycard_open(), unsafe_allow_html=True)
+            st.markdown(T.sub("提交审核"), unsafe_allow_html=True)
+            if c["shoot_status"] != "已完成":
+                st.markdown(T.empty_hint("拍摄完成后，在此录入未公开视频链接推送到审核站"),
+                            unsafe_allow_html=True)
+            elif not c["video_url"]:
+                url = st.text_input("未公开视频链接", key="vurl")
+                if st.button("📨 提交审核", key="sr", type="primary") and url.strip():
+                    store.submit_review(cid, url.strip())
+                    st.toast("已推送至审核站，状态：待审核")
+                    st.rerun()
+            else:
+                st.markdown(f'初审链接：<a class="yts-link" href="{esc(c["video_url"])}" '
+                            f'target="_blank">{esc(c["video_url"])}</a>　'
+                            + T.badge(rs or "待审核"), unsafe_allow_html=True)
+                st.caption("审核进度见「审核」节点")
+
+    elif step == 6:
+        with st.container():
+            st.markdown(T.ycard_open(), unsafe_allow_html=True)
+            st.markdown(T.sub("审核"), unsafe_allow_html=True)
+            if not c["video_url"]:
+                st.markdown(T.empty_hint("尚未提交审核，先在「提交审核」节点录入视频链接"),
+                            unsafe_allow_html=True)
+            elif rs == "待审核":
+                st.markdown(f'{T.badge("待审核")}　⏳ 等待审核同学在审核站操作…',
+                            unsafe_allow_html=True)
             elif rs == "已驳回":
                 st.error(f"驳回原因：{c['review_comment']}")
                 st.caption("复审（运营操作）：网红修改后重新提交链接")
@@ -555,23 +574,35 @@ def _render_actions(cid, c):
                 if a2.button("❌ 仍不合格", key="rr2") and reason.strip():
                     store.recheck_reject(cid, reason.strip())
                     st.rerun()
+            else:
+                st.markdown(T.badge(rs or "待审核"), unsafe_allow_html=True)
+            log = c.get("audit_log") or []
+            if log:
+                with st.expander(f"📜 审核历史（{len(log)} 条）"):
+                    lrows = [[esc(r.get("audit_date", "")),
+                              T.badge("已通过" if r.get("audit_result") == "已通过"
+                                      else "未通过"),
+                              esc(r.get("audit_opinion", ""))] for r in log]
+                    st.markdown(T.table(["日期", "结果", "意见"], lrows),
+                                unsafe_allow_html=True)
 
-    # 闭环
-    with st.container():
-        st.markdown(T.ycard_open(), unsafe_allow_html=True)
-        st.markdown(T.sub("④ 上传视频 & 闭环"), unsafe_allow_html=True)
-        if c["is_closed"]:
-            st.markdown('<div class="closed-tag" style="font-size:13px">'
-                        '✨ 已确认发布 · 流程闭环</div>', unsafe_allow_html=True)
-        elif rs in ("已通过", "复审通过"):
-            if st.button("✅ 已确认（视频已发布，流程闭环）", key="up", type="primary",
-                         use_container_width=True):
-                store.confirm_uploaded(cid)
-                st.toast("🎉 流程闭环，活动页卡片点亮绿色光晕")
-                st.rerun()
-        else:
-            st.markdown(T.empty_hint("审核通过后，在此确认视频正式发布，完成闭环"),
-                        unsafe_allow_html=True)
+    elif step == 7:
+        # 闭环
+        with st.container():
+            st.markdown(T.ycard_open(), unsafe_allow_html=True)
+            st.markdown(T.sub("上传视频 & 闭环"), unsafe_allow_html=True)
+            if c["is_closed"]:
+                st.markdown('<div class="closed-tag" style="font-size:13px">'
+                            '✨ 已确认发布 · 流程闭环</div>', unsafe_allow_html=True)
+            elif rs in ("已通过", "复审通过"):
+                if st.button("✅ 已确认（视频已发布，流程闭环）", key="up", type="primary",
+                             use_container_width=True):
+                    store.confirm_uploaded(cid)
+                    st.toast("🎉 流程闭环，活动页卡片点亮绿色光晕")
+                    st.rerun()
+            else:
+                st.markdown(T.empty_hint("审核通过后，在此确认视频正式发布，完成闭环"),
+                            unsafe_allow_html=True)
 
 
 # ============================ 分析模块 ============================
@@ -636,6 +667,12 @@ _qp = st.query_params
 if _qp.get("detail"):
     _d = _qp.get("detail")
     del st.query_params["detail"]
+    if _qp.get("step"):
+        try:
+            st.session_state.setdefault("detail_steps", {})[_d] = int(_qp.get("step"))
+        except ValueError:
+            pass
+        del st.query_params["step"]
     go("detail", collab_id=_d)
 elif _qp.get("act") == "neg" and _qp.get("id"):
     _i = _qp.get("id")

@@ -244,13 +244,20 @@ def table(headers: list, rows: list, wrap: bool = True) -> str:
     return f'<div class="yts-tablewrap">{inner}</div>' if wrap else inner
 
 
-def steps_bar(steps: list) -> str:
-    """steps: [(标签, 状态 done/doing/todo)]，横向流程条，单块渲染"""
+def steps_bar(steps: list, selected: int = None, nav_id: str = None) -> str:
+    """steps: [(标签, 状态 done/doing/todo)]，横向流程条。
+    nav_id 给定时节点可点（iframe 内 data-nav 跳转 ?detail&step），
+    selected 为当前展开的节点索引（高亮圈）。"""
     html = '<div class="yts-steps">'
     for i, (label, state) in enumerate(steps):
         icon = "✓" if state == "done" else str(i + 1)
-        html += (f'<div class="ystep {state}"><div class="dot">{icon}</div>'
-                 f'<div class="lbl">{label}</div></div>')
+        sel = " sel" if i == selected else ""
+        inner = (f'<div class="dot">{icon}</div><div class="lbl">{label}</div>')
+        if nav_id:
+            html += (f'<a class="ystep {state}{sel}" '
+                     f'data-nav="?detail={nav_id}&step={i}">{inner}</a>')
+        else:
+            html += f'<div class="ystep {state}{sel}">{inner}</div>'
     return html + "</div>"
 
 
@@ -293,6 +300,25 @@ a.act {display: inline-block; padding: 3px 12px; border-radius: 999px;
     background: #fdeef3; color: #c2507a; font-size: 12px; font-weight: 600;
     text-decoration: none; white-space: nowrap; cursor: pointer;}
 a.act:hover {background: #fbdce7;}
+.yts-steps {display: flex; margin: 6px 4px 4px 4px;}
+a.ystep {flex: 1; display: flex; flex-direction: column; align-items: center;
+    position: relative; min-width: 0; text-decoration: none; cursor: pointer;}
+.ystep .dot {width: 28px; height: 28px; border-radius: 50%; display: flex;
+    align-items: center; justify-content: center; font-size: 12px; font-weight: 700;
+    background: #f3ecef; color: #a89aa1; border: 1px solid #ecdfe4; z-index: 1;
+    transition: box-shadow .12s ease;}
+a.ystep:hover .dot {box-shadow: 0 2px 8px rgba(190,120,145,.25);}
+.ystep.sel .dot {box-shadow: 0 0 0 3px #fff, 0 0 0 5px #dd8fa8;}
+.ystep.done .dot {background: #e5f6ec; color: #1a7f4b; border-color: #bfe6cf;}
+.ystep.doing .dot {background: #fdeef3; color: #c2507a; border-color: #f0c3d4;}
+.ystep .lbl {margin-top: 6px; font-size: 11.5px; font-weight: 600; color: #86868b;
+    text-align: center; line-height: 1.35;}
+.ystep.done .lbl {color: #1a7f4b;}
+.ystep.doing .lbl {color: #c2507a;}
+.ystep.sel .lbl {color: #1d1d1f;}
+.ystep:not(:last-child)::after {content: ""; position: absolute; top: 14px;
+    left: calc(50% + 18px); width: calc(100% - 36px); height: 2px; background: #efe3e8;}
+.ystep.done:not(:last-child)::after {background: #cdead8;}
 .ybadge {display: inline-block; padding: 2px 10px; border-radius: 999px;
     font-size: 11px; font-weight: 600; white-space: nowrap;}
 .b-gray {background: #f2f2f4; color: #6e6e73;} .b-pink {background: #fdeef3; color: #c2507a;}
@@ -315,7 +341,7 @@ a.act:hover {background: #fbdce7;}
 .bdot.on {background: #3fbf7f;}
 """
 
-COMP_JS = """
+COMP_JS = r"""
 <script>
 document.addEventListener('click', function (e) {
     var a = e.target.closest('[data-nav]');
