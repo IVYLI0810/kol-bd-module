@@ -245,7 +245,7 @@ def page_dig():
             res = store.sync_from_discovery()
         st.session_state["dig_sync_ts"] = time.time()
         if res["added"] or res["patched"]:
-            st.toast(f"已同步挖掘站：新增 {res['added']} 位、补标记 {res['patched']} 位")
+            st.toast(f"已同步挖掘站：新增 {res['added']} 位、补信息 {res['patched']} 位")
     pool = store.list_pool()
 
     c1, c2, c3, c4, c5, c6 = st.columns([2.2, 1.1, 1.1, 1.9, 1.1, 1.1])
@@ -439,15 +439,21 @@ def page_activity():
                     f'margin-top:2px">{esc(c.get("category") or "-")} · '
                     f'{c.get("followers", 0):,} 粉丝</div>',
                     unsafe_allow_html=True)
-                m1, m2 = st.columns([1.5, 1])
+                m1, m2 = st.columns(2)
                 month = m1.text_input("上线月份", NOW_MONTH,
-                                      key=f"m_{c['collab_id']}",
-                                      label_visibility="collapsed")
-                if m2.button("确认合作", key=f"ok_{c['collab_id']}",
+                                      key=f"m_{c['collab_id']}")
+                price = m2.number_input("报价（韩币）", min_value=0,
+                                        step=10000,
+                                        value=int(c.get("price") or 0),
+                                        key=f"p_{c['collab_id']}")
+                if st.button("确认合作", key=f"ok_{c['collab_id']}",
                              type="primary"):
-                    store.confirm_collab(c["collab_id"], month)
-                    st.toast(f"{c['name']} 已进入右栏（{month}）")
-                    st.rerun()
+                    if price <= 0:
+                        st.warning("请先填写报价（韩币）再确认合作")
+                    else:
+                        store.confirm_collab(c["collab_id"], month, price)
+                        st.toast(f"{c['name']} 已进入右栏（{month}）")
+                        st.rerun()
 
     with right:
         st.markdown(T.sub("🚀 履约中（按月份分组）"), unsafe_allow_html=True)
@@ -456,7 +462,7 @@ def page_activity():
         elif not fuls:
             st.markdown(T.empty_hint("暂无履约中网红，在左栏「确认合作」后进入此栏"),
                         unsafe_allow_html=True)
-        months = sorted({c["plan_month"] for c in fuls}, reverse=True)
+        months = sorted({c["plan_month"] for c in fuls})
         for i in range(0, len(months), 3):
             cols = st.columns(3)
             for col, m in zip(cols, months[i:i + 3]):
@@ -534,6 +540,8 @@ def page_detail(collab_id):
                   on_click=_set_detail_step, args=(collab_id, i))
 
     meta = [f'计划上线 {T.badge(c["plan_month"] or "-")}']
+    if c.get("price"):
+        meta.append(f'报价 ₩{int(c["price"]):,}')
     if c.get("email"):
         meta.append(f'邮箱 <span class="yts-link">{esc(c["email"])}</span>')
     if c.get("group_link"):

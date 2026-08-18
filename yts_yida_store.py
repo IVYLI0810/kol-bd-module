@@ -242,7 +242,7 @@ class YTSStore:
         """挖掘站「已发邮件」自动同步进挖掘池。
 
         新增：补基础信息并标记已发邮件；
-        已存在：仅当邮件状态为空时补标记，已有进度（洽谈中/履约等）一律不动。
+        已存在：补空标记 + 补空基础信息（粉丝数/垂类），已有进度一律不动。
         """
         rows = R.fetch_emailed_channels(force=force)
         existing = {r.get("channel_id"): r for r in self._all()}
@@ -269,6 +269,14 @@ class YTSStore:
                     patch["email_status"] = "已发送"
                     if not cur.get("stage"):
                         patch["stage"] = "已发邮件"
+                # 旧记录基础信息空缺时，用挖掘站数据补（已有值一律不动）
+                cur_sub = int(cur.get("subscribers") or 0)
+                new_sub = int(x.get("subscribers") or 0)
+                if cur_sub <= 0 < new_sub:
+                    patch["subscribers"] = new_sub
+                if not (cur.get("category") or "").strip() \
+                        and (x.get("category") or "").strip():
+                    patch["category"] = x.get("category")
                 if patch:
                     self._upd(cid, patch)
                     patched += 1
@@ -276,8 +284,9 @@ class YTSStore:
             self._invalidate()
         return {"added": added, "patched": patched, "total": len(rows)}
 
-    def confirm_collab(self, collab_id, plan_month):
-        self._upd(collab_id, {"plan_month": plan_month, "stage": "已确认"})
+    def confirm_collab(self, collab_id, plan_month, price=0):
+        self._upd(collab_id, {"plan_month": plan_month, "stage": "已确认",
+                              "price": int(price or 0)})
 
     def get_collab(self, collab_id):
         r = self._get(collab_id)
