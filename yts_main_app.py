@@ -17,6 +17,10 @@ st.set_page_config(page_title="YTS 网红管理库", page_icon="🎯", layout="w
 st.markdown(T.THEME_CSS, unsafe_allow_html=True)
 
 store = get_yts_store()
+if getattr(store, "demo", False):
+    st.error("⚠️ 未连接到宜搭数据库，当前显示演示数据。"
+             "请到 Streamlit Cloud → 本应用 → Settings → Secrets，"
+             "确认 YIDA_ACCESS_KEY_ID / YIDA_ACCESS_KEY_SECRET 两行存在后保存重启。")
 esc = html.escape
 NOW_MONTH = datetime.now().strftime("%Y-%m")
 

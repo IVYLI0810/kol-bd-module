@@ -324,4 +324,6 @@ def get_yts_store():
         except Exception:
             pass
     from yts_store import YTSStore as DemoStore
-    return DemoStore()
+    d = DemoStore()
+    d.demo = True
+    return d
