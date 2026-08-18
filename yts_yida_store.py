@@ -72,6 +72,17 @@ class YTSStore:
     def _invalidate(self):
         self._cache.clear()
 
+    def url_index(self):
+        """频道链接 -> channel_id，流程导入判断新增/更新用"""
+        return {(r.get("channel_url") or "").strip(): r.get("channel_id")
+                for r in self._all() if r.get("channel_url")}
+
+    def import_flow(self, rec: dict):
+        """流程导入：按 channel_id upsert，写完失效缓存"""
+        r = self.db.add(rec)
+        self._invalidate()
+        return r
+
     def _patch(self, channel_id, patch):
         """写成功后就地更新缓存，避免每次操作都全量重拉（4-5 秒）"""
         p = dict(patch)

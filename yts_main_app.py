@@ -162,6 +162,55 @@ def dlg_import():
             st.rerun()
 
 
+def flow_import_panel():
+    import yts_import_flow as FI
+    with st.container(border=True):
+        st.markdown("**📥 流程导入** · 按月上线 / 存量迁移 —— 运营按模板填写"
+                    "（**只填到当前进度**，空着=还没到），上传后先预览再写库。"
+                    "团队现有进度表也可直接传，识别到几列映射几列。")
+        st.download_button("⬇ 下载万能模板", FI.build_template_bytes(),
+                           file_name="YTS流程导入模板.xlsx", key="fi_tpl",
+                           use_container_width=True)
+        up = st.file_uploader("上传填好的模板 / 现有进度表", type=["xlsx", "xls"],
+                              key="fi_up")
+        if up is None:
+            return
+        rows, issues = FI.parse_workbook(up.read())
+        for msg in issues[:8]:
+            st.warning(msg)
+        if not rows:
+            st.error("没有识别到有效行：请确认表里有「频道链接」「频道名称」「负责人」")
+            return
+        with st.spinner("正在反查频道ID（云端约几秒）…"):
+            existing = getattr(store, "url_index", lambda: {})()
+            ids = FI.resolve_ids(rows, existing)
+        preview, pend = [], []
+        for raw in rows:
+            url = str(raw["channel_url"]).strip()
+            cid, resolved = ids[url]
+            rec = FI.derive_record(raw, cid)
+            is_new = url not in existing
+            preview.append({
+                "频道名称": rec["channel_name"], "负责人": rec["recruiter"],
+                "归属月份": rec.get("plan_month", "") or "-",
+                "导入后进度": rec.get("stage") or "挖掘池",
+                "新增/更新": "新增" if is_new else "更新",
+                "频道ID": cid if resolved else f"{cid}（待反查）",
+            })
+            pend.append((rec, is_new))
+        st.dataframe(preview, use_container_width=True, hide_index=True)
+        n_new = sum(1 for _, n in pend if n)
+        st.caption(f"共 {len(pend)} 行：新增 {n_new}、更新 {len(pend) - n_new}。"
+                   "「待反查」表示暂用链接别名做ID，不影响进流程")
+        if st.button(f"✅ 确认导入 {len(pend)} 行", type="primary",
+                     use_container_width=True, key="fi_go"):
+            for rec, _ in pend:
+                store.import_flow(rec)
+            st.session_state["flow_import_open"] = False
+            st.toast(f"导入完成：{len(pend)} 位网红已入库，活动页可见")
+            st.rerun()
+
+
 def page_dig():
     home_btn()
     st.markdown(T.header("挖掘模块",
@@ -283,8 +332,19 @@ def _current_node(c):
 
 def page_activity():
     home_btn()
-    st.markdown(T.header("活动模块", "选择你的名字，管理你挖掘的网红"),
-                unsafe_allow_html=True)
+    h1, h2 = st.columns([5, 1])
+    with h1:
+        st.markdown(T.header("活动模块", "选择你的名字，管理你挖掘的网红"),
+                    unsafe_allow_html=True)
+    with h2:
+        st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+        _fi_open = st.session_state.get("flow_import_open", False)
+        if st.button("✕ 收起导入面板" if _fi_open else "📥 流程导入",
+                     key="btn_flow_import", use_container_width=True):
+            st.session_state["flow_import_open"] = not _fi_open
+            st.rerun()
+    if st.session_state.get("flow_import_open"):
+        flow_import_panel()
 
     recruiters = sorted({p.get("recruiter") for p in store.list_pool()
                          if p.get("recruiter")})
