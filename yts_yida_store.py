@@ -381,8 +381,11 @@ class YTSStore:
         self._upd(collab_id, {"audit_status": "未通过", "recheck_video_url": ""})
 
     # ---------------- 上传确认 → 闭环（绿光） ----------------
-    def confirm_uploaded(self, collab_id):
-        self._upd(collab_id, {"stage": "已完成"})
+    def confirm_uploaded(self, collab_id, video_url=None):
+        patch = {"stage": "已完成"}
+        if video_url:
+            patch["video_link"] = video_url
+        self._upd(collab_id, patch)
 
 
 def get_yts_store():

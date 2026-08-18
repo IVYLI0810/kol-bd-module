@@ -768,12 +768,21 @@ def _render_actions(cid, c, step):
             if c["is_closed"]:
                 st.markdown('<div class="closed-tag" style="font-size:13px">'
                             '✨ 已确认发布 · 流程闭环</div>', unsafe_allow_html=True)
+                if c["video_url"]:
+                    st.markdown(f'发布链接：<a class="yts-link" href="{esc(c["video_url"])}" '
+                                f'target="_blank">{esc(c["video_url"])}</a>',
+                                unsafe_allow_html=True)
             elif rs in ("已通过", "复审通过"):
+                pub = st.text_input("已发布视频链接（闭环必填）",
+                                    value=c["video_url"] or "", key="purl")
                 if st.button("✅ 已确认（视频已发布，流程闭环）", key="up", type="primary",
                              use_container_width=True):
-                    store.confirm_uploaded(cid)
-                    st.toast("🎉 流程闭环，活动页卡片点亮绿色光晕")
-                    st.rerun()
+                    if not pub.strip():
+                        st.warning("请先粘贴已发布视频链接，再闭环")
+                    else:
+                        store.confirm_uploaded(cid, pub.strip())
+                        st.toast("🎉 流程闭环，活动页卡片点亮绿色光晕")
+                        st.rerun()
             else:
                 st.markdown(T.empty_hint("审核通过后，在此确认视频正式发布，完成闭环"),
                             unsafe_allow_html=True)
