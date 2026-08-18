@@ -26,6 +26,8 @@ body, p, span, div, label {color: #1d1d1f;}
 .yheader h1::before {content: ""; display: inline-block; width: 8px; height: 8px;
     border-radius: 50%; background: #e39ab1; margin-right: 9px; vertical-align: 2px;}
 .yheader p {font-size: 12.5px; font-weight: 500; color: #86868b; margin: 5px 0 0 17px;}
+.yheader.center {text-align: center;}
+.yheader.center p {margin: 5px 0 0 0;}
 
 /* ---------- 统计卡 ---------- */
 .ystats {display: flex; gap: 10px; margin: 4px 0 16px 0;}
@@ -222,8 +224,9 @@ def badge(text: str) -> str:
     return f'<span class="ybadge {cls}">{text}</span>'
 
 
-def header(title: str, sub: str) -> str:
-    return f'<div class="yheader"><h1>{title}</h1><p>{sub}</p></div>'
+def header(title: str, sub: str, center: bool = False) -> str:
+    cls = "yheader center" if center else "yheader"
+    return f'<div class="{cls}"><h1>{title}</h1><p>{sub}</p></div>'
 
 
 def stats_row(items: list) -> str:

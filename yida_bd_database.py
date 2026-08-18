@@ -14,6 +14,7 @@
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from alibabacloud_aliding20230426.client import Client
@@ -100,8 +101,37 @@ CODE_TO_LABEL = {
     "email": "联系邮箱",
 }
 
-# 日期类字段（宜搭日期组件接受 YYYY-MM-DD 格式字符串）
+# 日期类字段（宜搭 dateField 只接受毫秒时间戳，字符串会报"日期组件值的格式错误"）
 DATE_FIELDS = {"submit_deadline", "submit_actual"}
+
+_TZ_CN = timezone(timedelta(hours=8))
+
+
+def _date_to_ms(value):
+    """YYYY-MM-DD（或时间戳）-> 毫秒时间戳；无法解析时返回 None（跳过该字段）"""
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    if s.isdigit():
+        return int(s)
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return int(datetime.strptime(s, fmt).replace(
+                tzinfo=_TZ_CN).timestamp() * 1000)
+        except ValueError:
+            continue
+    return None
+
+
+def _ms_to_date(value):
+    """毫秒时间戳 -> YYYY-MM-DD；非时间戳原样返回"""
+    try:
+        ms = float(value)
+    except (TypeError, ValueError):
+        return value
+    return datetime.fromtimestamp(ms / 1000, _TZ_CN).strftime("%Y-%m-%d")
 
 
 class YidaBDDB:
@@ -144,7 +174,9 @@ class YidaBDDB:
                 except (TypeError, ValueError):
                     continue
             elif code in DATE_FIELDS:
-                value = str(value)
+                value = _date_to_ms(value)
+                if value is None:
+                    continue
             elif code == "audit_log":
                 # 子表：value 是列表，每项为 {"audit_date","audit_result","audit_opinion"}
                 value = [self._to_audit_row(row) for row in (value or [])]
@@ -155,16 +187,25 @@ class YidaBDDB:
 
     @staticmethod
     def _to_audit_row(row: dict) -> dict:
-        return {
-            AUDIT_SUB_FIELD_IDS["audit_date"]: str(row.get("audit_date", "")),
+        out = {
             AUDIT_SUB_FIELD_IDS["audit_result"]: str(row.get("audit_result", "")),
             AUDIT_SUB_FIELD_IDS["audit_opinion"]: str(row.get("audit_opinion", "")),
         }
+        ms = _date_to_ms(row.get("audit_date", ""))
+        if ms is not None:
+            out[AUDIT_SUB_FIELD_IDS["audit_date"]] = ms
+        return out
 
     @staticmethod
     def _from_audit_row(row: dict) -> dict:
         rev = {v: k for k, v in AUDIT_SUB_FIELD_IDS.items()}
-        return {rev.get(fid, fid): value for fid, value in row.items()}
+        out = {}
+        for fid, value in row.items():
+            code = rev.get(fid, fid)
+            if code == "audit_date":
+                value = _ms_to_date(value)
+            out[code] = value
+        return out
 
     def _from_instance(self, inst: dict) -> dict:
         id_to_code = {v: k for k, v in FIELD_IDS.items() if v}
@@ -179,6 +220,8 @@ class YidaBDDB:
                 rows = value if isinstance(value, list) else []
                 rec["audit_log"] = [self._from_audit_row(r) for r in rows]
             else:
+                if code in DATE_FIELDS:
+                    value = _ms_to_date(value)
                 rec[code] = value
         rec.setdefault("audit_log", [])
         for ts_key, ts_code in (("CreatedTimeGMT", "created_at"),

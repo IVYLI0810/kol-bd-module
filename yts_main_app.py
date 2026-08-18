@@ -36,8 +36,9 @@ def home_btn():
 
 # ============================ 首页 ============================
 def page_home():
-    st.markdown(T.header("YTS 网红管理库",
-                         "网红全生命周期管理 · 挖掘 → 合作 → 履约 → 审核 → 数据"),
+    st.markdown(T.header("YTS 全栈项目管理",
+                         "网红全生命周期管理 · 挖掘 → 合作 → 履约 → 审核 → 数据",
+                         center=True),
                 unsafe_allow_html=True)
     pool = store.list_pool()
     negs = store.list_negotiating()
