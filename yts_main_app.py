@@ -10,6 +10,7 @@ import streamlit as st
 
 from yts_yida_store import get_yts_store
 import yts_theme as T
+import yts_guide_gen as G
 
 st.set_page_config(page_title="YTS 网红管理库", page_icon="🎯", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -376,6 +377,18 @@ def _set_detail_step(cid, i):
     st.session_state.setdefault("detail_steps", {})[cid] = i
 
 
+def _gen_guide(cid, c, req):
+    """调千问生成「内容方向&强带货脚本建议」，组装完整 guide 存 session"""
+    with st.spinner("千问正在生成脚本建议（约10-20秒）· 생성 중..."):
+        try:
+            script = G.call_dashscope(G.build_prompt(c, req))
+        except RuntimeError as e:
+            st.error(str(e))
+            return
+    st.session_state[f"guide_{cid}"] = G.assemble_full_guide(script)
+    st.toast("Guide 生成完成 · 가이드 생성 완료")
+
+
 def page_detail(collab_id):
     home_btn()
     c = store.get_collab(collab_id)
@@ -486,6 +499,37 @@ def _render_actions(cid, c, step):
                                          if p.strip()])
                 st.toast("清单已保存，可增减后重新校验")
                 st.rerun()
+
+            # ---- 生成 Guide（分支A 配套）：原版韩文 guide + 千问强带货脚本建议 ----
+            st.markdown(T.sub("生成 Guide · 가이드 생성"), unsafe_allow_html=True)
+            st.caption("基于原版韩文 가이드，由千问为该网红追加「内容方向 & 强带货脚本建议」；"
+                       "生成后可复制 / 下载 Word 发给网红，再回到分支A 标记已发送")
+            req = st.text_area("附加要求（选填，「按要求生成」时生效）· 추가 요청 (선택)",
+                               key="guide_req", height=70,
+                               placeholder="例：这次想强推厨房小物，视频控制在30秒内，"
+                                           "重点强调折扣码；网红擅长开箱风格…")
+            g1, g2 = st.columns(2)
+            if g1.button("⚡ 一键生成 Guide", key="gg1", type="primary",
+                         use_container_width=True):
+                _gen_guide(cid, c, "")
+            if g2.button("📝 按要求生成", key="gg2", use_container_width=True):
+                if not req.strip():
+                    st.error("请先填写要求，再点「按要求生成」· "
+                             "요구사항을 입력한 후 생성하세요")
+                else:
+                    _gen_guide(cid, c, req.strip())
+            guide_md = st.session_state.get(f"guide_{cid}")
+            if guide_md:
+                st.markdown(guide_md)
+                with st.expander("📋 复制全文（点右上角复制按钮）· 전체 복사"):
+                    st.code(guide_md, language=None, height=320)
+                st.download_button(
+                    "⬇ 下载 Word 版 · Word 다운로드",
+                    data=G.md_to_docx(guide_md),
+                    file_name=f"YTS_가이드_{c['name']}.docx",
+                    mime="application/vnd.openxmlformats-officedocument"
+                         ".wordprocessingml.document",
+                    key="gdocx")
 
     elif step == 2:
         with st.container():
