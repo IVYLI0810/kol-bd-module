@@ -11,6 +11,7 @@ import streamlit as st
 from yts_yida_store import get_yts_store
 import yts_theme as T
 import yts_guide_gen as G
+import yts_roster as R
 
 st.set_page_config(page_title="YTS 网红管理库", page_icon="🎯", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -172,7 +173,7 @@ def flow_import_panel():
         st.markdown("**📥 流程导入** · 按月上线 / 存量迁移 —— 运营按模板填写"
                     "（**只填到当前进度**，空着=还没到），上传后先预览再写库。"
                     "团队现有进度表也可直接传，识别到几列映射几列。")
-        st.download_button("⬇ 下载万能模板", FI.build_template_bytes(),
+        st.download_button("⬇ 下载万能模板", FI.build_template_bytes(R.get_members()),
                            file_name="YTS流程导入模板.xlsx", key="fi_tpl",
                            use_container_width=True)
         up = st.file_uploader("上传填好的模板 / 现有进度表", type=["xlsx", "xls"],
@@ -182,6 +183,16 @@ def flow_import_panel():
         rows, issues = FI.parse_workbook(up.read())
         for msg in issues[:8]:
             st.warning(msg)
+        roster = R.get_members()
+        for raw in rows:
+            r0 = str(raw.get("recruiter") or "").strip()
+            m = R.match_name(r0, roster)
+            if m and m != r0:
+                st.info(f"负责人「{r0}」已自动匹配为名单里的「{m}」")
+                raw["recruiter"] = m
+            elif not m and r0 and roster:
+                st.warning(f"负责人「{r0}」不在名单，将按原值导入"
+                           "（新成员请先到挖掘站登记）")
         if not rows:
             st.error("没有识别到有效行：请确认表里有「频道链接」「频道名称」「负责人」")
             return
@@ -226,7 +237,9 @@ def page_dig():
     q = c1.text_input("搜索昵称 / 频道ID", key="dig_q", placeholder="🔍 输入关键词")
     cats = sorted({p.get("category") for p in pool if p.get("category")})
     cat = c2.selectbox("垂类", ["全部垂类"] + cats, key="dig_cat")
-    recs = sorted({p.get("recruiter") for p in pool if p.get("recruiter")})
+    recs_data = sorted({p.get("recruiter") for p in pool if p.get("recruiter")})
+    roster_d = R.get_members()
+    recs = list(roster_d) + [n for n in recs_data if not R.match_name(n, roster_d)]
     rec = c3.selectbox("挖掘人", ["全部挖掘人"] + recs, key="dig_rec")
     status = c4.pills("状态", ["全部", "未发邮件", "已发邮件", "洽谈中"],
                       default="全部", key="dig_status")
@@ -248,7 +261,9 @@ def page_dig():
     if cat != "全部垂类":
         rows = [p for p in rows if p.get("category") == cat]
     if rec != "全部挖掘人":
-        rows = [p for p in rows if p.get("recruiter") == rec]
+        rows = [p for p in rows
+                if (p.get("recruiter") or "") == rec
+                or R.match_name(p.get("recruiter"), [rec]) == rec]
     if status == "未发邮件":
         rows = [p for p in rows if not p.get("emailed")]
     elif status == "已发邮件":
@@ -350,8 +365,11 @@ def page_activity():
     if st.session_state.get("flow_import_open"):
         flow_import_panel()
 
-    recruiters = sorted({p.get("recruiter") for p in store.list_pool()
+    roster = R.get_members()
+    data_names = sorted({p.get("recruiter") for p in store.list_pool()
                          if p.get("recruiter")})
+    recruiters = list(roster) + [n for n in data_names
+                                 if not R.match_name(n, roster)]
     filter_by = None
     if recruiters:
         cur = st.session_state.get("activity_recruiter") \
@@ -373,7 +391,9 @@ def page_activity():
     def by_me(lst):
         if filter_by is None:
             return []
-        return [c for c in lst if c.get("recruiter") == filter_by]
+        return [c for c in lst
+                if (c.get("recruiter") or "") == filter_by
+                or R.match_name(c.get("recruiter"), [filter_by]) == filter_by]
 
     negs = by_me(store.list_negotiating())
     fuls = by_me(store.list_fulfilling())

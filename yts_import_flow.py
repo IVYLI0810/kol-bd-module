@@ -64,18 +64,29 @@ _EXAMPLES = [
 ]
 
 
-def build_template_bytes() -> bytes:
+def build_template_bytes(roster=None) -> bytes:
     from openpyxl import Workbook
+    from openpyxl.worksheet.datavalidation import DataValidation
     wb = Workbook()
     ws = wb.active
     ws.title = "流程导入"
     ws.append([c[1] for c in COLS])
     for row in _EXAMPLES:
         ws.append(row)
+    if roster:
+        formula = '"' + ",".join(roster) + '"'
+        if len(formula) <= 250:  # Excel 下拉列表公式上限
+            dv = DataValidation(type="list", formula1=formula, allow_blank=True)
+            dv.errorTitle = "负责人不在名单"
+            dv.error = "请从下拉里选名字；新成员先在挖掘站登记，再重新下载模板"
+            ws.add_data_validation(dv)
+            dv.add("C2:C500")
     ws2 = wb.create_sheet("填写说明")
     for line in [
         "带*为必填；Y/N 列填 Y 或留空；归属月份形如 2026-09 或 9月。",
         "只填到当前进度即可：刚洽谈就只填前几列，已闭环就把数据列补满。",
+        "负责人列带下拉（名单与挖掘站实时同步）；新成员请先到挖掘站登记，"
+        "再重新下载模板。手写名字也可以，导入时会自动模糊匹配到名单。",
         "团队现有进度表也可直接上传，能识别的列（频道名称/频道链接/负责人/"
         "归属月份/视频上传时间/核心类目等）会自动映射。",
     ]:
