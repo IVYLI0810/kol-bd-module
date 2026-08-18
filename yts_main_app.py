@@ -442,14 +442,17 @@ def page_activity():
             st.markdown(T.empty_hint("暂无履约中网红，在左栏「确认合作」后进入此栏"),
                         unsafe_allow_html=True)
         months = sorted({c["plan_month"] for c in fuls}, reverse=True)
-        html, n_cards = "", 0
-        for m in months:
-            html += T.month_tag(m)
-            for c in [x for x in fuls if x["plan_month"] == m]:
-                html += T.name_card(c, _current_node(c))
-                n_cards += 1
-        if html:
-            T.component_html(html, height=len(months) * 40 + n_cards * 88 + 16)
+        for i in range(0, len(months), 3):
+            cols = st.columns(3)
+            for col, m in zip(cols, months[i:i + 3]):
+                rows = [x for x in fuls if x["plan_month"] == m]
+                html = T.month_tag(m)
+                for c in rows:
+                    html += T.name_card(c, _current_node(c))
+                full = 40 + len(rows) * 88 + 16
+                with col:
+                    # 卡片少的月份按内容撑开；多的封顶 520px，列内滚动
+                    T.component_html(html, height=min(full, 520))
 
 
 # ============================ 履约详情 ============================
