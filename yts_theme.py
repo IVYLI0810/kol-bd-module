@@ -285,7 +285,7 @@ def steps_bar(steps: list, selected: int = None, nav_id: str = None) -> str:
         inner = (f'<div class="dot">{icon}</div><div class="lbl">{label}</div>')
         if nav_id:
             html += (f'<a class="ystep {state}{sel}" '
-                     f'data-nav="?detail={nav_id}&step={i}">{inner}</a>')
+                     f'data-nav="#step={i}">{inner}</a>')
         else:
             html += f'<div class="ystep {state}{sel}">{inner}</div>'
     return html + "</div>"
@@ -373,16 +373,36 @@ a.ystep:hover .dot {box-shadow: 0 2px 8px rgba(190,120,145,.25);}
 
 COMP_JS = r"""
 <script>
+// 父页面里紧跟在流程条 iframe 之后的 8 个原生按钮（点击靶子，加载后隐藏）
+function stepButtons() {
+    var fe = window.frameElement;
+    if (!fe) return [];
+    var all = window.parent.document.querySelectorAll('button');
+    var out = [];
+    for (var i = 0; i < all.length; i++) {
+        if (fe.compareDocumentPosition(all[i]) & 4 /* FOLLOWING */) out.push(all[i]);
+        if (out.length === 8) break;
+    }
+    return out;
+}
 document.addEventListener('click', function (e) {
     var a = e.target.closest('[data-nav]');
     if (!a) return;
     e.preventDefault();
-    // sandbox iframe 无 allow-top-navigation，直接改 parent.location 会被浏览器拦截；
-    // 利用 allow-same-origin 向父页面注入脚本，由顶层上下文自己执行跳转。
+    var nav = a.getAttribute('data-nav') || '';
+    if (nav.indexOf('#step=') === 0) {
+        // 流程节点：不整页刷新，"按下"父页面对应的隐藏原生按钮 → 轻量 rerun
+        var i = parseInt(nav.slice(6), 10);
+        var b = stepButtons()[i];
+        if (b) b.click();
+        return;
+    }
+    // 普通跳转（卡片等）：sandbox iframe 无 allow-top-navigation，
+    // 利用 allow-same-origin 向父页面注入脚本，由顶层上下文自己跳转；
     // 合并现有 URL 参数（如 rec），不丢上下文。
     var p = window.parent.location;
     var params = new URLSearchParams(p.search);
-    new URLSearchParams(a.getAttribute('data-nav').replace(/^\?/, ''))
+    new URLSearchParams(nav.replace(/^\?/, ''))
         .forEach(function (v, k) { params.set(k, v); });
     var url = p.pathname + '?' + params.toString();
     var d = window.parent.document;
@@ -390,6 +410,19 @@ document.addEventListener('click', function (e) {
     s.textContent = 'window.location.href = ' + JSON.stringify(url) + ';';
     d.body.appendChild(s);
 });
+(function () {
+    if (!document.querySelector('.ystep')) return;
+    stepButtons().forEach(function (b) {
+        var el = b;
+        while (el && el !== window.parent.document.body) {
+            el = el.parentElement;
+            if (el && el.getAttribute
+                    && el.getAttribute('data-testid') === 'stElementContainer') break;
+        }
+        var target = (el && el !== window.parent.document.body) ? el : b;
+        target.style.setProperty('display', 'none', 'important');
+    });
+})();
 </script>
 """
 

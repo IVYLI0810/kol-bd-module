@@ -409,17 +409,13 @@ def page_detail(collab_id):
     sel = st.session_state.setdefault("detail_steps", {}) \
         .get(collab_id, cur_default)
     sel = max(0, min(sel, len(steps) - 1))
-    cols = st.columns(len(steps), gap="small")
-    for i, col in enumerate(cols):
-        label, state = steps[i]
-        icon = "✓" if state == "done" else str(i + 1)
-        selc = " sel" if i == sel else ""
-        with col:
-            st.markdown(f'<div class="stepnode {state}{selc}"><div class="dot">'
-                        f'{icon}</div><div class="lbl">{label}</div></div>',
-                        unsafe_allow_html=True)
-            st.button(label, key=f"stepnav{i}",
-                      on_click=_set_detail_step, args=(collab_id, i))
+    T.component_html(T.steps_bar(steps, selected=sel, nav_id=collab_id),
+                     height=86)
+    # 紧跟流程条的 8 个原生按钮：iframe JS 会隐藏它们，并在点节点时"按下"对应按钮
+    # → 轻量 rerun，不整页刷新
+    for i, (label, _state) in enumerate(steps):
+        st.button(label, key=f"stepnav{i}",
+                  on_click=_set_detail_step, args=(collab_id, i))
 
     meta = [f'计划上线 {T.badge(c["plan_month"] or "-")}']
     if c.get("email"):
