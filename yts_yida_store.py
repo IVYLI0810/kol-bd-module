@@ -287,6 +287,28 @@ class YTSStore:
     def confirm_collab(self, collab_id, plan_month, price=0):
         self._upd(collab_id, {"plan_month": plan_month, "stage": "已确认",
                               "price": int(price or 0)})
+        try:  # 即时回流挖掘站标「已引入」；失败则由对账兜底
+            R.mark_introduced(collab_id)
+        except Exception:
+            pass
+
+    def push_back_introduced(self, force: bool = False) -> int:
+        """回流对账：YTS 履约中（含已闭环）的网红，挖掘站状态补标「已引入」。
+        只补不反向改，挖掘站不存在的记录跳过。"""
+        fuls = [r for r in self._all() if (r.get("plan_month") or "").strip()]
+        if not fuls:
+            return 0
+        statuses = R.fetch_statuses(force=force)
+        n = 0
+        for r in fuls:
+            cid = r.get("channel_id")
+            if cid and cid in statuses and statuses[cid] != "已引入":
+                try:
+                    R.mark_introduced(cid)
+                    n += 1
+                except Exception:
+                    pass
+        return n
 
     def get_collab(self, collab_id):
         r = self._get(collab_id)

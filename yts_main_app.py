@@ -232,20 +232,25 @@ def page_dig():
     h1, h2 = st.columns([5, 1])
     with h1:
         st.markdown(T.header("挖掘模块",
-                             "挖掘站「已发邮件」自动同步入池；标记「洽谈中」后流入活动模块"),
+                             "挖掘站「已发邮件」自动入池；YTS 确认合作后回流挖掘站标「已引入」"),
                     unsafe_allow_html=True)
     with h2:
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
         if st.button("🔄 同步挖掘站", key="btn_sync_dig", use_container_width=True):
             st.session_state["dig_sync_ts"] = 0
+            st.session_state["dig_force"] = True
             st.rerun()
     if getattr(store, "sync_from_discovery", None) and \
             time.time() - st.session_state.get("dig_sync_ts", 0) > 300:
-        with st.spinner("正在同步挖掘站已发邮件状态…"):
-            res = store.sync_from_discovery()
+        force = st.session_state.pop("dig_force", False)
+        with st.spinner("正在与挖掘站双向同步…"):
+            res = store.sync_from_discovery(force=force)
+            back = store.push_back_introduced(force=force) \
+                if getattr(store, "push_back_introduced", None) else 0
         st.session_state["dig_sync_ts"] = time.time()
-        if res["added"] or res["patched"]:
-            st.toast(f"已同步挖掘站：新增 {res['added']} 位、补信息 {res['patched']} 位")
+        if res["added"] or res["patched"] or back:
+            st.toast(f"已同步挖掘站：新增 {res['added']} 位、补信息 {res['patched']} 位"
+                     f"、回流已引入 {back} 位")
     pool = store.list_pool()
 
     c1, c2, c3, c4, c5, c6 = st.columns([2.2, 1.1, 1.1, 1.9, 1.1, 1.1])
@@ -381,6 +386,11 @@ def page_activity():
         flow_import_panel()
 
     roster = R.get_members()
+    # 静默对账（5分钟一次）：履约中的网红回流挖掘站标「已引入」
+    if getattr(store, "push_back_introduced", None) and \
+            time.time() - st.session_state.get("act_push_ts", 0) > 300:
+        store.push_back_introduced()
+        st.session_state["act_push_ts"] = time.time()
     data_names = sorted({p.get("recruiter") for p in store.list_pool()
                          if p.get("recruiter")})
     recruiters = list(roster) + [n for n in data_names

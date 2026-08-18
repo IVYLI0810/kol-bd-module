@@ -73,6 +73,54 @@ def fetch_emailed_channels(force: bool = False) -> list:
     return _emailed_cache["rows"]
 
 
+_status_cache = {"t": 0.0, "v": None}
+
+
+def fetch_statuses(force: bool = False) -> dict:
+    """挖掘站全部网红 channel_id -> status 映射；失败时退回旧缓存"""
+    now = time.time()
+    if not force and _status_cache["v"] is not None and now - _status_cache["t"] < TTL:
+        return _status_cache["v"]
+    out, off = {}, 0
+    try:
+        while True:
+            r = requests.get(f"{SUPABASE_URL}/rest/v1/influencers",
+                             params={"select": "channel_id,status",
+                                     "offset": off, "limit": 500},
+                             headers={"apikey": SUPABASE_KEY,
+                                      "Authorization": f"Bearer {SUPABASE_KEY}"},
+                             timeout=15)
+            r.raise_for_status()
+            b = r.json()
+            for x in b:
+                out[x.get("channel_id")] = x.get("status") or ""
+            off += len(b)
+            if len(b) < 500:
+                break
+        if out:
+            _status_cache["t"], _status_cache["v"] = now, out
+            return out
+    except Exception:
+        pass
+    return _status_cache["v"] or out
+
+
+def mark_introduced(channel_id: str) -> bool:
+    """回写挖掘站：把指定网红标记为「已引入」"""
+    r = requests.patch(f"{SUPABASE_URL}/rest/v1/influencers",
+                       params={"channel_id": f"eq.{channel_id}"},
+                       json={"status": "已引入"},
+                       headers={"apikey": SUPABASE_KEY,
+                                "Authorization": f"Bearer {SUPABASE_KEY}",
+                                "Content-Type": "application/json",
+                                "Prefer": "return=minimal"},
+                       timeout=15)
+    r.raise_for_status()
+    if _status_cache["v"] is not None:
+        _status_cache["v"][channel_id] = "已引入"
+    return True
+
+
 def match_name(raw, roster) -> str:
     """模糊匹配名单：精确 → 包含(≥2字) → 相似度≥0.8。返回规范名，匹配不到返回 ''"""
     s = str(raw or "").strip()
