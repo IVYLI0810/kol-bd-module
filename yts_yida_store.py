@@ -48,7 +48,7 @@ def _today():
 class YTSStore:
     """与 demo 版 YTSStore 同接口，底层为宜搭（带 60 秒缓存，避免页面卡顿）"""
 
-    CACHE_TTL = 120  # 秒；写操作会 _invalidate 强制刷新
+    CACHE_TTL = 300  # 秒；写操作就地补丁缓存，不再全量重拉
 
     def __init__(self, db=None):
         self.db = db or YidaBDDB(**_cfg())
@@ -71,6 +71,31 @@ class YTSStore:
 
     def _invalidate(self):
         self._cache.clear()
+
+    def _patch(self, channel_id, patch):
+        """写成功后就地更新缓存，避免每次操作都全量重拉（4-5 秒）"""
+        p = dict(patch)
+        p.setdefault("updated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        for r in self._cache.get("all", (0, []))[1]:
+            if r.get("channel_id") == channel_id:
+                r.update(p)
+        one = self._cache.get("one:" + channel_id)
+        if one and isinstance(one[1], dict):
+            one[1].update(p)
+
+    def _audit_patch(self, channel_id, result, opinion):
+        """与 db.add_audit 同步：向缓存里的 audit_log 追加同一条记录"""
+        entry = {"audit_date": datetime.now().strftime("%Y-%m-%d"),
+                 "audit_result": result, "audit_opinion": opinion}
+        rows = list(self._cache.get("all", (0, []))[1])
+        one = self._cache.get("one:" + channel_id)
+        if one and isinstance(one[1], dict):
+            rows.append(one[1])
+        for r in rows:
+            if r.get("channel_id") == channel_id:
+                log = list(r.get("audit_log") or [])
+                log.append(entry)
+                r["audit_log"] = log
 
     # ---------------- 宜搭记录 -> UI collab 字典 ----------------
     def _to_collab(self, r):
@@ -140,7 +165,7 @@ class YTSStore:
 
     def _upd(self, channel_id, patch):
         r = self.db.update(channel_id, patch)
-        self._invalidate()
+        self._patch(channel_id, patch)
         return r
 
     # ---------------- 挖掘模块 ----------------
@@ -252,10 +277,12 @@ class YTSStore:
 
     def review_pass(self, collab_id, note=""):
         self.db.add_audit(collab_id, result="已通过", opinion=note or "审核通过")
+        self._audit_patch(collab_id, "已通过", note or "审核通过")
         self._upd(collab_id, {"audit_status": "已通过"})
 
     def review_reject(self, collab_id, reason):
         self.db.add_audit(collab_id, result="未通过", opinion=reason)
+        self._audit_patch(collab_id, "未通过", reason)
         self._upd(collab_id, {"audit_status": "未通过", "stage": "修改中"})
 
     # ---------------- 复审（运营操作，可循环） ----------------
@@ -264,10 +291,12 @@ class YTSStore:
 
     def recheck_pass(self, collab_id):
         self.db.add_audit(collab_id, result="已通过", opinion="复审通过")
+        self._audit_patch(collab_id, "已通过", "复审通过")
         self._upd(collab_id, {"audit_status": "已通过"})
 
     def recheck_reject(self, collab_id, reason):
         self.db.add_audit(collab_id, result="未通过", opinion=f"复审驳回：{reason}")
+        self._audit_patch(collab_id, "未通过", f"复审驳回：{reason}")
         self._upd(collab_id, {"audit_status": "未通过", "recheck_video_url": ""})
 
     # ---------------- 上传确认 → 闭环（绿光） ----------------
