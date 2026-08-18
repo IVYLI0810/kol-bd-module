@@ -298,12 +298,12 @@ def steps_bar(steps: list, selected: int = None, nav_id: str = None) -> str:
     return html + "</div>"
 
 
-def name_card(c: dict, node: str) -> str:
+def name_card(c: dict, node: str, nav_extra: str = "") -> str:
     """履约右栏卡片：整卡可点 → ?detail="""
     closed = c.get("is_closed")
     cls = "ycard closed" if closed else "ycard"
     tag = ' <span class="closed-tag">已闭环</span>' if closed else ""
-    return (f'<a class="{cls}" data-nav="?detail={c["collab_id"]}">'
+    return (f'<a class="{cls}" data-nav="?detail={c["collab_id"]}{nav_extra}">'
             f'<span class="nm">{c["name"]}{tag}</span>'
             f'<span class="mt">{c.get("category") or "-"} · '
             f'{c.get("followers", 0):,} 粉丝 · {badge(node)} '

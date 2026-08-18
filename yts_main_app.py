@@ -173,7 +173,8 @@ def flow_import_panel():
     with st.container(border=True):
         st.markdown("**📥 流程导入** · 按月上线 / 存量迁移 —— 运营按模板填写"
                     "（**只填到当前进度**，空着=还没到），上传后先预览再写库。"
-                    "团队现有进度表也可直接传，识别到几列映射几列。")
+                    "团队现有进度表也可直接传，识别到几列映射几列。"
+                    "「已闭环」填 Y 的直接进 📊 分析模块，只追踪数据。")
         st.download_button("⬇ 下载万能模板", FI.build_template_bytes(R.get_members()),
                            file_name="YTS流程导入模板.xlsx", key="fi_tpl",
                            use_container_width=True)
@@ -209,7 +210,9 @@ def flow_import_panel():
             preview.append({
                 "频道名称": rec["channel_name"], "负责人": rec["recruiter"],
                 "归属月份": rec.get("plan_month", "") or "-",
-                "导入后进度": rec.get("stage") or "挖掘池",
+                "导入后进度": "已闭环 → 分析模块"
+                if rec.get("stage") == "已完成"
+                else (rec.get("stage") or "挖掘池"),
                 "新增/更新": "新增" if is_new else "更新",
                 "频道ID": cid if resolved else f"{cid}（待反查）",
             })
@@ -223,7 +226,8 @@ def flow_import_panel():
             for rec, _ in pend:
                 store.import_flow(rec)
             st.session_state["flow_import_open"] = False
-            st.toast(f"导入完成：{len(pend)} 位网红已入库，活动页可见")
+            st.toast(f"导入完成：{len(pend)} 位网红已入库"
+                     f"（已闭环的在 📊 分析模块查看）")
             st.rerun()
 
 
@@ -467,19 +471,22 @@ def page_activity():
 
     with right:
         st.markdown(T.sub("🚀 履约中（按月份分组）"), unsafe_allow_html=True)
+        st.caption("已闭环的网红不再留在这里，自动去 📊 分析模块追踪数据")
+        open_fuls = [c for c in fuls if not c["is_closed"]]
         if filter_by is None:
             st.markdown(T.empty_hint("请先在上方选择你的名字"), unsafe_allow_html=True)
-        elif not fuls:
+        elif not open_fuls:
             st.markdown(T.empty_hint("暂无履约中网红，在左栏「确认合作」后进入此栏"),
                         unsafe_allow_html=True)
-        months = sorted({c["plan_month"] for c in fuls})
+        months = sorted({c["plan_month"] for c in open_fuls})
         for i in range(0, len(months), 3):
             cols = st.columns(3)
             for col, m in zip(cols, months[i:i + 3]):
-                rows = [x for x in fuls if x["plan_month"] == m]
+                rows = [x for x in open_fuls if x["plan_month"] == m]
                 html = T.month_tag(m)
                 for c in rows:
-                    html += T.name_card(c, _current_node(c))
+                    html += T.name_card(c, _current_node(c),
+                                        nav_extra="&from=activity")
                 full = 40 + len(rows) * 88 + 16
                 with col:
                     # 卡片少的月份按内容撑开；多的封顶 520px，列内滚动
@@ -508,7 +515,14 @@ def _gen_guide(cid, c, req):
 
 
 def page_detail(collab_id):
-    home_btn()
+    _from = st.session_state.get("detail_from", "activity")
+    _back_labels = {"activity": "⬅ 返回活动", "dig": "⬅ 返回挖掘",
+                    "analysis": "⬅ 返回分析", "home": "⬅ 返回首页"}
+    b1, b2, _rest = st.columns([1.3, 1.1, 4])
+    if b1.button(_back_labels.get(_from, "⬅ 返回"), key="back_btn"):
+        go(_from)
+    if b2.button("🏠 首页", key="home_btn_d"):
+        go("home")
     c = store.get_collab(collab_id)
     if not c:
         st.error("未找到该合作记录")
@@ -793,8 +807,9 @@ def page_analysis():
     home_btn()
     st.markdown(T.header("分析模块", "视频互动 + 商品转化概览（播放 / 点击率 / 成交量 / GMV）"),
                 unsafe_allow_html=True)
-    recs = [r for r in store.list_all() if r.get("plan_month")]
-    months = sorted({r["plan_month"] for r in recs}, reverse=True)
+    recs = [r for r in store.list_all() if r.get("plan_month") or r.get("is_closed")]
+    months = sorted({r["plan_month"] for r in recs if r.get("plan_month")},
+                    reverse=True)
     if months:
         sel = st.pills("月份", ["全部"] + months, default="全部", key="ana_month")
         if sel != "全部":
@@ -856,6 +871,12 @@ if _qp.get("detail"):
         except ValueError:
             pass
         del st.query_params["step"]
+    _frm = _qp.get("from") or ""
+    st.session_state["detail_from"] = (
+        _frm if _frm in ("activity", "dig", "analysis", "home")
+        else st.session_state.get("page", "home"))
+    if _qp.get("from"):
+        del st.query_params["from"]
     go("detail", collab_id=_d)
 elif _qp.get("act") == "neg" and _qp.get("id"):
     _i = _qp.get("id")
