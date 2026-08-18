@@ -64,21 +64,35 @@ with tab1:
                 f'영상 (视频)：<a class="yts-link" href="{esc(c["video_url"])}" '
                 f'target="_blank">{esc(c["video_url"])}</a></div>',
                 unsafe_allow_html=True)
-            note = st.text_input("심사 메모 (선택) · 审核备注（选填）", key=f"note_{key}")
-            reason = st.text_area("반려 사유 / 수정 의견 (반려 시 필수) · 驳回原因 / 修改意见（驳回时必填）",
-                                  key=f"reason_{key}", height=70)
-            c1, c2 = st.columns(2)
-            if c1.button("✅ 승인 · 通过", key=f"pass_{key}", type="primary",
-                         use_container_width=True):
-                store.review_pass(key, note)
-                st.toast(f"{c['name']}：승인 · 已通过，결과 회신 완료 · 已回传主站")
-                st.rerun()
-            if c2.button("❌ 반려 · 驳回", key=f"rej_{key}", use_container_width=True):
-                if not reason.strip():
-                    st.error("반려 시 사유/수정 의견을 반드시 입력하세요 · 驳回必须填写原因/修改意见")
-                else:
-                    store.review_reject(key, reason.strip())
-                    st.toast(f"{c['name']}：반려 · 已驳回，메인 사이트 재심사 절차로 · 主站将进入复审")
+            if st.session_state.get(f"rej_{key}"):
+                # 驳回态：强制填写原因
+                st.text_area("반려 사유 / 수정 의견 (필수) · 驳回原因 / 修改意见（必填）",
+                             key=f"reason_{key}", height=70)
+                c1, c2 = st.columns([3, 1])
+                if c1.button("❌ 반려 확인 · 确认驳回", key=f"rejok_{key}",
+                             use_container_width=True):
+                    reason = st.session_state.get(f"reason_{key}", "")
+                    if not reason.strip():
+                        st.error("반려 시 사유/수정 의견을 반드시 입력하세요 · 驳回必须填写原因/修改意见")
+                    else:
+                        st.session_state.pop(f"rej_{key}", None)
+                        store.review_reject(key, reason.strip())
+                        st.toast(f"{c['name']}：반려 · 已驳回，메인 사이트 재심사 절차로 · 主站将进入复审")
+                        st.rerun()
+                if c2.button("↩ 취소 · 取消", key=f"rejno_{key}"):
+                    st.session_state.pop(f"rej_{key}", None)
+                    st.rerun()
+            else:
+                # 默认态：只需选择 通过 / 驳回
+                c1, c2 = st.columns(2)
+                if c1.button("✅ 승인 · 通过", key=f"pass_{key}", type="primary",
+                             use_container_width=True):
+                    store.review_pass(key, "")
+                    st.toast(f"{c['name']}：승인 · 已通过，결과 회신 완료 · 已回传主站")
+                    st.rerun()
+                if c2.button("❌ 반려 · 驳回", key=f"rejbtn_{key}",
+                             use_container_width=True):
+                    st.session_state[f"rej_{key}"] = True
                     st.rerun()
 
 with tab2:
