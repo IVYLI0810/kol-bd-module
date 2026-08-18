@@ -93,6 +93,10 @@ a.act, .act {display: inline-block; padding: 3px 12px; border-radius: 999px;
     background: #fdeef3; color: #c2507a; font-size: 12px; font-weight: 600;
     text-decoration: none !important; white-space: nowrap;}
 a.act:hover, .act:hover {background: #fbdce7; text-decoration: none !important;}
+a.act-y, .act-y {background: #fdf3d3; color: #a07a00;}
+a.act-y:hover, .act-y:hover {background: #fae9b3;}
+a.act-b, .act-b {background: #ddebfb; color: #2b6cb0;}
+a.act-b:hover, .act-b:hover {background: #c8def5;}
 
 /* ---------- 流程图（单块渲染，横向） ---------- */
 .yts-steps {display: flex; margin: 10px 0 20px 0;}
@@ -333,6 +337,10 @@ a.act {display: inline-block; padding: 3px 12px; border-radius: 999px;
     background: #fdeef3; color: #c2507a; font-size: 12px; font-weight: 600;
     text-decoration: none; white-space: nowrap; cursor: pointer;}
 a.act:hover {background: #fbdce7;}
+a.act-y {background: #fdf3d3; color: #a07a00;}
+a.act-y:hover {background: #fae9b3;}
+a.act-b {background: #ddebfb; color: #2b6cb0;}
+a.act-b:hover {background: #c8def5;}
 .yts-steps {display: flex; margin: 6px 4px 4px 4px;}
 a.ystep {flex: 1; display: flex; flex-direction: column; align-items: center;
     position: relative; min-width: 0; text-decoration: none; cursor: pointer;}

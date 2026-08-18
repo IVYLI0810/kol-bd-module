@@ -217,10 +217,10 @@ def page_dig():
         trows = []
         for p in rows[(cur - 1) * PAGE: cur * PAGE]:
             if not p.get("emailed"):
-                st_cell = (f'<a class="act" data-nav="?act=mail&id={esc(p["id"])}">'
+                st_cell = (f'<a class="act act-y" data-nav="?act=mail&id={esc(p["id"])}">'
                            f'标记已发邮件</a>')
             elif (p.get("stage") or "") in ("", "已发邮件"):
-                st_cell = (f'<a class="act" data-nav="?act=neg&id={esc(p["id"])}">'
+                st_cell = (f'<a class="act act-b" data-nav="?act=neg&id={esc(p["id"])}">'
                            f'标记洽谈中</a>')
             elif p.get("stage") == "洽谈中":
                 st_cell = T.badge("洽谈中")
