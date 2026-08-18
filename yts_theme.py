@@ -412,16 +412,26 @@ document.addEventListener('click', function (e) {
 });
 (function () {
     if (!document.querySelector('.ystep')) return;
-    stepButtons().forEach(function (b) {
-        var el = b;
-        while (el && el !== window.parent.document.body) {
-            el = el.parentElement;
-            if (el && el.getAttribute
-                    && el.getAttribute('data-testid') === 'stElementContainer') break;
+    var tries = 0;
+    function hide() {
+        var bs = stepButtons();
+        if (bs.length === 8) {
+            bs.forEach(function (b) {
+                var el = b;
+                while (el && el !== window.parent.document.body) {
+                    el = el.parentElement;
+                    if (el && el.getAttribute
+                            && el.getAttribute('data-testid') === 'stElementContainer') break;
+                }
+                var target = (el && el !== window.parent.document.body) ? el : b;
+                target.style.setProperty('display', 'none', 'important');
+            });
+        } else if (tries++ < 50) {
+            // 云端流式渲染：按钮可能晚于流程条到达父页面，轮询等待
+            setTimeout(hide, 200);
         }
-        var target = (el && el !== window.parent.document.body) ? el : b;
-        target.style.setProperty('display', 'none', 'important');
-    });
+    }
+    hide();
 })();
 </script>
 """
