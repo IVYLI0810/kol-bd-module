@@ -20,6 +20,7 @@ from datetime import datetime
 import streamlit as st
 
 from yida_bd_database import YidaBDDB
+import yts_roster as R
 
 
 def _cfg():
@@ -236,6 +237,44 @@ class YTSStore:
             count += 1
         self._invalidate()
         return count
+
+    def sync_from_discovery(self, force: bool = False) -> dict:
+        """挖掘站「已发邮件」自动同步进挖掘池。
+
+        新增：补基础信息并标记已发邮件；
+        已存在：仅当邮件状态为空时补标记，已有进度（洽谈中/履约等）一律不动。
+        """
+        rows = R.fetch_emailed_channels(force=force)
+        existing = {r.get("channel_id"): r for r in self._all()}
+        added = patched = 0
+        for x in rows:
+            cid = (x.get("channel_id") or "").strip()
+            if not cid:
+                continue
+            if cid not in existing:
+                self.db.add({
+                    "channel_id": cid,
+                    "channel_name": x.get("channel_name") or "",
+                    "channel_url": x.get("channel_url") or "",
+                    "category": x.get("category") or "",
+                    "subscribers": int(x.get("subscribers") or 0),
+                    "recruiter": x.get("discovered_by") or "",
+                    "email_status": "已发送", "stage": "已发邮件",
+                })
+                added += 1
+            else:
+                cur = existing[cid]
+                patch = {}
+                if not cur.get("email_status"):
+                    patch["email_status"] = "已发送"
+                    if not cur.get("stage"):
+                        patch["stage"] = "已发邮件"
+                if patch:
+                    self._upd(cid, patch)
+                    patched += 1
+        if added or patched:
+            self._invalidate()
+        return {"added": added, "patched": patched, "total": len(rows)}
 
     def confirm_collab(self, collab_id, plan_month):
         self._upd(collab_id, {"plan_month": plan_month, "stage": "已确认"})

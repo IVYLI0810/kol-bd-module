@@ -3,6 +3,7 @@
 """YTS 网红管理系统 - 主管理后台（裸粉 · Apple 极简版）"""
 import html
 import io
+import time
 from datetime import datetime
 
 import pandas as pd
@@ -228,9 +229,23 @@ def flow_import_panel():
 
 def page_dig():
     home_btn()
-    st.markdown(T.header("挖掘模块",
-                         "标记「已发邮件」留在池中；再标记「洽谈中」才流入活动模块"),
-                unsafe_allow_html=True)
+    h1, h2 = st.columns([5, 1])
+    with h1:
+        st.markdown(T.header("挖掘模块",
+                             "挖掘站「已发邮件」自动同步入池；标记「洽谈中」后流入活动模块"),
+                    unsafe_allow_html=True)
+    with h2:
+        st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+        if st.button("🔄 同步挖掘站", key="btn_sync_dig", use_container_width=True):
+            st.session_state["dig_sync_ts"] = 0
+            st.rerun()
+    if getattr(store, "sync_from_discovery", None) and \
+            time.time() - st.session_state.get("dig_sync_ts", 0) > 300:
+        with st.spinner("正在同步挖掘站已发邮件状态…"):
+            res = store.sync_from_discovery()
+        st.session_state["dig_sync_ts"] = time.time()
+        if res["added"] or res["patched"]:
+            st.toast(f"已同步挖掘站：新增 {res['added']} 位、补标记 {res['patched']} 位")
     pool = store.list_pool()
 
     c1, c2, c3, c4, c5, c6 = st.columns([2.2, 1.1, 1.1, 1.9, 1.1, 1.1])

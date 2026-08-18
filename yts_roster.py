@@ -40,6 +40,39 @@ def get_members(force: bool = False) -> list:
     return _cache["names"]
 
 
+_emailed_cache = {"t": 0.0, "rows": []}
+
+
+def fetch_emailed_channels(force: bool = False) -> list:
+    """拉挖掘站里状态=已发邮件的网红（轻量字段），供 YTS 自动同步"""
+    now = time.time()
+    if not force and _emailed_cache["rows"] and now - _emailed_cache["t"] < TTL:
+        return _emailed_cache["rows"]
+    rows, off = [], 0
+    try:
+        while True:
+            r = requests.get(f"{SUPABASE_URL}/rest/v1/influencers",
+                             params={"select": "channel_id,channel_name,channel_url,"
+                                               "category,subscribers,discovered_by",
+                                     "status": "eq.已发邮件",
+                                     "offset": off, "limit": 200},
+                             headers={"apikey": SUPABASE_KEY,
+                                      "Authorization": f"Bearer {SUPABASE_KEY}"},
+                             timeout=15)
+            r.raise_for_status()
+            b = r.json()
+            rows += b
+            off += len(b)
+            if len(b) < 200:
+                break
+        if rows:
+            _emailed_cache["t"], _emailed_cache["rows"] = now, rows
+            return rows
+    except Exception:
+        pass
+    return _emailed_cache["rows"]
+
+
 def match_name(raw, roster) -> str:
     """模糊匹配名单：精确 → 包含(≥2字) → 相似度≥0.8。返回规范名，匹配不到返回 ''"""
     s = str(raw or "").strip()
