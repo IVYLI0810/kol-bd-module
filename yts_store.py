@@ -56,6 +56,7 @@ def _base_collab(inf, **over):
         "ctr": 0, "orders": 0, "conversion_rate": 0, "gmv": 0, "price": 0,
         "channel_url": f'https://youtube.com/channel/{inf["id"]}',
         "group_link": "", "submit_deadline": "", "audit_log": [],
+        "videos": [],
     }
     c.update(over)
     return c
@@ -101,7 +102,19 @@ def _seed_collabs():
                      product_views=26000, ctr=4.2, orders=356,
                      conversion_rate=1.4, gmv=4820, price=300,
                      audit_log=[{"audit_date": "2026-07-20", "audit_result": "已通过",
-                                 "audit_opinion": "审核通过"}]),
+                                 "audit_opinion": "审核通过"}],
+                     videos=[
+                         {"video_type": "长视频",
+                          "video_url": "https://youtube.com/watch?v=demo009",
+                          "product_ids": "1005007361224342",
+                          "views": 152000, "likes": 8900, "comments": 260,
+                          "clicks": 8000, "ctr": 4.2, "orders": 356, "gmv": 4820},
+                         {"video_type": "Shorts",
+                          "video_url": "https://youtube.com/shorts/demo009s",
+                          "product_ids": "1005007361224343",
+                          "views": 890000, "likes": 21000, "comments": 850,
+                          "clicks": 18000, "ctr": 1.1, "orders": 89, "gmv": 1200},
+                     ]),
     ]
 
 
@@ -340,12 +353,36 @@ class YTSStore:
         """待审核状态下更换初审视频链接"""
         self._update(collab_id, {"video_url": new_url.strip()})
 
+    # ---------------- 视频明细（demo 本地版） ----------------
+    def save_videos(self, collab_id, videos: list) -> None:
+        """全量覆写视频明细列表"""
+        self._update(collab_id, {"videos": [dict(v) for v in videos]})
+
+    def update_video_row(self, collab: dict, index: int, patch: dict) -> None:
+        """更新视频明细第 index 行（整表覆写回）"""
+        videos = [dict(v) for v in (collab.get("videos") or [])]
+        if not (0 <= index < len(videos)):
+            return
+        videos[index].update(patch)
+        self._update(collab["collab_id"], {"videos": videos})
+
     def update_video_metrics(self, collab: dict, views: int, likes: int,
                              comments: int) -> bool:
         """回写视频互动数据：播放/点赞/评论"""
         self._update(collab["collab_id"], {
             "video_views": int(views), "video_likes": int(likes),
             "video_comments": int(comments),
+        })
+        return True
+
+    def update_product_metrics(self, collab: dict, clicks: int, ctr: float,
+                               orders: int, gmv: float) -> bool:
+        """回写商品效果数据：点击/CTR/成交/GMV（demo 本地版）"""
+        conv = round(orders / clicks * 100, 2) if clicks else 0.0
+        self._update(collab["collab_id"], {
+            "product_views": int(clicks), "ctr": float(ctr),
+            "orders": int(orders), "conversion_rate": conv,
+            "gmv": float(gmv),
         })
         return True
 

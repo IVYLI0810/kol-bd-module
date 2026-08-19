@@ -69,6 +69,8 @@ FIELD_IDS = {
     "product_list": "textareaField_mswndfpp",  # 选品清单（每行一个链接）
     "guideline_status": "selectField_mswndfpr",# Guideline状态（未发送/已发送）
     "email": "textField_mswndfpt",             # 联系邮箱
+    # ---- 视频明细子表（2026-08-20 第四批） ----
+    "videos": "tableField_mt0hcgfr",           # 子表容器：视频明细
 }
 
 # 子表（审核记录）内部字段映射
@@ -77,6 +79,23 @@ AUDIT_SUB_FIELD_IDS = {
     "audit_result": "selectField_mspwxzdh",    # 子表单-审核结果
     "audit_opinion": "textareaField_mspwxzdi", # 子表单-审核意见
 }
+
+# 子表（视频明细）内部字段映射：代码名 -> fieldId
+VIDEO_SUB_FIELD_IDS = {
+    "video_type": "radioField_mt0hcgfs",       # 视频类型（长视频/Shorts）
+    "video_url": "textField_mt0hcgg7",         # 视频链接
+    "product_ids": "textField_mt0hcgg8",       # 关联商品（逗号分隔的商品ID）
+    "views": "numberField_mt0hcgfu",           # 播放量
+    "likes": "numberField_mt0hcggfw",          # 点赞
+    "comments": "numberField_mt0hcggfy",       # 评论
+    "clicks": "numberField_mt0hcgg0",          # 点击量
+    "ctr": "numberField_mt0hcgg2",             # CTR
+    "orders": "numberField_mt0hcgg4",          # 成交量
+    "gmv": "numberField_mt0hcgg6",             # GMV
+}
+
+# 视频明细子表内的浮点字段（写入时保留小数）
+VIDEO_FLOAT_FIELDS = {"ctr", "gmv"}
 
 NUMBER_FIELDS = {
     "subscribers", "total_views", "video_views", "video_likes", "video_comments",
@@ -182,9 +201,43 @@ class YidaBDDB:
             elif code == "audit_log":
                 # 子表：value 是列表，每项为 {"audit_date","audit_result","audit_opinion"}
                 value = [self._to_audit_row(row) for row in (value or [])]
+            elif code == "videos":
+                # 子表：视频明细，每项字段见 VIDEO_SUB_FIELD_IDS
+                value = [self._to_video_row(row) for row in (value or [])]
             else:
                 value = str(value)
             out[fid] = value
+        return out
+
+    @staticmethod
+    def _to_video_row(row: dict) -> dict:
+        """视频明细行 → 宜搭子表行（fieldId: value）"""
+        out = {
+            VIDEO_SUB_FIELD_IDS["video_type"]: str(row.get("video_type", "")),
+            VIDEO_SUB_FIELD_IDS["video_url"]: str(row.get("video_url", "")),
+            VIDEO_SUB_FIELD_IDS["product_ids"]: str(row.get("product_ids", "")),
+        }
+        for code in ("views", "likes", "comments", "clicks", "ctr",
+                     "orders", "gmv"):
+            try:
+                v = float(row.get(code) or 0)
+            except (TypeError, ValueError):
+                continue
+            if code in VIDEO_FLOAT_FIELDS:
+                out[VIDEO_SUB_FIELD_IDS[code]] = round(v, 2)
+            else:
+                out[VIDEO_SUB_FIELD_IDS[code]] = int(v)
+        return out
+
+    @staticmethod
+    def _from_video_row(row: dict) -> dict:
+        """宜搭子表行 → 视频明细行（代码名: value）"""
+        rev = {v: k for k, v in VIDEO_SUB_FIELD_IDS.items()}
+        out = {}
+        for fid, value in row.items():
+            code = rev.get(fid, "")
+            if code:
+                out[code] = value
         return out
 
     @staticmethod
@@ -221,11 +274,15 @@ class YidaBDDB:
                 # 子表返回的是行列表，每行 {fieldId: value}
                 rows = value if isinstance(value, list) else []
                 rec["audit_log"] = [self._from_audit_row(r) for r in rows]
+            elif code == "videos":
+                rows = value if isinstance(value, list) else []
+                rec["videos"] = [self._from_video_row(r) for r in rows]
             else:
                 if code in DATE_FIELDS:
                     value = _ms_to_date(value)
                 rec[code] = value
         rec.setdefault("audit_log", [])
+        rec.setdefault("videos", [])
         for ts_key, ts_code in (("CreatedTimeGMT", "created_at"),
                                 ("ModifiedTimeGMT", "updated_at"),
                                 ("createdTimeGMT", "created_at"),

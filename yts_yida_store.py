@@ -211,6 +211,8 @@ class YTSStore:
             "submit_deadline": r.get("submit_deadline") or "",
             "notes": r.get("notes") or "",
             "audit_log": audit_log,
+            # ---- 视频明细子表（一行一条视频，闭环时登记） ----
+            "videos": r.get("videos") or [],
         }
 
     def _upd(self, channel_id, patch, clear_fields=None):
@@ -457,6 +459,23 @@ class YTSStore:
         """待审核状态下更换初审视频链接（不重推审核流，只换链接）"""
         self._upd(collab_id, {"video_link": new_url.strip()})
 
+    # ---------------- 视频明细子表（闭环时登记，一条视频一行） ----------------
+    def save_videos(self, collab_id, videos: list) -> None:
+        """全量覆写视频明细子表。videos 每项：
+        {"video_type","video_url","product_ids","views","likes","comments",
+         "clicks","ctr","orders","gmv"}
+        ⚠ 宜搭子表是整表覆写：必须传完整列表，不能只传增量行"""
+        self._upd(collab_id, {"videos": videos})
+
+    def update_video_row(self, collab: dict, index: int, patch: dict) -> None:
+        """更新视频明细第 index 行的指标字段（分析模块一键刷新用）。
+        先读当前全量 → 改对应行 → 整表覆写回"""
+        videos = [dict(v) for v in (collab.get("videos") or [])]
+        if not (0 <= index < len(videos)):
+            return
+        videos[index].update(patch)
+        self._upd(collab["collab_id"], {"videos": videos})
+
     def update_video_metrics(self, collab: dict, views: int, likes: int,
                              comments: int) -> bool:
         """回写视频互动数据（分析模块自动抓取用）：播放/点赞/评论。
@@ -464,6 +483,26 @@ class YTSStore:
         cid = collab.get("collab_id")
         patch = {"video_views": int(views), "video_likes": int(likes),
                  "video_comments": int(comments)}
+        inst = collab.get("form_instance_id") or ""
+        if inst:
+            try:
+                self.db.update_instance(inst, patch)
+                self._patch(cid, patch)
+                return True
+            except Exception:
+                pass
+        self._upd(cid, patch)
+        return True
+
+    def update_product_metrics(self, collab: dict, clicks: int, ctr: float,
+                               orders: int, gmv: float) -> bool:
+        """回写商品效果数据（GMC 报表自动拉取用）：点击/CTR/成交/GMV。
+        转化率 = 成交/点击（点击为0时记0）"""
+        cid = collab.get("collab_id")
+        conv = round(orders / clicks * 100, 2) if clicks else 0.0
+        patch = {"product_views": int(clicks), "ctr": float(ctr),
+                 "orders": int(orders), "conversion_rate": conv,
+                 "gmv": float(gmv)}
         inst = collab.get("form_instance_id") or ""
         if inst:
             try:

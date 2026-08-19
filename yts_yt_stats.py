@@ -265,3 +265,31 @@ def fetch_video_stats(url: str, force: bool = False) -> dict | None:
     finally:
         with _lock:
             _inflight_video.discard(vid)
+
+
+def detect_video_type(url: str) -> str:
+    """自动识别长视频/Shorts：≤60秒=Shorts，否则长视频。
+
+    优先查本地视频缓存（不烧配额），查不到时调一次 videos.list（1 unit）。
+    无法判断返回 ''（调用方降级为手动选择）。
+    """
+    vid = extract_video_id(url)
+    if not vid:
+        return ""
+    # 链接形态快速判断：/shorts/ 路径必是 Shorts
+    if "/shorts/" in str(url or "").lower():
+        return "Shorts"
+    hit = _load_video_cache().get(vid)
+    if hit and not hit.get("err"):
+        return "Shorts" if hit.get("duration", 0) <= 60 else "长视频"
+    if not get_key():
+        return ""
+    try:
+        data = _get("videos", {"part": "contentDetails", "id": vid})
+        items = data.get("items") or []
+        if not items:
+            return ""
+        secs = _parse_secs((items[0].get("contentDetails") or {}).get("duration"))
+        return "Shorts" if secs <= 60 else "长视频"
+    except Exception:
+        return ""

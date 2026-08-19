@@ -6,7 +6,7 @@ import io
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -16,6 +16,7 @@ import yts_theme as T
 import yts_guide_gen as G
 import yts_roster as R
 import yts_yt_stats as YT
+import yts_gmc as GMC
 from yts_import_flow import norm_month, norm_date
 
 st.set_page_config(page_title="YTS 网红管理库", page_icon="🎯", layout="wide",
@@ -532,6 +533,37 @@ def _set_detail_step(cid, i):
     st.session_state.setdefault("detail_steps", {})[cid] = i
 
 
+def _auto_gmc_check(cid, c):
+    """分支C 自动校验：提取选品商品ID → 逐个查 GMC 池 → 全在池才点亮分支C"""
+    if not GMC.configured():
+        st.error("未配置 GMC 凭证：请在 Streamlit Cloud → Settings → Secrets 添加 "
+                 "[gmc] 段（client_email / private_key / merchant_id / feed_label），"
+                 "配置方法见《GMC 自动校验配置指引》。配置前请继续用手动「GMC校验通过」")
+        return
+    prods = c.get("product_list") or []
+    if not prods:
+        st.warning("选品清单为空：先在下方「选品清单」填入商品链接并保存，再自动校验")
+        return
+    with st.spinner(f"正在校验 {len(prods)} 个商品是否在 GMC 池…"):
+        results = GMC.check_products(prods)
+    if not results:
+        st.warning("未能从选品清单提取商品ID，请检查链接格式")
+        return
+    rows = [[oid, T.badge("在池 ✅" if r["ok"] else "不在池 ❌"),
+             esc(r["msg"])] for oid, r in results.items()]
+    st.markdown(T.table(["商品ID", "校验结果", "说明"], rows),
+                unsafe_allow_html=True)
+    if all(r["ok"] for r in results.values()):
+        if not c["branches"]["gmc"]:
+            store.set_branch(cid, "gmc", True)
+        st.toast(f"✅ 全部 {len(results)} 个商品都在 GMC 池内，分支C 已自动点亮")
+        st.rerun()
+    else:
+        bad = [oid for oid, r in results.items() if not r["ok"]]
+        st.error(f"{len(bad)} 个商品不在池内：{'、'.join(bad)}。"
+                 "请更换选品或联系 GMC 管理员入池后重试")
+
+
 def _gen_guide(cid, c, req):
     """调千问生成「内容方向&强带货脚本建议」，组装完整 guide 存 session"""
     with st.spinner("千问正在生成脚本建议（约10-20秒）· 생성 중..."):
@@ -783,6 +815,11 @@ def _render_actions(cid, c, step):
                           use_container_width=True,
                           on_click=store.set_branch,
                           args=(cid, "gmc", not branches["gmc"]))
+                if st.button("🤖 自动校验选品是否在池", key="gc_auto",
+                             use_container_width=True,
+                             help="从选品清单提取商品ID，逐个查 GMC 池（KR-YOUTUBE），"
+                                  "在池=通过，不在=不通过"):
+                    _auto_gmc_check(cid, c)
             prods = st.text_area("选品清单（每行一个链接）",
                                  value="\n".join(c["product_list"]), key="prods",
                                  height=80)
@@ -943,93 +980,290 @@ def _render_actions(cid, c, step):
                                 unsafe_allow_html=True)
 
     elif step == 7:
-        # 闭环
-        with st.container():
-            st.markdown(T.ycard_open(), unsafe_allow_html=True)
-            st.markdown(T.sub("上传视频 & 闭环"), unsafe_allow_html=True)
-            if c["is_closed"]:
-                st.markdown('<div class="closed-tag" style="font-size:13px">'
-                            '✨ 已确认发布 · 流程闭环</div>', unsafe_allow_html=True)
-                if c["video_url"]:
-                    st.markdown(f'发布链接：<a class="yts-link" href="{esc(c["video_url"])}" '
-                                f'target="_blank">{esc(c["video_url"])}</a>',
-                                unsafe_allow_html=True)
-            elif rs in ("已通过", "复审通过"):
-                pub = st.text_input("已发布视频链接（闭环必填）",
-                                    value=c["video_url"] or "", key="purl")
-                if st.button("✅ 已确认（视频已发布，流程闭环）", key="up", type="primary",
-                             use_container_width=True):
-                    if not pub.strip():
-                        st.warning("请先粘贴已发布视频链接，再闭环")
-                    else:
-                        store.confirm_uploaded(cid, pub.strip())
-                        st.toast("🎉 流程闭环，活动页卡片点亮绿色光晕")
-                        st.rerun()
-            else:
-                st.markdown(T.empty_hint("审核通过后，在此确认视频正式发布，完成闭环"),
+        # 闭环：视频登记（一行一条视频，可挂商品）+ 发布确认
+        _render_step7_videos(cid, c, rs)
+
+
+def _offer_options(product_list):
+    """选品清单 → [(显示名, 商品ID)]，供视频挂商品选择"""
+    opts = []
+    for p in product_list or []:
+        oid = GMC.extract_offer_id(p) or str(p).strip()
+        opts.append((oid[-6:] and f"…{oid[-6:]}" or oid, oid))
+    return opts
+
+
+def _init_video_rows(cid, c):
+    """初始化视频登记行：已有登记 → 按子表还原；否则带入审核链接一行。
+    每行带稳定 rid，避免删行后控件 key 错位串数据"""
+    key = f"vrows_{cid}"
+    if key in st.session_state:
+        return st.session_state[key]
+    rows = []
+    for v in c.get("videos") or []:
+        rows.append({
+            "url": v.get("video_url") or "",
+            "type": v.get("video_type") or "自动识别",
+            "prods": [p for p in str(v.get("product_ids") or "").split(",")
+                      if p.strip()],
+        })
+    if not rows:
+        rows.append({"url": c.get("video_url") or "",
+                     "type": "自动识别", "prods": []})
+    st.session_state[key] = rows
+    return rows
+
+
+def _clear_video_row_widgets(cid):
+    """清空视频登记行的所有控件状态（删除/新增行后调用，防止控件值错位串数据）"""
+    for prefix in ("vurl_", "vtype_", "vprod_"):
+        for k in [x for x in st.session_state.keys()
+                  if str(x).startswith(f"{prefix}{cid}")]:
+            del st.session_state[k]
+
+
+def _render_step7_videos(cid, c, rs):
+    rows_key = f"vrows_{cid}"
+    with st.container():
+        st.markdown(T.ycard_open(), unsafe_allow_html=True)
+        st.markdown(T.sub("视频登记 & 闭环"), unsafe_allow_html=True)
+
+        if c["is_closed"] and not st.session_state.get(f"vedit_{cid}"):
+            # 已闭环：展示已登记视频
+            vids = c.get("videos") or []
+            if vids:
+                vrows = [[T.badge(v.get("video_type") or "长视频"),
+                          f'<a class="yts-link" href="{esc(v.get("video_url") or "")}" '
+                          f'target="_blank">{esc(v.get("video_url") or "")}</a>',
+                          esc(v.get("product_ids") or "-"),
+                          f'<span class="num">{int(v.get("views") or 0):,}</span>']
+                         for v in vids]
+                st.markdown(T.table(["类型", "视频链接", "挂的商品", "播放量"],
+                                    vrows), unsafe_allow_html=True)
+            elif c["video_url"]:
+                st.markdown(f'发布链接：<a class="yts-link" href="{esc(c["video_url"])}" '
+                            f'target="_blank">{esc(c["video_url"])}</a>',
                             unsafe_allow_html=True)
+            st.markdown('<div class="closed-tag" style="font-size:13px">'
+                        '✨ 已确认发布 · 流程闭环</div>', unsafe_allow_html=True)
+            if st.button("✏️ 修改视频登记", key="vedit_open"):
+                st.session_state[f"vedit_{cid}"] = True
+                st.session_state.pop(rows_key, None)
+                _clear_video_row_widgets(cid)  # 防止旧控件值与还原行冲突
+                st.rerun()
+            return
+
+        if rs not in ("已通过", "复审通过"):
+            st.markdown(T.empty_hint("审核通过后，在此登记已发布视频并完成闭环"),
+                        unsafe_allow_html=True)
+            return
+
+        st.caption("登记本次合作发布的所有视频（一条长视频+一条Shorts就登记两行）；"
+                   "每条视频勾选它挂载的商品，分析模块将按视频分别统计数据")
+        opts = _offer_options(c.get("product_list"))
+        oid_labels = {oid: f"商品 {lab}" for lab, oid in opts}
+        all_oids = [oid for _, oid in opts]
+
+        rows = _init_video_rows(cid, c)
+        for i, row in enumerate(rows):
+            st.markdown(f"**视频 {i + 1}**")
+            col_url, col_type, col_del = st.columns([4, 1.6, 0.6])
+            new_url = col_url.text_input(
+                "视频链接（必填）", value=row["url"], key=f"vurl_{cid}_{i}",
+                placeholder="https://youtube.com/watch?v=… 或 /shorts/…")
+            new_type = col_type.selectbox(
+                "类型", ["自动识别", "长视频", "Shorts"],
+                index=["自动识别", "长视频", "Shorts"].index(row["type"])
+                if row["type"] in ("自动识别", "长视频", "Shorts") else 0,
+                key=f"vtype_{cid}_{i}")
+            if col_del.button("🗑", key=f"vdel_{cid}_{i}",
+                              help="删除这条视频",
+                              disabled=len(rows) <= 1):
+                rows.pop(i)
+                st.session_state[rows_key] = rows
+                _clear_video_row_widgets(cid)  # 防控件值错位串数据
+                st.rerun()
+            new_prods = st.multiselect(
+                "该视频挂载的商品（关联 GMV 归因）", all_oids,
+                default=[p for p in row["prods"] if p in all_oids],
+                format_func=lambda oid: oid_labels.get(oid, oid),
+                key=f"vprods_{cid}_{i}")
+            if new_url != row["url"] or new_type != row["type"] \
+                    or new_prods != row["prods"]:
+                row.update({"url": new_url.strip(), "type": new_type,
+                            "prods": new_prods})
+                st.session_state[rows_key] = rows
+            st.divider()
+
+        if st.button("➕ 添加视频", key="vadd"):
+            rows.append({"url": "", "type": "自动识别", "prods": []})
+            st.session_state[rows_key] = rows
+            st.rerun()
+
+        if st.button("✅ 已确认发布，流程闭环", key="up", type="primary",
+                     use_container_width=True):
+            filled = [r for r in rows if r["url"].strip()]
+            if not filled:
+                st.warning("请先登记至少一条已发布视频链接，再闭环")
+            else:
+                videos = _build_video_payload(cid, c, filled)
+                if videos is None:
+                    pass  # 类型识别失败，错误已提示
+                else:
+                    store.save_videos(cid, videos)
+                    store.confirm_uploaded(cid, filled[0]["url"].strip())
+                    st.session_state.pop(rows_key, None)
+                    st.session_state.pop(f"vedit_{cid}", None)
+                    st.toast("🎉 流程闭环，视频明细已登记，分析模块将按视频统计")
+                    st.rerun()
+        if st.session_state.get(f"vedit_{cid}"):
+            if st.button("取消修改", key="vedit_cancel"):
+                st.session_state.pop(f"vedit_{cid}", None)
+                st.session_state.pop(rows_key, None)
+                st.rerun()
+
+
+def _build_video_payload(cid, c, filled_rows):
+    """登记行 → 视频明细子表数据；自动识别类型，保留已有指标"""
+    old_by_url = {v.get("video_url"): v for v in c.get("videos") or []}
+    videos = []
+    for r in filled_rows:
+        url = r["url"].strip()
+        vtype = r["type"]
+        if vtype == "自动识别":
+            vtype = YT.detect_video_type(url)
+            if not vtype:
+                st.error(f"无法自动识别视频类型（链接 {url}）：请手动选择"
+                         "「长视频」或「Shorts」后重试")
+                return None
+        old = old_by_url.get(url, {})
+        videos.append({
+            "video_type": vtype,
+            "video_url": url,
+            "product_ids": ",".join(r.get("prods") or []),
+            "views": old.get("views") or 0,
+            "likes": old.get("likes") or 0,
+            "comments": old.get("comments") or 0,
+            "clicks": old.get("clicks") or 0,
+            "ctr": old.get("ctr") or 0,
+            "orders": old.get("orders") or 0,
+            "gmv": old.get("gmv") or 0,
+        })
+    return videos
 
 
 # ============================ 分析模块 ============================
-def _refresh_video_metrics(recs, force=False):
-    """有视频链接记录的播放/点赞/评论自动抓取（本地缓存 24h）并回写宜搭。
-    force=True 时无视缓存强制重抓（一键刷新用）。
-
-    返回 collab_id -> 数据来源标记（"auto" 自动抓取 / "待回填" 抓取失败）"""
-    states = {}
-    if not YT.get_key():
-        return states
-    for r in recs:
-        url = r.get("video_url") or ""
-        if not url:
-            continue
-        stats = YT.fetch_video_stats(url, force=force)
-        if stats is None:
-            states[r["collab_id"]] = "待回填"
-            continue
-        if (int(stats["views"]) != int(r.get("video_views") or 0)
-                or int(stats["likes"]) != int(r.get("video_likes") or 0)
-                or int(stats["comments"]) != int(r.get("video_comments") or 0)):
+def _pull_product_metrics(closed_recs):
+    """从 GMC 报表拉取闭环视频选品的点击/CTR/成交/GMV（近30天）并回写宜搭"""
+    if not GMC.configured():
+        st.error("未配置 GMC 凭证：请在 Streamlit Cloud → Settings → Secrets 添加 "
+                 "[gmc] 段（client_email / private_key / merchant_id / feed_label）。"
+                 "配置前商品指标请回宜搭表单手工回填")
+        return
+    with st.spinner("正在从 GMC 拉取商品效果数据…"):
+        end = datetime.now().strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        hit_n = 0
+        for r in closed_recs:
+            prods = r.get("product_list") or []
+            if not prods:
+                continue
+            perf = GMC.fetch_performance(prods, start, end)
+            if not perf:
+                continue
+            clicks = sum(v["clicks"] for v in perf.values())
+            orders = sum(v["orders"] for v in perf.values())
+            gmv = sum(v["gmv"] for v in perf.values())
+            ctr = round(sum(v["ctr"] for v in perf.values()) / len(perf), 2)
             try:
-                store.update_video_metrics(r, stats["views"], stats["likes"],
-                                           stats["comments"])
+                store.update_product_metrics(r, clicks, ctr, orders, gmv)
+                hit_n += 1
             except Exception:
                 pass
-        # 页面先用最新值展示（写回宜搭有缓存延迟，这里直接覆盖快照）
-        r["video_views"], r["video_likes"], r["video_comments"] = (
-            stats["views"], stats["likes"], stats["comments"])
-        states[r["collab_id"]] = "auto"
-    return states
+    if hit_n:
+        st.toast(f"已回写 {hit_n} 条闭环记录的商品效果数据（近30天）")
+        st.rerun()
+    else:
+        st.warning("未拉到数据：请检查 GMC 凭证是否有效、选品是否已入池")
+
+
+def _refresh_videos_granular(closed_recs, force=False):
+    """按视频粒度刷新：videos 子表每一行抓 YouTube 互动 + GMC 商品数据，回写对应行。
+
+    YouTube 数据按视频链接抓取；商品数据按该视频关联的商品ID从 GMC 拉取（近30天）。
+    返回 (更新成功的记录数, 抓取失败列表[(网红名, 链接)])"""
+    updated, failed = 0, []
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    for r in closed_recs:
+        vids = r.get("videos") or []
+        if not vids:
+            continue
+        dirty = False
+        for idx, v in enumerate(vids):
+            url = v.get("video_url") or ""
+            if not url:
+                continue
+            patch = {}
+            stats = YT.fetch_video_stats(url, force=force)
+            if stats is not None:
+                patch.update({"views": stats["views"], "likes": stats["likes"],
+                              "comments": stats["comments"]})
+            elif YT.get_key():
+                failed.append((r["name"], url))
+            # 按该视频关联的商品拉 GMC 数据（未配置 GMC 时跳过）
+            pids = [p for p in str(v.get("product_ids") or "").split(",")
+                    if p.strip()]
+            if pids and GMC.configured():
+                perf = GMC.fetch_performance(pids, start, end)
+                if perf:
+                    clicks = sum(x["clicks"] for x in perf.values())
+                    orders = sum(x["orders"] for x in perf.values())
+                    gmv = sum(x["gmv"] for x in perf.values())
+                    ctr = round(sum(x["ctr"] for x in perf.values()) / len(perf), 2)
+                    patch.update({"clicks": clicks, "ctr": ctr,
+                                  "orders": orders, "gmv": gmv})
+            if patch:
+                try:
+                    store.update_video_row(r, idx, patch)
+                    v.update(patch)  # 页面快照同步，避免缓存延迟
+                    dirty = True
+                except Exception:
+                    failed.append((r["name"], url))
+        if dirty:
+            updated += 1
+    return updated, failed
 
 
 def page_analysis():
     home_btn()
-    st.markdown(T.header("分析模块", "视频互动 + 商品转化概览（播放 / 点击率 / 成交量 / GMV）"),
+    st.markdown(T.header("分析模块", "视频级数据看板：一条视频一行（网红可重复出现）"),
                 unsafe_allow_html=True)
     recs = [r for r in store.list_all() if r.get("plan_month") or r.get("is_closed")]
     # 自动抓取范围仅闭环记录（履约中链接多为未公开审核链接，抓了也是"待回填"）
-    closed_recs = [r for r in recs if r.get("is_closed") and r.get("video_url")]
-    # 一键刷新：无视24h缓存强制重抓闭环视频数据
+    closed_recs = [r for r in recs if r.get("is_closed")]
+    # 一键刷新：无视24h缓存，按视频粒度强制重抓（YouTube互动 + GMC商品数据）
     _force = st.session_state.pop("force_refresh", False)
-    if closed_recs:
-        if YT.get_key():
-            with st.spinner("正在同步闭环视频数据…" if _force
-                            else "正在同步闭环视频数据（每日一次）…"):
-                src_states = _refresh_video_metrics(closed_recs, force=_force)
-            if _force:
-                st.toast("已强制刷新全部闭环视频数据")
-        else:
-            src_states = {}
-            st.warning("未配置 YOUTUBE_API_KEY：视频播放/点赞/评论无法抓取。"
-                       "请在 Streamlit Cloud → Settings → Secrets 添加 "
-                       "YOUTUBE_API_KEY 后使用一键刷新")
-    else:
-        src_states = {}
-    # 一键刷新按钮（范围：仅闭环视频）
+    if closed_recs and (YT.get_key() or GMC.configured()):
+        with st.spinner("正在同步视频数据…" if _force
+                        else "正在同步视频数据（每日一次）…"):
+            n_upd, failed = _refresh_videos_granular(closed_recs, force=_force)
+        if _force:
+            st.toast(f"已强制刷新 {n_upd} 条视频记录的数据")
+        if failed and not YT.get_key():
+            st.warning("未配置 YOUTUBE_API_KEY：播放/点赞/评论无法抓取。"
+                       "请在 Streamlit Cloud → Settings → Secrets 添加后使用一键刷新")
+    elif closed_recs:
+        st.warning("未配置 YOUTUBE_API_KEY 与 GMC 凭证：视频数据无法自动抓取")
     if st.button("🔄 一键刷新闭环视频数据", key="force_refresh_btn",
-                 help="无视24小时缓存，强制重新抓取所有已闭环视频的播放/点赞/评论"):
+                 help="无视24小时缓存，按视频粒度重新抓取播放/点赞/评论，"
+                      "并按各视频关联商品拉取点击/CTR/成交/GMV（近30天）"):
         st.session_state["force_refresh"] = True
         st.rerun()
+    if st.button("📦 一键拉取商品效果数据", key="gmc_perf_btn",
+                 help="从 GMC 报表按合作选品拉取点击/CTR/成交/GMV（近30天），"
+                      "写入主记录指标（兼容老数据）"):
+        _pull_product_metrics(closed_recs)
     months = sorted({r["plan_month"] for r in recs if r.get("plan_month")},
                     reverse=True)
     if months:
@@ -1043,12 +1277,25 @@ def page_analysis():
                     unsafe_allow_html=True)
         return
 
-    has_data = [r for r in recs if (r.get("video_views") or r.get("gmv")
-                                   or r.get("orders"))]
-    tot_gmv = sum(r.get("gmv") or 0 for r in recs)
-    tot_orders = sum(r.get("orders") or 0 for r in recs)
-    tot_views = sum(r.get("video_views") or 0 for r in recs)
-    ctrs = [r["ctr"] for r in recs if r.get("ctr")]
+    # ---- 展开为视频行：有子表的记录一行一条视频；无子表的老记录兜底一行 ----
+    vrows_data = []  # [(记录, 视频dict或None)]
+    for r in recs:
+        vids = r.get("videos") or []
+        if vids:
+            for v in vids:
+                vrows_data.append((r, v))
+        else:
+            vrows_data.append((r, None))  # 老数据兜底
+
+    tot_gmv = sum((v.get("gmv") or 0) if v else (r.get("gmv") or 0)
+                  for r, v in vrows_data)
+    tot_orders = sum((v.get("orders") or 0) if v else (r.get("orders") or 0)
+                     for r, v in vrows_data)
+    tot_views = sum((v.get("views") or 0) if v else (r.get("video_views") or 0)
+                    for r, v in vrows_data)
+    ctrs = [((v.get("ctr") or 0) if v else (r.get("ctr") or 0))
+            for r, v in vrows_data]
+    ctrs = [x for x in ctrs if x]
     avg_ctr = sum(ctrs) / len(ctrs) if ctrs else 0
     st.markdown(T.stats_row([
         ("GMV 合计", f"{tot_gmv:,.0f}", "c-green"),
@@ -1057,50 +1304,79 @@ def page_analysis():
         ("平均 CTR", f"{avg_ctr:.1f}%", "c-amber"),
     ]), unsafe_allow_html=True)
 
-    if not has_data:
-        st.caption("指标待回填：闭环后把播放/点赞/成交/GMV 补进宜搭表单，这里自动汇总")
-
-    rows = sorted(recs, key=lambda r: r.get("gmv") or 0, reverse=True)
+    rows = sorted(vrows_data,
+                  key=lambda rv: (rv[1] or {}).get("gmv") if rv[1]
+                  else (rv[0].get("gmv") or 0), reverse=True)
     trows = []
-    for r in rows:
+    for r, v in rows:
         tag = ' <span class="closed-tag">已闭环</span>' if r.get("is_closed") else ""
-        src = src_states.get(r["collab_id"])
-        src_tag = ""
-        if src == "auto":
-            src_tag = ' <span style="color:#1a7f4b;font-size:11px;font-weight:600">自动</span>'
-        elif src == "待回填":
-            src_tag = (' <span style="color:#b26a09;font-size:11px;font-weight:600"'
-                       ' title="视频链接无法抓取：请确认闭环节点填的是正式发布链接">'
-                       '待回填</span>')
-        trows.append([
-            f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
-            f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
-            f'{esc(r["name"])}</a>{tag}',
-            esc(r.get("plan_month") or "-"),
-            f'<span class="num">{r.get("video_views", 0):,}</span>{src_tag}',
-            f'<span class="num">{r.get("video_likes", 0):,}</span>',
-            f'<span class="num">{r.get("ctr", 0):.1f}%</span>',
-            f'<span class="num">{r.get("orders", 0):,}</span>',
-            f'<span class="num">{r.get("conversion_rate", 0):.1f}%</span>',
-            f'<span class="num"><b>{r.get("gmv", 0):,.0f}</b></span>',
-        ])
+        if v is not None:
+            # 视频级行（子表数据）
+            vt = v.get("video_type") or "-"
+            vt_badge = T.badge("Shorts" if vt == "Shorts" else "长视频")
+            url = v.get("video_url") or ""
+            pids = [p for p in str(v.get("product_ids") or "").split(",")
+                    if p.strip()]
+            views, likes = int(v.get("views") or 0), int(v.get("likes") or 0)
+            ctr, orders, gmv = (float(v.get("ctr") or 0),
+                                int(v.get("orders") or 0),
+                                float(v.get("gmv") or 0))
+            link_cell = (f'<a class="yts-link" href="{esc(url)}" target="_blank">'
+                         f'视频↗</a>' if url else "-")
+            trows.append([
+                f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+                f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
+                f'{esc(r["name"])}</a>{tag}',
+                vt_badge, link_cell,
+                esc("、".join(pids[:2]) + ("…" if len(pids) > 2 else "")
+                    or "-"),
+                f'<span class="num">{views:,}</span>',
+                f'<span class="num">{likes:,}</span>',
+                f'<span class="num">{ctr:.1f}%</span>' if pids else
+                '<span class="num">—</span>',
+                f'<span class="num">{orders:,}</span>' if pids else
+                '<span class="num">—</span>',
+                f'<span class="num"><b>{gmv:,.0f}</b></span>' if pids else
+                '<span class="num">—</span>',
+            ])
+        else:
+            # 老数据兜底行（无子表）
+            trows.append([
+                f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+                f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
+                f'{esc(r["name"])}</a>{tag}',
+                T.badge("历史"),
+                (f'<a class="yts-link" href="{esc(r.get("video_url") or "")}" '
+                 f'target="_blank">视频↗</a>') if r.get("video_url") else "-",
+                esc("-"),
+                f'<span class="num">{int(r.get("video_views") or 0):,}</span>',
+                f'<span class="num">{int(r.get("video_likes") or 0):,}</span>',
+                f'<span class="num">{r.get("ctr", 0):.1f}%</span>',
+                f'<span class="num">{int(r.get("orders") or 0):,}</span>',
+                f'<span class="num"><b>{r.get("gmv", 0):,.0f}</b></span>',
+            ])
     # 行内名字带 data-nav 跳转，必须用 iframe 组件渲染（st.markdown 会吞掉点击）
     T.component_html(
-        T.table(["昵称", "月份", "播放量", "点赞", "CTR", "成交量",
-                 "转化率", "GMV"], trows, wrap=False),
+        T.table(["网红", "类型", "视频", "挂商品", "播放", "点赞",
+                 "CTR", "成交", "GMV"], trows, wrap=False),
         height=52 + len(trows) * 36)
-    if any(v == "待回填" for v in src_states.values()):
-        st.caption("「待回填」：视频链接无法抓取（多为未公开/失效链接），"
-                   "请到详情页「编辑信息」更换为正式发布链接，或回宜搭手工回填")
+    st.caption("数据口径：播放/点赞/评论按视频自动抓取（缓存24h）；"
+               "CTR/成交/GMV 按该视频关联的商品从 GMC 拉取（近30天）。"
+               "同一商品挂在多条视频时，GMV 按商品归属，无法细分到单条视频。")
 
-    top = [r for r in rows if r.get("gmv")][:10]
+    top = [(r, v) for r, v in rows
+           if (v.get("gmv") if v else r.get("gmv"))][:10]
     if top:
-        df = pd.DataFrame({"GMV": [r["gmv"] for r in top]},
-                          index=[r["name"] for r in top])
+        df = pd.DataFrame(
+            {"GMV": [((v.get("gmv") or 0) if v else (r.get("gmv") or 0))
+                     for r, v in top]},
+            index=[r["name"] + ("（Shorts）" if v and v.get("video_type") == "Shorts"
+                                else "") for r, v in top])
         st.markdown(T.sub("GMV Top"), unsafe_allow_html=True)
         st.bar_chart(df, horizontal=True, height=320, color=["#dd8fa8"])
 
-    st.markdown(T.foot("指标由运营回填至宜搭表单后自动展示"), unsafe_allow_html=True)
+    st.markdown(T.foot("视频级数据由闭环节点登记、一键刷新自动写入"),
+                unsafe_allow_html=True)
 
 
 # ============================ 路由 ============================
