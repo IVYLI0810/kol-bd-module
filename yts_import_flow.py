@@ -262,7 +262,7 @@ def derive_record(raw: dict, channel_id: str) -> dict:
     if yn(raw.get("guideline")):
         rec["guideline_status"] = "已发送"
     if yn(raw.get("contract")):
-        rec["contract_status"] = "已签署"
+        rec["contract_status"] = "已签"
     if yn(raw.get("gmc")):
         rec["gmc_status"] = "校验通过"
     if yn(raw.get("ordered")):
@@ -279,8 +279,8 @@ def derive_record(raw: dict, channel_id: str) -> dict:
         rec["audit_status"] = audit
     elif audit in ("驳回", "不通过"):
         rec["audit_status"] = "未通过"
-    elif raw.get("video_link"):
-        rec["audit_status"] = "待审核"
+    # 注意：有视频链接≠送审。只有「审核结果」列明确填了「待审核」才进审核站，
+    # 否则只存链接，由运营在履约详情页手动「提交审核」
     for key in ("video_views", "video_likes", "video_comments",
                 "product_views", "orders", "gmv"):
         n = _num(raw.get(key))
