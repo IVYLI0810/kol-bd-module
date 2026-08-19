@@ -13,6 +13,7 @@ from yts_yida_store import get_yts_store
 import yts_theme as T
 import yts_guide_gen as G
 import yts_roster as R
+import yts_yt_stats as YT
 
 st.set_page_config(page_title="YTS 网红管理库", page_icon="🎯", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -236,7 +237,8 @@ def page_dig():
     h1, h2 = st.columns([5, 1])
     with h1:
         st.markdown(T.header("挖掘模块",
-                             "挖掘站「已发邮件」自动入池；YTS 确认合作后回流挖掘站标「已引入」"),
+                             "挖掘站「已发邮件」自动入池；点右上「同步挖掘站」"
+                             "把粉丝量等基础信息刷进宜搭"),
                     unsafe_allow_html=True)
     with h2:
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
@@ -247,14 +249,28 @@ def page_dig():
     if getattr(store, "sync_from_discovery", None) and \
             time.time() - st.session_state.get("dig_sync_ts", 0) > 300:
         force = st.session_state.pop("dig_force", False)
+        bar = st.progress(0, text="正在同步挖掘站数据…") if force else None
+
+        def _cb(i, n):
+            if bar:
+                bar.progress(int(i * 100 / max(n, 1)),
+                             text=f"正在把粉丝量等基础信息写进宜搭 {i}/{n}")
+
         with st.spinner("正在与挖掘站双向同步…"):
             res = store.sync_from_discovery(force=force)
             back = store.push_back_introduced(force=force) \
                 if getattr(store, "push_back_introduced", None) else 0
+            basic = store.sync_basic_info(force=force, progress=_cb) \
+                if force and getattr(store, "sync_basic_info", None) \
+                else {"updated": 0}
+        if bar:
+            bar.empty()
         st.session_state["dig_sync_ts"] = time.time()
-        if res["added"] or res["patched"] or back:
+        if res["added"] or res["patched"] or back or basic["updated"]:
             st.toast(f"已同步挖掘站：新增 {res['added']} 位、补信息 {res['patched']} 位"
-                     f"、回流已引入 {back} 位")
+                     f"、回流已引入 {back} 位"
+                     + (f"、粉丝量等基础信息同步 {basic['updated']} 位"
+                        if basic["updated"] else ""))
     pool = store.list_pool()
 
     c1, c2, c3, c4, c5, c6 = st.columns([2.2, 1.1, 1.1, 1.9, 1.1, 1.1])
@@ -528,8 +544,7 @@ def page_detail(collab_id):
         st.error("未找到该合作记录")
         return
     st.markdown(T.header(f"履约详情 · {c['name']}",
-                         f'{c.get("category") or "-"} · {c.get("followers", 0):,} 粉丝'
-                         f' · 挖掘人 {c.get("recruiter") or "-"}'),
+                         f'挖掘人 {c.get("recruiter") or "-"}'),
                 unsafe_allow_html=True)
 
     price_on = bool(c.get("price"))
@@ -544,6 +559,19 @@ def page_detail(collab_id):
          if c.get("email") else "未填",
          "c-green" if c.get("email") else "c-amber"),
     ]), unsafe_allow_html=True)
+    yt = YT.cached(c["collab_id"])
+    if yt is None and YT.get_key() and c["collab_id"].startswith("UC"):
+        with st.spinner("正在同步频道播放数据…"):
+            yt = YT.fetch_stats(c["collab_id"])
+    fol = c.get("followers") or (yt or {}).get("subscribers") or 0
+    st.markdown(T.stats_row([
+        ("粉丝量", f"{fol:,}", "c-pink"),
+        ("垂类", esc(c.get("category") or "-"), "c-purple"),
+        ("长视频总播放", f'{yt["long_views"]:,}' if yt else "-", "c-green"),
+        ("短视频总播放", f'{yt["short_views"]:,}' if yt else "-", "c-amber"),
+    ]), unsafe_allow_html=True)
+    if not YT.get_key():
+        st.caption("配置 YOUTUBE_API_KEY 后自动同步长/短总播放（缓存 7 天）")
     _meta = []
     if c.get("channel_url"):
         _meta.append(f'频道 <a class="yts-link" href="{esc(c["channel_url"])}" '
