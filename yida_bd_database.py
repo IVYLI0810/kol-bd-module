@@ -150,7 +150,9 @@ class YidaBDDB:
         self.system_token = system_token
         self.form_uuid = form_uuid
         self.account_id = account_id
-        self._runtime = util_models.RuntimeOptions()
+        # 超时保护：10人共用下，宜搭接口卡死会拖住所有用户的请求
+        self._runtime = util_models.RuntimeOptions(
+            connect_timeout=5000, read_timeout=20000)
 
     # ------------------------- 内部工具 -------------------------
 

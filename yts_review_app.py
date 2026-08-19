@@ -42,7 +42,7 @@ history = store.list_review_history()
 st.markdown(T.stats_row([
     ("⏳ 심사 대기 (待审核)", len(pending), "c-amber"),
     ("📜 처리 완료 (已处理)", len(history), "c-green"),
-]), unsafe_allow_html=True)
+], narrow=True), unsafe_allow_html=True)
 
 tab1, tab2 = st.tabs(["⏳ 심사 대기 (待审核)", "📜 처리 완료 (已处理)"])
 

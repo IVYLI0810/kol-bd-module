@@ -8,6 +8,7 @@ YTS 网红管理系统 - 共享数据存储（demo 用本地 JSON 版）
 """
 import json
 import os
+import threading
 import uuid
 from datetime import datetime
 
@@ -109,6 +110,10 @@ def _now():
 
 
 class YTSStore:
+    # 多人共用时（Streamlit 单进程多会话）所有实例共享一把可重入锁，
+    # 「读-改-写」全程持锁，防止并发操作互相覆盖丢失
+    _lock = threading.RLock()
+
     def __init__(self, path=STORE_FILE):
         self.path = path
         if not os.path.exists(path):
@@ -119,8 +124,21 @@ class YTSStore:
             return json.load(f)
 
     def _save(self, data):
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(data, ensure_ascii=False, indent=1, fp=f)
+        # 原子写：临时文件名带随机后缀再 rename，
+        # 防止并发会话写同一固定 .tmp 名互相截断产生半截 JSON
+        tmp = f"{self.path}.{uuid.uuid4().hex}.tmp"
+        with self._lock:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, ensure_ascii=False, indent=1, fp=f)
+            os.replace(tmp, self.path)
+
+    def _modify(self, fn):
+        """读-改-写原子操作：fn(data) 原地修改数据后落盘。
+        全程持锁，10人并发操作不会互相覆盖"""
+        with self._lock:
+            data = self._load()
+            fn(data)
+            self._save(data)
 
     # ---------------- 挖掘模块 ----------------
     def list_pool(self):
@@ -137,7 +155,6 @@ class YTSStore:
     def add_influencer(self, rec, overwrite: bool = False):
         """新增网红到挖掘池（demo 本地版）；已存在的频道ID默认跳过，
         overwrite=True 时按新值更新非空字段（批量导入用）"""
-        data = self._load()
         rec = dict(rec)
         rec["id"] = rec.get("channel_id") or ("UC_" + uuid.uuid4().hex[:8])
         rec["name"] = rec.get("channel_name", "")
@@ -148,14 +165,17 @@ class YTSStore:
         rec["email"] = rec.get("email", "")
         rec["recruiter"] = rec.get("recruiter", "")
         rec["emailed"] = False
-        existing = next((p for p in data["pool"] if p["id"] == rec["id"]), None)
-        if existing is None:
-            data["pool"].append(rec)
-        elif overwrite:
-            for k in ("name", "followers", "category", "email", "recruiter"):
-                if rec.get(k) not in (None, "", 0):
-                    existing[k] = rec[k]
-        self._save(data)
+
+        def fn(data):
+            existing = next((p for p in data["pool"] if p["id"] == rec["id"]), None)
+            if existing is None:
+                data["pool"].append(rec)
+            elif overwrite:
+                for k in ("name", "followers", "category", "email", "recruiter"):
+                    if rec.get(k) not in (None, "", 0):
+                        existing[k] = rec[k]
+
+        self._modify(fn)
 
     def import_influencers(self, records: list) -> int:
         """批量导入：upsert 语义（已存在的频道ID按新值更新），计数=实际处理行数"""
@@ -169,98 +189,100 @@ class YTSStore:
     def import_flow(self, rec: dict) -> dict:
         """流程导入（demo 本地版）：按 channel_id upsert，
         根据进度字段自动落到挖掘池 / 洽谈 / 履约 / 闭环"""
-        data = self._load()
         cid = rec.get("channel_id")
-        inf = next((p for p in data["pool"] if p["id"] == cid), None)
-        if inf is None:
-            inf = {"id": cid, "name": rec.get("channel_name") or cid,
-                   "platform": "YouTube",
-                   "followers": int(rec.get("subscribers") or 0),
-                   "category": rec.get("category") or "", "avatar": "",
-                   "email": rec.get("email") or "",
-                   "recruiter": rec.get("recruiter") or "",
-                   "emailed": bool(rec.get("email_status")),
-                   "channel_url": rec.get("channel_url") or ""}
-            data["pool"].append(inf)
-        else:
-            for k, v in (("name", rec.get("channel_name")),
-                         ("followers", rec.get("subscribers")),
-                         ("category", rec.get("category")),
-                         ("email", rec.get("email")),
-                         ("recruiter", rec.get("recruiter"))):
-                if v not in (None, "", 0):
-                    inf[k] = int(v) if k == "followers" else v
-            if rec.get("email_status"):
-                inf["emailed"] = True
 
-        stage = rec.get("stage") or ""
-        need_collab = stage in ("洽谈中", "已确认", "已完成") \
-            or rec.get("plan_month")
-        if need_collab:
-            collab = next((c for c in data["collabs"]
-                           if c["collab_id"] == cid), None)
-            if collab is None:
-                collab = _base_collab(inf)
-                if rec.get("channel_url"):
-                    collab["channel_url"] = rec["channel_url"]
-                data["collabs"].append(collab)
-            if rec.get("plan_month"):
-                collab["plan_month"] = rec["plan_month"]
-            if rec.get("price"):
-                collab["price"] = int(rec["price"])
-            if stage == "洽谈中":
-                collab["status"] = "洽谈中"
-            elif collab["status"] == "洽谈中":
-                collab["status"] = "履约中"
-            for bkey, fld in (("guideline", "guideline_status"),
-                              ("contract", "contract_status"),
-                              ("gmc", "gmc_status")):
-                if rec.get(fld):
-                    collab["branches"][bkey] = True
-            if rec.get("order_status") in ("已下单", "已收货"):
-                collab["order_done"] = True
-            if rec.get("order_status") == "已收货":
-                collab["received"] = True
-            if rec.get("shoot_status"):
-                collab["shoot_status"] = rec["shoot_status"]
-            if rec.get("video_link"):
-                collab["video_url"] = rec["video_link"]
-            amap = {"待审核": "待审核", "已通过": "已通过", "未通过": "已驳回"}
-            if rec.get("audit_status") in amap:
-                collab["review_status"] = amap[rec["audit_status"]]
-            if rec.get("recheck_video_url"):
-                collab["recheck_video_url"] = rec["recheck_video_url"]
-            if rec.get("submit_deadline"):
-                collab["submit_deadline"] = rec["submit_deadline"]
-            if rec.get("notes"):
-                collab["notes"] = rec["notes"]
-            for mk in ("video_views", "video_likes", "video_comments",
-                       "product_views", "orders", "gmv"):
-                if rec.get(mk):
-                    collab[mk] = rec[mk]
-            if stage == "已完成":
-                collab["uploaded_confirmed"] = True
-                collab["is_closed"] = True
-        self._save(data)
+        def fn(data):
+            inf = next((p for p in data["pool"] if p["id"] == cid), None)
+            if inf is None:
+                inf = {"id": cid, "name": rec.get("channel_name") or cid,
+                       "platform": "YouTube",
+                       "followers": int(rec.get("subscribers") or 0),
+                       "category": rec.get("category") or "", "avatar": "",
+                       "email": rec.get("email") or "",
+                       "recruiter": rec.get("recruiter") or "",
+                       "emailed": bool(rec.get("email_status")),
+                       "channel_url": rec.get("channel_url") or ""}
+                data["pool"].append(inf)
+            else:
+                for k, v in (("name", rec.get("channel_name")),
+                             ("followers", rec.get("subscribers")),
+                             ("category", rec.get("category")),
+                             ("email", rec.get("email")),
+                             ("recruiter", rec.get("recruiter"))):
+                    if v not in (None, "", 0):
+                        inf[k] = int(v) if k == "followers" else v
+                if rec.get("email_status"):
+                    inf["emailed"] = True
+
+            stage = rec.get("stage") or ""
+            need_collab = stage in ("洽谈中", "已确认", "已完成") \
+                or rec.get("plan_month")
+            if need_collab:
+                collab = next((c for c in data["collabs"]
+                               if c["collab_id"] == cid), None)
+                if collab is None:
+                    collab = _base_collab(inf)
+                    if rec.get("channel_url"):
+                        collab["channel_url"] = rec["channel_url"]
+                    data["collabs"].append(collab)
+                if rec.get("plan_month"):
+                    collab["plan_month"] = rec["plan_month"]
+                if rec.get("price"):
+                    collab["price"] = int(rec["price"])
+                if stage == "洽谈中":
+                    collab["status"] = "洽谈中"
+                elif collab["status"] == "洽谈中":
+                    collab["status"] = "履约中"
+                for bkey, fld in (("guideline", "guideline_status"),
+                                  ("contract", "contract_status"),
+                                  ("gmc", "gmc_status")):
+                    if rec.get(fld):
+                        collab["branches"][bkey] = True
+                if rec.get("order_status") in ("已下单", "已收货"):
+                    collab["order_done"] = True
+                if rec.get("order_status") == "已收货":
+                    collab["received"] = True
+                if rec.get("shoot_status"):
+                    collab["shoot_status"] = rec["shoot_status"]
+                if rec.get("video_link"):
+                    collab["video_url"] = rec["video_link"]
+                amap = {"待审核": "待审核", "已通过": "已通过", "未通过": "已驳回"}
+                if rec.get("audit_status") in amap:
+                    collab["review_status"] = amap[rec["audit_status"]]
+                if rec.get("recheck_video_url"):
+                    collab["recheck_video_url"] = rec["recheck_video_url"]
+                if rec.get("submit_deadline"):
+                    collab["submit_deadline"] = rec["submit_deadline"]
+                if rec.get("notes"):
+                    collab["notes"] = rec["notes"]
+                for mk in ("video_views", "video_likes", "video_comments",
+                           "product_views", "orders", "gmv"):
+                    if rec.get(mk):
+                        collab[mk] = rec[mk]
+                if stage == "已完成":
+                    collab["uploaded_confirmed"] = True
+                    collab["is_closed"] = True
+
+        self._modify(fn)
         return rec
 
     def mark_emailed(self, inf_id):
         """标记已发邮件 → 留在挖掘池（待「标记洽谈中」后才流入活动）"""
-        data = self._load()
-        for inf in data["pool"]:
-            if inf["id"] == inf_id:
-                inf["emailed"] = True
-        self._save(data)
+        def fn(data):
+            for inf in data["pool"]:
+                if inf["id"] == inf_id:
+                    inf["emailed"] = True
+        self._modify(fn)
 
     def mark_negotiating(self, inf_id):
         """标记洽谈中 → 流入活动模块洽谈栏，按 id 去重"""
-        data = self._load()
-        exists = any(c["influencer_id"] == inf_id for c in data["collabs"])
-        if not exists:
-            inf = next(i for i in data["pool"] if i["id"] == inf_id)
-            data["collabs"].append(_base_collab(inf, status="洽谈中",
-                                                follow_time=_now()))
-        self._save(data)
+        def fn(data):
+            exists = any(c["influencer_id"] == inf_id for c in data["collabs"])
+            if not exists:
+                inf = next(i for i in data["pool"] if i["id"] == inf_id)
+                data["collabs"].append(_base_collab(inf, status="洽谈中",
+                                                    follow_time=_now()))
+        self._modify(fn)
 
     # ---------------- 活动模块 ----------------
     def list_negotiating(self):
@@ -273,13 +295,13 @@ class YTSStore:
         return self._load()["collabs"]
 
     def confirm_collab(self, collab_id, plan_month, price=0):
-        data = self._load()
-        for c in data["collabs"]:
-            if c["collab_id"] == collab_id:
-                c["status"] = "履约中"
-                c["plan_month"] = plan_month
-                c["price"] = int(price or 0)
-        self._save(data)
+        def fn(data):
+            for c in data["collabs"]:
+                if c["collab_id"] == collab_id:
+                    c["status"] = "履约中"
+                    c["plan_month"] = plan_month
+                    c["price"] = int(price or 0)
+        self._modify(fn)
 
     def get_collab(self, collab_id):
         for c in self._load()["collabs"]:
@@ -288,11 +310,11 @@ class YTSStore:
         return None
 
     def _update(self, collab_id, patch):
-        data = self._load()
-        for c in data["collabs"]:
-            if c["collab_id"] == collab_id:
-                c.update(patch)
-        self._save(data)
+        def fn(data):
+            for c in data["collabs"]:
+                if c["collab_id"] == collab_id:
+                    c.update(patch)
+        self._modify(fn)
 
     # ---------------- 编辑基本信息（demo 本地版） ----------------
     EDIT_FIELDS = ("price", "plan_month", "email", "channel_url",

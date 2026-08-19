@@ -233,9 +233,17 @@ def header(title: str, sub: str, center: bool = False) -> str:
     return f'<div class="{cls}"><h1>{title}</h1><p>{sub}</p></div>'
 
 
-def stats_row(items: list) -> str:
-    """items: [(标签, 数量, 颜色类 c-pink/c-purple/c-green/c-amber)]"""
-    html = '<div class="ystats">'
+def stats_row(items: list, narrow=False) -> str:
+    """items: [(标签, 数量, 颜色类 c-pink/c-purple/c-green/c-amber)]
+    narrow=True 限宽 640px 居中；narrow=整数 时按指定像素限宽居中
+    （卡片少/内容窄时避免单卡过宽空旷）"""
+    style = ""
+    if narrow is True:
+        style = ' style="max-width:640px;margin-left:auto;margin-right:auto"'
+    elif isinstance(narrow, int):
+        style = (f' style="max-width:{narrow}px;'
+                 'margin-left:auto;margin-right:auto"')
+    html = f'<div class="ystats"{style}>'
     for label, n, cls in items:
         html += (f'<div class="ystat {cls}"><div class="n">{n}</div>'
                  f'<div class="l">{label}</div></div>')
@@ -323,7 +331,13 @@ def branch_card(t: str, done: bool, desc: str) -> str:
 COMP_CSS = """
 * {box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont,
    'SF Pro Text', 'PingFang SC', 'Microsoft YaHei', sans-serif;}
-body {margin: 0; background: transparent;}
+html, body {height: 100%;}
+/* 内容超出 iframe 高度时内部滚动（细滚动条），不再直接裁掉 */
+body {margin: 0; background: transparent; overflow-y: auto;
+    scrollbar-width: thin; scrollbar-color: #e5cdd6 transparent;}
+body::-webkit-scrollbar {width: 6px;}
+body::-webkit-scrollbar-thumb {background: #e5cdd6; border-radius: 3px;}
+body::-webkit-scrollbar-track {background: transparent;}
 table.yts-table {width: 100%; border-collapse: collapse; font-size: 13px;
     background: #fff; border: 1px solid #f1e4e8; border-radius: 14px;}
 .yts-table th {text-align: left; font-size: 12px; color: #86868b; font-weight: 600;

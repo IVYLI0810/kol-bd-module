@@ -78,8 +78,11 @@ def page_home():
                     f'<div style="font-size:26px">{icon}</div>'
                     f'<div style="font-size:15px;font-weight:700;margin-top:6px">'
                     f'{title}</div>'
+                    # 描述区固定两行高度：三张卡片描述长短不一，
+                    # 不固定会导致卡片高度参差、底部按钮不对齐
                     f'<div style="font-size:12px;color:#86868b;font-weight:500;'
-                    f'margin-top:4px;line-height:1.5">{desc}</div></div>',
+                    f'margin-top:4px;line-height:1.5;height:36px;overflow:hidden">'
+                    f'{desc}</div></div>',
                     unsafe_allow_html=True)
                 if st.button("进入", key=f"hb_{pg}", use_container_width=True):
                     go(pg)
@@ -348,7 +351,7 @@ def page_dig():
         T.component_html(
             T.table(["昵称", "垂类", "粉丝数", "挖掘人", "邮箱", "操作"],
                     trows, wrap=False),
-            height=48 + len(trows) * 42)
+            height=48 + len(trows) * 38)
 
     p1, p2, p3 = st.columns([1, 3, 1])
     with p1:
@@ -453,7 +456,7 @@ def page_activity():
         ("💬 洽谈中", len(negs), "c-amber"),
         ("🚀 履约中", len(fuls) - len(closed), "c-purple"),
         ("✅ 已闭环", len(closed), "c-green"),
-    ]), unsafe_allow_html=True)
+    ], narrow=720), unsafe_allow_html=True)
 
     left, right = st.columns([1, 2])
 
@@ -508,9 +511,11 @@ def page_activity():
                 for c in rows:
                     html += T.name_card(c, _current_node(c),
                                         nav_extra="&from=activity")
-                full = 40 + len(rows) * 88 + 16
+                # 单卡实测约 81px（padding 24 + 两行文本约 41 + margin 16），
+                # 月份标签约 32px；公式贴合实际，避免底部积空白
+                full = 36 + len(rows) * 82
                 with col:
-                    # 卡片少的月份按内容撑开；多的封顶 520px，列内滚动
+                    # 卡片少的月份按内容撑开；多的封顶 520px，内部滚动不裁剪
                     T.component_html(html, height=min(full, 520))
 
 
@@ -581,7 +586,8 @@ def page_detail(collab_id):
     _from = st.session_state.get("detail_from", "activity")
     _back_labels = {"activity": "⬅ 返回活动", "dig": "⬅ 返回挖掘",
                     "analysis": "⬅ 返回分析", "home": "⬅ 返回首页"}
-    b1, b2, b3, _rest = st.columns([1.3, 1.1, 1.3, 4])
+    # 工具栏式：返回/首页靠左，编辑靠右，中间留白作为分隔 → 对称不局促
+    b1, b2, _mid, b3 = st.columns([1.2, 1.0, 3.6, 1.4])
     if b1.button(_back_labels.get(_from, "⬅ 返回"), key="back_btn"):
         go(_from)
     if b2.button("🏠 首页", key="home_btn_d"):
@@ -666,7 +672,7 @@ def page_detail(collab_id):
         .get(collab_id, cur_default)
     sel = max(0, min(sel, len(steps) - 1))
     T.component_html(T.steps_bar(steps, selected=sel, nav_id=collab_id),
-                     height=86)
+                     height=68)
     # 紧跟流程条的 8 个原生按钮：iframe JS 会隐藏它们，并在点节点时"按下"对应按钮
     # → 轻量 rerun，不整页刷新
     for i, (label, _state) in enumerate(steps):
@@ -1012,7 +1018,7 @@ def page_analysis():
     T.component_html(
         T.table(["昵称", "月份", "播放量", "点赞", "CTR", "成交量",
                  "转化率", "GMV"], trows, wrap=False),
-        height=48 + len(trows) * 42)
+        height=52 + len(trows) * 36)
     if any(v == "待回填" for v in src_states.values()):
         st.caption("「待回填」：视频链接无法抓取（多为未公开/失效链接），"
                    "请到详情页「编辑信息」更换为正式发布链接，或回宜搭手工回填")

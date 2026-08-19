@@ -14,6 +14,7 @@ YTS 网红管理系统 - 宜搭真实数据存储（正式版）
 - 复审通过 = audit_status=="已通过" 且 recheck_video_url 非空
 """
 import os
+import threading
 import time
 from datetime import datetime
 
@@ -46,6 +47,11 @@ def _today():
     return datetime.now().strftime("%Y-%m-%d")
 
 
+# 防缓存击穿：进程级单例被10个会话共享，缓存过期瞬间只让1个会话
+# 真正回源宜搭，其他会话等待结果，避免并发全表拉取风暴
+_FETCH_LOCK = threading.Lock()
+
+
 class YTSStore:
     """与 demo 版 YTSStore 同接口，底层为宜搭（带 60 秒缓存，避免页面卡顿）"""
 
@@ -56,19 +62,49 @@ class YTSStore:
         self._cache = {}
 
     def _all(self):
+        hit = self._cache.get("all")
         now = time.time()
-        if "all" not in self._cache or now - self._cache["all"][0] > self.CACHE_TTL:
-            with st.spinner("正在同步宜搭数据…"):
-                self._cache["all"] = (now, self.db.get_all())
-        return self._cache["all"][1]
+        if hit is not None and now - hit[0] <= self.CACHE_TTL:
+            return hit[1]
+        # 缓存过期：加锁后二次检查，10人共用下只让1个会话回源宜搭
+        with _FETCH_LOCK:
+            hit = self._cache.get("all")
+            if hit is not None and time.time() - hit[0] <= self.CACHE_TTL:
+                return hit[1]
+            try:
+                with st.spinner("正在同步宜搭数据…"):
+                    rows = self.db.get_all()
+                self._cache["all"] = (time.time(), rows)
+                return rows
+            except Exception:
+                if hit is not None:
+                    # 回源失败：先返回旧缓存保住可用，下次请求再重试
+                    return hit[1]
+                raise
 
     def _get(self, channel_id):
-        now = time.time()
         key = "one:" + channel_id
-        if key not in self._cache or now - self._cache[key][0] > self.CACHE_TTL:
-            with st.spinner("正在同步宜搭数据…"):
-                self._cache[key] = (now, self.db.get_by_channel_id(channel_id))
-        return self._cache[key][1]
+        hit = self._cache.get(key)
+        if hit is not None and time.time() - hit[0] <= self.CACHE_TTL:
+            return hit[1]
+        # 优先从全量缓存取（避免为单条记录再发一次搜索请求）
+        for r in self._cache.get("all", (0, []))[1]:
+            if r.get("channel_id") == channel_id:
+                self._cache[key] = (time.time(), r)
+                return r
+        with _FETCH_LOCK:
+            hit = self._cache.get(key)
+            if hit is not None and time.time() - hit[0] <= self.CACHE_TTL:
+                return hit[1]
+            try:
+                with st.spinner("正在同步宜搭数据…"):
+                    rec = self.db.get_by_channel_id(channel_id)
+                self._cache[key] = (time.time(), rec)
+                return rec
+            except Exception:
+                if hit is not None:
+                    return hit[1]
+                raise
 
     def _invalidate(self):
         self._cache.clear()

@@ -12,7 +12,9 @@ YTS YouTube 频道数据：粉丝量 / 视频总播放（长短视频分别累�
 import json
 import os
 import re
+import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -93,11 +95,21 @@ def _load_cache() -> dict:
 
 
 def _save_cache(cache: dict):
+    # 原子写：先写唯一临时文件再 rename；临时文件名带随机后缀，
+    # 防止两个会话同时写同一个 .tmp 互相截断产生半截JSON
     try:
-        with open(CACHE_PATH, "w") as f:
+        tmp = f"{CACHE_PATH}.{uuid.uuid4().hex}.tmp"
+        with open(tmp, "w") as f:
             json.dump(cache, f, ensure_ascii=False)
+        os.replace(tmp, CACHE_PATH)
     except Exception:
         pass
+
+
+# 同进程内防重入：10人同时打开同一频道时只发一次真实请求
+_lock = threading.Lock()
+_inflight = set()        # 频道级进行中标记
+_inflight_video = set()  # 视频级进行中标记（分析页自动抓取用）
 
 
 def cached(channel_id: str) -> dict | None:
@@ -118,6 +130,12 @@ def fetch_stats(channel_id: str) -> dict | None:
         return hit
     if not get_key():
         return hit
+    # 防重入：10人共用下，若另一个会话正在抓同一频道，
+    # 本会话先返回旧缓存，不重复发起几十次翻页请求
+    with _lock:
+        if channel_id in _inflight:
+            return hit
+        _inflight.add(channel_id)
     try:
         ch = _get("channels", {"part": "statistics,contentDetails",
                                "id": channel_id})
@@ -162,6 +180,10 @@ def fetch_stats(channel_id: str) -> dict | None:
         return rec
     except Exception:
         return hit
+    finally:
+        # 无论成功失败都释放防重入标记，避免抓取失败后频道被永久跳过
+        with _lock:
+            _inflight.discard(channel_id)
 
 
 # ---------------------------------------------------------------------------
@@ -180,9 +202,12 @@ def _load_video_cache() -> dict:
 
 
 def _save_video_cache(cache: dict):
+    # 原子写：临时文件名带随机后缀，防止并发会话互相截断同一临时文件
     try:
-        with open(VIDEO_CACHE_PATH, "w") as f:
+        tmp = f"{VIDEO_CACHE_PATH}.{uuid.uuid4().hex}.tmp"
+        with open(tmp, "w") as f:
             json.dump(cache, f, ensure_ascii=False)
+        os.replace(tmp, VIDEO_CACHE_PATH)
     except Exception:
         pass
 
@@ -203,7 +228,17 @@ def fetch_video_stats(url: str) -> dict | None:
         return hit if not hit.get("err") else None
     if not get_key():
         return hit if hit and not hit.get("err") else None
+    # 双重检查：缓存过期瞬间10个会话并发进分析页，只让1个会话发起请求；
+    # 其他会话等它写回缓存文件后直接读取
+    with _lock:
+        if vid in _inflight_video:
+            return hit if hit and not hit.get("err") else None
+        _inflight_video.add(vid)
     try:
+        cache = _load_video_cache()  # 重读：可能已被先完成的会话写回
+        fresh = cache.get(vid)
+        if fresh and time.time() - fresh.get("ts", 0) < VIDEO_TTL:
+            return fresh if not fresh.get("err") else None
         data = _get("videos", {"part": "statistics,contentDetails,snippet",
                                "id": vid})
         items = data.get("items") or []
@@ -227,3 +262,6 @@ def fetch_video_stats(url: str) -> dict | None:
     except Exception:
         # 网络/配额异常不写错误缓存：下次进入分析页会自动重试
         return hit if hit and not hit.get("err") else None
+    finally:
+        with _lock:
+            _inflight_video.discard(vid)
