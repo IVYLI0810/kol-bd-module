@@ -37,6 +37,14 @@ st.markdown(T.header(bih("YTS 영상 심사", "YTS 视频审核站"),
                          "审核同学专用 · 操作结果自动回传主管理后台")),
             unsafe_allow_html=True)
 
+# 审核站与主站是两个独立进程（缓存互不相通）：主站刚提交的审核，
+# 这里要等缓存过期才可见。提供手动刷新，清空本站缓存立即重拉。
+hb, _ = st.columns([1, 4])
+if hb.button("🔄 목록 새로고침 · 刷新列表",
+             help="主站刚提交的审核若未显示，点此立即刷新"):
+    store._invalidate()
+    st.rerun()
+
 pending = store.list_pending_reviews()
 history = store.list_review_history()
 st.markdown(T.stats_row([
