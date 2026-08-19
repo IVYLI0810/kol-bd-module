@@ -532,6 +532,33 @@ def page_detail(collab_id):
                          f' · 挖掘人 {c.get("recruiter") or "-"}'),
                 unsafe_allow_html=True)
 
+    price_on = bool(c.get("price"))
+    st.markdown(T.stats_row([
+        ("报价（韩币）",
+         f"₩{int(c['price']):,}" if price_on else "未填",
+         "c-pink" if price_on else "c-amber"),
+        ("上线月份", esc(c.get("plan_month") or "-"), "c-purple"),
+        ("交稿截止", esc(c.get("submit_deadline") or "-"), "c-green"),
+        ("联系邮箱",
+         f'<span style="font-size:13px;font-weight:600">{esc(c["email"])}</span>'
+         if c.get("email") else "未填",
+         "c-green" if c.get("email") else "c-amber"),
+    ]), unsafe_allow_html=True)
+    _meta = []
+    if c.get("channel_url"):
+        _meta.append(f'频道 <a class="yts-link" href="{esc(c["channel_url"])}" '
+                     f'target="_blank">主页↗</a>')
+    if c.get("group_link"):
+        _meta.append(f'群 <a class="yts-link" href="{esc(c["group_link"])}" '
+                     f'target="_blank">链接↗</a>')
+    if c.get("notes"):
+        _meta.append(f'备注：{esc(c["notes"])}')
+    if _meta:
+        st.markdown('<div style="font-size:12.5px;font-weight:500;'
+                    'color:#86868b;margin:-8px 0 10px">'
+                    + "　·　".join(_meta) + "</div>",
+                    unsafe_allow_html=True)
+
     branches = c["branches"]
     unlocked = all(branches.values())
     rs = c["review_status"]
@@ -562,21 +589,6 @@ def page_detail(collab_id):
     for i, (label, _state) in enumerate(steps):
         st.button(label, key=f"stepnav{i}",
                   on_click=_set_detail_step, args=(collab_id, i))
-
-    meta = [f'计划上线 {T.badge(c["plan_month"] or "-")}']
-    if c.get("price"):
-        meta.append(f'报价 ₩{int(c["price"]):,}')
-    if c.get("email"):
-        meta.append(f'邮箱 <span class="yts-link">{esc(c["email"])}</span>')
-    if c.get("group_link"):
-        meta.append(f'群 <a class="yts-link" href="{esc(c["group_link"])}" '
-                    f'target="_blank">链接</a>')
-    if c.get("channel_url"):
-        meta.append(f'频道 <a class="yts-link" href="{esc(c["channel_url"])}" '
-                    f'target="_blank">主页</a>')
-    st.markdown('<div style="font-size:12.5px;font-weight:500;color:#86868b;'
-                'margin-bottom:10px">' + "　·　".join(meta) + "</div>",
-                unsafe_allow_html=True)
 
     _render_actions(collab_id, c, sel)
 
