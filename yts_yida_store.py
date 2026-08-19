@@ -437,15 +437,24 @@ class YTSStore:
         self._upd(collab_id, patch)
 
 
+_STORE = None
+
+
 def get_yts_store():
-    """工厂函数：配置了 AK（环境变量或本地配置文件）→ 宜搭真实数据；否则回退本地 demo 数据"""
+    """进程级单例：缓存跨 rerun 存活，避免每次刷新整页重拉宜搭（~10s）；
+    配置了 AK（环境变量或本地配置文件）→ 宜搭真实数据；否则回退本地 demo 数据"""
+    global _STORE
+    if _STORE is not None:
+        return _STORE
     cfg = _cfg()
     if cfg.get("access_key_id") and cfg.get("access_key_secret"):
         try:
-            return YTSStore(YidaBDDB(**cfg))
+            _STORE = YTSStore(YidaBDDB(**cfg))
+            return _STORE
         except Exception:
             pass
     from yts_store import YTSStore as DemoStore
     d = DemoStore()
     d.demo = True
+    _STORE = d
     return d

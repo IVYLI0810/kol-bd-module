@@ -23,6 +23,7 @@ COLS = [
     ("channel_name", "频道名称*",        True,  ["频道名称", "昵称", "channel_name"]),
     ("recruiter",    "负责人*",          True,  ["负责人", "挖掘人", "recruiter"]),
     ("plan_month",   "归属月份",         False, ["归属月份", "计划上线", "plan_month"]),
+    ("price",        "报价（韩币）",      False, ["报价", "price"]),
     ("category",     "核心类目",         False, ["核心类目", "类目", "垂类", "category"]),
     ("email",        "联系邮箱",         False, ["邮箱", "email"]),
     ("emailed",      "已发邮件(Y/N)",    False, ["已发邮件"]),
@@ -48,17 +49,17 @@ COLS = [
 ]
 
 _EXAMPLES = [
-    # 刚开始（挖掘/洽谈阶段，不填归属月份）
-    ["https://youtube.com/@example_beauty", "예시채널A", "艾薇李", "",
-     "뷰티", "a@example.com", "Y", "Y", "", "", "", "", "", "", "", "", "", "",
-     "", "", "", "", "", "", "", "新洽谈，待确认合作"],
-    # 履约中（三分支完成、已下单）
+    # 刚开始（挖掘/洽谈阶段，不填归属月份/报价）
+    ["https://youtube.com/@example_beauty", "예시채널A", "艾薇李", "", "",
+     "뷰티", "a@example.com", "Y", "Y", "", "", "", "", "", "", "", "", "",
+     "", "", "", "", "", "", "", "", "新洽谈，待确认合作"],
+    # 履约中（三分支完成、已下单、已填报价）
     ["https://youtube.com/@example_home", "예시채널B", "崔士杰", "2026-09",
-     "홈&가든", "", "Y", "", "Y", "Y", "Y", "Y", "Y", "拍摄中", "",
+     1500000, "홈&가든", "", "Y", "", "Y", "Y", "Y", "Y", "Y", "拍摄中", "",
      "2026-09-21", "", "", "", "", "", "", "", "", "", ""],
-    # 已闭环（回填数据）
+    # 已闭环（回填数据+报价）
     ["https://youtube.com/@example_pet", "예시채널C", "梁泳妍", "2026-08",
-     "애완동물", "", "Y", "Y", "Y", "Y", "Y", "Y", "Y", "已完成",
+     2000000, "애완동물", "", "Y", "Y", "Y", "Y", "Y", "Y", "Y", "已完成",
      "https://youtube.com/shorts/xxx", "2026-08-21", "已通过", "",
      120000, 5400, 210, 8000, 96, 2100, "Y", "闭环示例"],
 ]
@@ -85,6 +86,7 @@ def build_template_bytes(roster=None) -> bytes:
     for line in [
         "带*为必填；Y/N 列填 Y 或留空；归属月份形如 2026-09 或 9月。",
         "只填到当前进度即可：刚洽谈就只填前几列，已闭环就把数据列补满。",
+        "报价（韩币）填纯数字（如 1500000），导入后直接显示在履约详情的报价卡。",
         "「已闭环(Y/N)」填 Y：该网红直接进 📊 分析模块追踪数据，"
         "不再出现在履约中；记得把播放/点赞/评论/点击/成交/GMV 补满。",
         "负责人列带下拉（名单与挖掘站实时同步）；新成员请先到挖掘站登记，"
@@ -241,6 +243,9 @@ def derive_record(raw: dict, channel_id: str) -> dict:
     plan = norm_month(raw.get("plan_month"))
     if plan:
         rec["plan_month"] = plan
+    pr = _num(raw.get("price"))
+    if pr:
+        rec["price"] = int(pr)
     for key in ("category", "email", "video_link", "recheck"):
         if raw.get(key):
             rec[key if key != "recheck" else "recheck_video_url"] = \

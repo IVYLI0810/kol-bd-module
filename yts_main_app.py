@@ -3,6 +3,7 @@
 """YTS 网红管理系统 - 主管理后台（裸粉 · Apple 极简版）"""
 import html
 import io
+import threading
 import time
 from datetime import datetime
 
@@ -407,10 +408,12 @@ def page_activity():
 
     roster = R.get_members()
     # 静默对账（5分钟一次）：履约中的网红回流挖掘站标「已引入」
+    # 后台线程跑，不挡页面渲染
     if getattr(store, "push_back_introduced", None) and \
             time.time() - st.session_state.get("act_push_ts", 0) > 300:
-        store.push_back_introduced()
         st.session_state["act_push_ts"] = time.time()
+        threading.Thread(target=store.push_back_introduced,
+                         daemon=True).start()
     data_names = sorted({p.get("recruiter") for p in store.list_pool()
                          if p.get("recruiter")})
     recruiters = list(roster) + [n for n in data_names
