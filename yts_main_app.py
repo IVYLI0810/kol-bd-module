@@ -1190,48 +1190,61 @@ def _pull_product_metrics(closed_recs):
 def _refresh_videos_granular(closed_recs, force=False):
     """按视频粒度刷新：videos 子表每一行抓 YouTube 互动 + GMC 商品数据，回写对应行。
 
-    YouTube 数据按视频链接抓取；商品数据按该视频关联的商品ID从 GMC 拉取（近30天）。
-    返回 (更新成功的记录数, 抓取失败列表[(网红名, 链接)])"""
+    性能要点（10人共用）：
+    1. 数据无变化时不写回宜搭（否则每次打开分析页都产生写入风暴）
+    2. 一个网红的所有视频行合并为一次 save_videos（原来每行写一次）
+    3. 相同商品集的 GMC 报表请求本轮去重（同批多视频挂同组商品只查一次）
+    返回 (有数据更新并回写成功的记录数, 抓取失败列表[(网红名, 链接)])"""
     updated, failed = 0, []
     end = datetime.now().strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    perf_cache = {}  # 本轮 GMC 请求去重：商品集 -> 报表结果
     for r in closed_recs:
         vids = r.get("videos") or []
         if not vids:
             continue
-        dirty = False
-        for idx, v in enumerate(vids):
+        changed = False
+        new_videos = []
+        for v in vids:
+            nv = dict(v)
             url = v.get("video_url") or ""
-            if not url:
-                continue
-            patch = {}
-            stats = YT.fetch_video_stats(url, force=force)
-            if stats is not None:
-                patch.update({"views": stats["views"], "likes": stats["likes"],
-                              "comments": stats["comments"]})
-            elif YT.get_key():
-                failed.append((r["name"], url))
-            # 按该视频关联的商品拉 GMC 数据（未配置 GMC 时跳过）
-            pids = [p for p in str(v.get("product_ids") or "").split(",")
-                    if p.strip()]
-            if pids and GMC.configured():
-                perf = GMC.fetch_performance(pids, start, end)
-                if perf:
-                    clicks = sum(x["clicks"] for x in perf.values())
-                    orders = sum(x["orders"] for x in perf.values())
-                    gmv = sum(x["gmv"] for x in perf.values())
-                    ctr = round(sum(x["ctr"] for x in perf.values()) / len(perf), 2)
-                    patch.update({"clicks": clicks, "ctr": ctr,
-                                  "orders": orders, "gmv": gmv})
-            if patch:
-                try:
-                    store.update_video_row(r, idx, patch)
-                    v.update(patch)  # 页面快照同步，避免缓存延迟
-                    dirty = True
-                except Exception:
+            if url:
+                stats = YT.fetch_video_stats(url, force=force)
+                if stats is not None:
+                    for k in ("views", "likes", "comments"):
+                        if int(nv.get(k) or 0) != int(stats[k] or 0):
+                            nv[k] = stats[k]
+                            changed = True
+                elif YT.get_key():
                     failed.append((r["name"], url))
-        if dirty:
-            updated += 1
+                # 按该视频关联的商品拉 GMC 数据（未配置 GMC 时跳过）
+                pids = tuple(sorted(p.strip()
+                                    for p in str(v.get("product_ids") or "").split(",")
+                                    if p.strip()))
+                if pids and GMC.configured():
+                    perf = perf_cache.get(pids)
+                    if perf is None:
+                        perf = GMC.fetch_performance(list(pids), start, end)
+                        perf_cache[pids] = perf
+                    if perf:
+                        clicks = sum(x["clicks"] for x in perf.values())
+                        orders = sum(x["orders"] for x in perf.values())
+                        gmv = sum(x["gmv"] for x in perf.values())
+                        ctr = round(sum(x["ctr"] for x in perf.values())
+                                    / len(perf), 2)
+                        for k, val in (("clicks", clicks), ("ctr", ctr),
+                                       ("orders", orders), ("gmv", gmv)):
+                            if abs(float(nv.get(k) or 0) - float(val)) > 0.01:
+                                nv[k] = val
+                                changed = True
+            new_videos.append(nv)
+        if changed:
+            try:
+                store.save_videos(r["collab_id"], new_videos)
+                r["videos"] = new_videos  # 页面快照同步，避免缓存延迟
+                updated += 1
+            except Exception:
+                failed.append((r["name"], "回写失败"))
     return updated, failed
 
 

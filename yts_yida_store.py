@@ -61,26 +61,45 @@ class YTSStore:
         self.db = db or YidaBDDB(**_cfg())
         self._cache = {}
 
-    def _all(self):
-        hit = self._cache.get("all")
-        now = time.time()
-        if hit is not None and now - hit[0] <= self.CACHE_TTL:
+    def _fetch_with_lock(self, cache_key, fetch_fn):
+        """带回源锁的取数：核心是「一人慢不拖累全员」。
+
+        10 人共用同一进程缓存，若 A 正在回源宜搭（网络慢时可达 10-20s），
+        绝不能让其余 9 人排队等待。策略：
+        - 缓存有效：直接返回（快路径）。
+        - 用非阻塞方式抢锁：抢不到说明他人正在回源 →
+          有旧缓存立刻用旧缓存（零等待），仅首次加载（无任何缓存）才等锁。
+        """
+        hit = self._cache.get(cache_key)
+        if hit is not None and time.time() - hit[0] <= self.CACHE_TTL:
             return hit[1]
-        # 缓存过期：加锁后二次检查，10人共用下只让1个会话回源宜搭
-        with _FETCH_LOCK:
-            hit = self._cache.get("all")
+        if not _FETCH_LOCK.acquire(timeout=0):
+            # 他人正在回源：有旧缓存就用旧的，完全不排队
+            hit = self._cache.get(cache_key)
+            if hit is not None:
+                return hit[1]
+            # 完全无缓存（首次加载）：只能等锁
+            _FETCH_LOCK.acquire()
+        try:
+            # 拿到锁后二次检查：可能他人刚回源完成
+            hit = self._cache.get(cache_key)
             if hit is not None and time.time() - hit[0] <= self.CACHE_TTL:
                 return hit[1]
             try:
                 with st.spinner("正在同步宜搭数据…"):
-                    rows = self.db.get_all()
-                self._cache["all"] = (time.time(), rows)
-                return rows
+                    value = fetch_fn()
+                self._cache[cache_key] = (time.time(), value)
+                return value
             except Exception:
-                if hit is not None:
-                    # 回源失败：先返回旧缓存保住可用，下次请求再重试
+                hit = self._cache.get(cache_key)
+                if hit is not None:  # 回源失败：返回旧缓存保住可用
                     return hit[1]
                 raise
+        finally:
+            _FETCH_LOCK.release()
+
+    def _all(self):
+        return self._fetch_with_lock("all", self.db.get_all)
 
     def _get(self, channel_id):
         key = "one:" + channel_id
@@ -92,19 +111,8 @@ class YTSStore:
             if r.get("channel_id") == channel_id:
                 self._cache[key] = (time.time(), r)
                 return r
-        with _FETCH_LOCK:
-            hit = self._cache.get(key)
-            if hit is not None and time.time() - hit[0] <= self.CACHE_TTL:
-                return hit[1]
-            try:
-                with st.spinner("正在同步宜搭数据…"):
-                    rec = self.db.get_by_channel_id(channel_id)
-                self._cache[key] = (time.time(), rec)
-                return rec
-            except Exception:
-                if hit is not None:
-                    return hit[1]
-                raise
+        return self._fetch_with_lock(
+            key, lambda: self.db.get_by_channel_id(channel_id))
 
     def _invalidate(self):
         self._cache.clear()
@@ -115,9 +123,10 @@ class YTSStore:
                 for r in self._all() if r.get("channel_url")}
 
     def import_flow(self, rec: dict):
-        """流程导入：按 channel_id upsert，写完失效缓存"""
+        """流程导入：按 channel_id upsert，写完就地更新缓存（不整表失效，
+        避免一人导入触发全员重拉）"""
         r = self.db.add(rec)
-        self._invalidate()
+        self._upsert_cached(r or rec)
         return r
 
     def _patch(self, channel_id, patch):
@@ -130,6 +139,28 @@ class YTSStore:
         one = self._cache.get("one:" + channel_id)
         if one and isinstance(one[1], dict):
             one[1].update(p)
+
+    def _upsert_cached(self, rec):
+        """新增记录就地追加进全量缓存（按 channel_id 替换或追加）。
+
+        10人共用关键点：新增/导入后不再整表失效缓存——否则一人导入，
+        其他所有人下次操作都被迫重拉全表（4-5秒卡顿）。"""
+        if not rec or not rec.get("channel_id"):
+            return
+        hit = self._cache.get("all")
+        if hit is None:
+            return  # 无缓存时无需维护，下次全量拉取自然带上
+        cid = rec["channel_id"]
+        rec = dict(rec)
+        rec.setdefault("updated_at",
+                       datetime.now().strftime("%Y-%m-%d %H:%M"))
+        rows = hit[1]
+        for i, r in enumerate(rows):
+            if r.get("channel_id") == cid:
+                rows[i] = rec
+                break
+        else:
+            rows.append(rec)
 
     def _audit_patch(self, channel_id, result, opinion):
         """与 db.add_audit 同步：向缓存里的 audit_log 追加同一条记录"""
@@ -276,10 +307,11 @@ class YTSStore:
         return out
 
     def add_influencer(self, rec):
-        """新增网红（写入宜搭），rec 用代码名字段"""
+        """新增网红（写入宜搭），rec 用代码名字段。
+        就地更新缓存，不整表失效（避免一人新增触发全员重拉）"""
         rec.setdefault("email_status", "")
-        self.db.add(rec)
-        self._invalidate()
+        r = self.db.add(rec)
+        self._upsert_cached(r or rec)
 
     def mark_emailed(self, inf_id):
         """标记已发邮件 → 留在挖掘池（待「标记洽谈中」后才流入活动）"""
@@ -303,14 +335,15 @@ class YTSStore:
         return [self._to_collab(r) for r in self._all()]
 
     def import_influencers(self, records: list) -> int:
-        """批量导入网红（upsert），records 用代码名字段"""
+        """批量导入网红（upsert），records 用代码名字段。
+        逐条就地更新缓存，不整表失效（避免一人导入触发全员重拉）"""
         count = 0
         for rec in records:
             if not rec.get("channel_id"):
                 continue
-            self.db.add(rec)
+            r = self.db.add(rec)
+            self._upsert_cached(r or rec)
             count += 1
-        self._invalidate()
         return count
 
     def sync_from_discovery(self, force: bool = False) -> dict:
@@ -327,7 +360,7 @@ class YTSStore:
             if not cid:
                 continue
             if cid not in existing:
-                self.db.add({
+                r = self.db.add({
                     "channel_id": cid,
                     "channel_name": x.get("channel_name") or "",
                     "channel_url": x.get("channel_url") or "",
@@ -336,6 +369,7 @@ class YTSStore:
                     "recruiter": x.get("discovered_by") or "",
                     "email_status": "已发送", "stage": "已发邮件",
                 })
+                self._upsert_cached(r)
                 added += 1
             else:
                 cur = existing[cid]
@@ -355,8 +389,7 @@ class YTSStore:
                 if patch:
                     self._upd(cid, patch)
                     patched += 1
-        if added or patched:
-            self._invalidate()
+        # 新增/补丁均已就地维护缓存，无需整表失效（避免触发全员重拉）
         return {"added": added, "patched": patched, "total": len(rows)}
 
     def sync_basic_info(self, force: bool = False, progress=None) -> dict:
@@ -404,8 +437,7 @@ class YTSStore:
                 continue
         if progress:
             progress(len(recs), len(recs))
-        if updated:
-            self._invalidate()
+        # 每条更新均已通过 _patch 就地维护缓存，无需整表失效
         return {"matched": matched, "updated": updated, "total": len(rows)}
 
     def confirm_collab(self, collab_id, plan_month, price=0):
