@@ -73,6 +73,38 @@ def fetch_emailed_channels(force: bool = False) -> list:
     return _emailed_cache["rows"]
 
 
+_allch_cache = {"t": 0.0, "rows": []}
+
+
+def fetch_all_channels(force: bool = False) -> list:
+    """拉挖掘站全部网红的基础信息（粉丝量/垂类等），供 YTS 同步"""
+    now = time.time()
+    if not force and _allch_cache["rows"] and now - _allch_cache["t"] < TTL:
+        return _allch_cache["rows"]
+    rows, off = [], 0
+    try:
+        while True:
+            r = requests.get(f"{SUPABASE_URL}/rest/v1/influencers",
+                             params={"select": "channel_id,channel_name,channel_url,"
+                                               "category,subscribers",
+                                     "offset": off, "limit": 500},
+                             headers={"apikey": SUPABASE_KEY,
+                                      "Authorization": f"Bearer {SUPABASE_KEY}"},
+                             timeout=15)
+            r.raise_for_status()
+            b = r.json()
+            rows += b
+            off += len(b)
+            if len(b) < 500:
+                break
+        if rows:
+            _allch_cache["t"], _allch_cache["rows"] = now, rows
+            return rows
+    except Exception:
+        pass
+    return _allch_cache["rows"]
+
+
 _status_cache = {"t": 0.0, "v": None}
 
 

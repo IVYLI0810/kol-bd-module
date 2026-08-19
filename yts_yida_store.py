@@ -284,6 +284,55 @@ class YTSStore:
             self._invalidate()
         return {"added": added, "patched": patched, "total": len(rows)}
 
+    def sync_basic_info(self, force: bool = False, progress=None) -> dict:
+        """全量同步挖掘站基础信息：粉丝量刷新为挖掘站最新值（YouTube API 抓的），
+        垂类/频道名仅空缺时补；进度类字段一律不动。"""
+        rows = R.fetch_all_channels(force=force)
+        if not rows:
+            return {"matched": 0, "updated": 0, "total": 0}
+        idx = {x.get("channel_id"): x for x in rows if x.get("channel_id")}
+        url_idx = {(x.get("channel_url") or "").strip().rstrip("/"): x
+                   for x in rows if x.get("channel_url")}
+        recs = self._all()
+        matched = updated = 0
+        for i, rec in enumerate(recs):
+            if progress:
+                progress(i, len(recs))
+            cid = (rec.get("channel_id") or "").strip()
+            m = idx.get(cid) or url_idx.get(
+                (rec.get("channel_url") or "").strip().rstrip("/"))
+            if not m:
+                continue
+            matched += 1
+            patch = {}
+            new_sub = int(m.get("subscribers") or 0)
+            cur_sub = int(rec.get("subscribers") or 0)
+            if new_sub > 0 and new_sub != cur_sub:
+                patch["subscribers"] = new_sub
+            if not (rec.get("category") or "").strip() \
+                    and (m.get("category") or "").strip():
+                patch["category"] = m["category"].strip()
+            if not (rec.get("channel_name") or "").strip() \
+                    and (m.get("channel_name") or "").strip():
+                patch["channel_name"] = m["channel_name"].strip()
+            if not patch:
+                continue
+            inst = rec.get("form_instance_id")
+            try:
+                if inst and getattr(self.db, "update_instance", None):
+                    self.db.update_instance(inst, patch)
+                else:
+                    self._upd(cid, patch)
+                self._patch(cid, patch)
+                updated += 1
+            except Exception:
+                continue
+        if progress:
+            progress(len(recs), len(recs))
+        if updated:
+            self._invalidate()
+        return {"matched": matched, "updated": updated, "total": len(rows)}
+
     def confirm_collab(self, collab_id, plan_month, price=0):
         self._upd(collab_id, {"plan_month": plan_month, "stage": "已确认",
                               "price": int(price or 0)})

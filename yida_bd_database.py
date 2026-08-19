@@ -336,6 +336,20 @@ class YidaBDDB:
             request, self._headers("UpdateFormData"), self._runtime)
         return self.get_by_channel_id(channel_id)
 
+    def update_instance(self, instance_id: str, updates: dict) -> bool:
+        """按实例ID直更（批量同步用）：不查找、不回读，单次 HTTP"""
+        request = aliding_models.UpdateFormDataRequest(
+            app_type=self.app_type,
+            system_token=self.system_token,
+            form_instance_id=instance_id,
+            language="zh_CN",
+            use_latest_version=True,
+            update_form_data_json=json.dumps(self._to_form_data(updates), ensure_ascii=False),
+        )
+        self._client.update_form_data_with_options(
+            request, self._headers("UpdateFormData"), self._runtime)
+        return True
+
     def delete(self, channel_id: str) -> bool:
         inst = self._find_instance(channel_id)
         if not inst:
