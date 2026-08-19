@@ -307,14 +307,15 @@ def steps_bar(steps: list, selected: int = None, nav_id: str = None) -> str:
 
 
 def name_card(c: dict, node: str, nav_extra: str = "") -> str:
-    """履约右栏卡片：整卡可点 → ?detail="""
+    """履约右栏卡片：整卡可点 → ?detail=；固定高度，文本超长省略，
+    徽章与进度点始终可见"""
     closed = c.get("is_closed")
     cls = "ycard closed" if closed else "ycard"
     tag = ' <span class="closed-tag">已闭环</span>' if closed else ""
     return (f'<a class="{cls}" data-nav="?detail={c["collab_id"]}{nav_extra}">'
             f'<span class="nm">{c["name"]}{tag}</span>'
-            f'<span class="mt">{c.get("category") or "-"} · '
-            f'{c.get("followers", 0):,} 粉丝 · {badge(node)} '
+            f'<span class="mt"><span class="mt-txt">{c.get("category") or "-"} · '
+            f'{c.get("followers", 0):,} 粉丝</span>{badge(node)} '
             f'{branch_dots(c.get("branches", {}))}</span></a>')
 
 
@@ -382,14 +383,17 @@ a.ystep:hover .dot {box-shadow: 0 2px 8px rgba(190,120,145,.25);}
 .ymonth {display: inline-block; font-size: 12px; font-weight: 700; color: #c2507a;
     background: #fdeef3; padding: 3px 14px; border-radius: 999px; margin: 10px 0 2px 0;}
 .ycard {display: block; background: #fff; border: 1px solid #f1e4e8; border-radius: 14px;
-    padding: 12px 16px; margin: 8px 0; cursor: pointer;
+    padding: 12px 16px; margin: 8px 0; cursor: pointer; height: 64px; overflow: hidden;
     box-shadow: 0 1px 2px rgba(29,29,31,.03); transition: box-shadow .15s ease;}
 .ycard:hover {box-shadow: 0 5px 16px rgba(190,120,145,.14);}
 .ycard.closed {border-color: #cdead8;
     box-shadow: 0 0 0 1px #ddf2e5, 0 4px 16px rgba(52,199,123,.16);}
-.ycard .nm {display: block; font-size: 14px; font-weight: 600; color: #1d1d1f;}
-.ycard .mt {display: block; font-size: 12px; font-weight: 500; color: #86868b;
-    margin-top: 3px;}
+.ycard .nm {display: block; font-size: 14px; font-weight: 600; color: #1d1d1f;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+.ycard .mt {display: flex; align-items: center; gap: 6px; font-size: 12px;
+    font-weight: 500; color: #86868b; margin-top: 3px;}
+.ycard .mt-txt {flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;}
 .closed-tag {font-size: 11px; font-weight: 600; color: #1a7f4b;}
 .bdots {display: inline-flex; gap: 4px; vertical-align: 1px;}
 .bdot {width: 7px; height: 7px; border-radius: 50%; background: #eadfe3;}

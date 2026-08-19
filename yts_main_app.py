@@ -424,22 +424,25 @@ def page_activity():
     recruiters = list(roster) + [n for n in data_names
                                  if not R.match_name(n, roster)]
     filter_by = None
-    if recruiters:
-        cur = st.session_state.get("activity_recruiter") \
-            or st.query_params.get("rec")
-        options = recruiters if cur in recruiters else ["（请选择）"] + recruiters
-        sel = st.selectbox("🧑 我的名字", options,
-                           index=options.index(cur) if cur in options else 0,
-                           key="activity_recruiter")
-        # 名字写进 URL，iframe 跳转整页刷新后不丢
-        if sel in recruiters:
-            st.query_params["rec"] = sel
-        elif "rec" in st.query_params:
-            del st.query_params["rec"]
-        filter_by = None if sel == "（请选择）" else sel
-    else:
-        manual = st.text_input("🧑 输入你的名字", key="activity_recruiter_manual")
-        filter_by = manual.strip() or None
+    # 名字选择 + 统计卡同一行横向铺满：左1/4放名字，右3/4放三张统计卡
+    name_col, stats_col = st.columns([1, 3])
+    with name_col:
+        if recruiters:
+            cur = st.session_state.get("activity_recruiter") \
+                or st.query_params.get("rec")
+            options = recruiters if cur in recruiters else ["（请选择）"] + recruiters
+            sel = st.selectbox("🧑 我的名字", options,
+                               index=options.index(cur) if cur in options else 0,
+                               key="activity_recruiter")
+            # 名字写进 URL，iframe 跳转整页刷新后不丢
+            if sel in recruiters:
+                st.query_params["rec"] = sel
+            elif "rec" in st.query_params:
+                del st.query_params["rec"]
+            filter_by = None if sel == "（请选择）" else sel
+        else:
+            manual = st.text_input("🧑 输入你的名字", key="activity_recruiter_manual")
+            filter_by = manual.strip() or None
 
     def by_me(lst):
         if filter_by is None:
@@ -452,11 +455,12 @@ def page_activity():
     fuls = by_me(store.list_fulfilling())
     closed = [c for c in fuls if c["is_closed"]]
 
-    st.markdown(T.stats_row([
-        ("💬 洽谈中", len(negs), "c-amber"),
-        ("🚀 履约中", len(fuls) - len(closed), "c-purple"),
-        ("✅ 已闭环", len(closed), "c-green"),
-    ], narrow=720), unsafe_allow_html=True)
+    with stats_col:
+        st.markdown(T.stats_row([
+            ("💬 洽谈中", len(negs), "c-amber"),
+            ("🚀 履约中", len(fuls) - len(closed), "c-purple"),
+            ("✅ 已闭环", len(closed), "c-green"),
+        ]), unsafe_allow_html=True)
 
     left, right = st.columns([1, 2])
 
@@ -511,9 +515,9 @@ def page_activity():
                 for c in rows:
                     html += T.name_card(c, _current_node(c),
                                         nav_extra="&from=activity")
-                # 单卡实测约 81px（padding 24 + 两行文本约 41 + margin 16），
+                # 卡片固定 64px 高 + 上下 margin 16px = 80px/卡；
                 # 月份标签约 32px；公式贴合实际，避免底部积空白
-                full = 36 + len(rows) * 82
+                full = 36 + len(rows) * 80
                 with col:
                     # 卡片少的月份按内容撑开；多的封顶 520px，内部滚动不裁剪
                     T.component_html(html, height=min(full, 520))
