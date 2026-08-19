@@ -429,3 +429,42 @@ class YTSStore:
         if video_url:
             patch["video_url"] = video_url
         self._update(collab_id, patch)
+
+    # ---------------- 反向操作：回退 / 取消 / 流回 / 淘汰 ----------------
+    def cancel_collab(self, collab_id):
+        """取消合作：退回洽谈中（清空上线月份，进度保留）"""
+        self._update(collab_id, {"status": "洽谈中", "plan_month": ""})
+
+    def back_to_pool(self, collab_id):
+        """流回挖掘库：删除合作记录，网红留在挖掘池（保留已发邮件标记）"""
+        def fn(data):
+            data["collabs"] = [c for c in data["collabs"]
+                               if c["collab_id"] != collab_id]
+        self._modify(fn)
+
+    def remove_influencer(self, collab_id):
+        """淘汰：从挖掘池和合作记录中一并移除"""
+        def fn(data):
+            data["pool"] = [p for p in data["pool"] if p["id"] != collab_id]
+            data["collabs"] = [c for c in data["collabs"]
+                               if c["collab_id"] != collab_id]
+        self._modify(fn)
+
+    STEP_UNDO = {
+        0: {"plan_month": "", "status": "洽谈中"},
+        1: {"branches": {"guideline": False, "contract": False, "gmc": False}},
+        2: {"order_done": False, "received": False},
+        3: {"received": False},
+        4: {"shoot_status": ""},
+        5: {"video_url": "", "review_status": ""},
+        6: {"review_status": "", "recheck_video_url": ""},
+        7: {"is_closed": False, "uploaded_confirmed": False},
+    }
+
+    def undo_step(self, collab_id, step: int) -> bool:
+        """回退指定步骤（0-7）；回退后该步骤状态回到未完成"""
+        patch = self.STEP_UNDO.get(step)
+        if not patch:
+            return False
+        self._update(collab_id, patch)
+        return True

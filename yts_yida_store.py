@@ -531,6 +531,45 @@ class YTSStore:
             patch["video_link"] = video_url
         self._upd(collab_id, patch)
 
+    # ---------------- 反向操作：回退 / 取消 / 流回 / 淘汰 ----------------
+    def cancel_collab(self, collab_id):
+        """取消合作：退回洽谈中（清空上线月份，进度保留）"""
+        self._upd(collab_id, {"plan_month": ""}, clear_fields=["plan_month"])
+
+    def back_to_pool(self, collab_id):
+        """流回挖掘库：退回挖掘池（清空月份+洽谈标记，保留已发邮件标记）"""
+        self._upd(collab_id, {"plan_month": "", "stage": ""},
+                  clear_fields=["plan_month", "stage"])
+
+    def remove_influencer(self, collab_id):
+        """淘汰：从挖掘池移除（清空已发邮件/洽谈标记，回到未触达状态）"""
+        self._upd(collab_id, {"email_status": "", "stage": "", "plan_month": ""},
+                  clear_fields=["email_status", "stage", "plan_month"])
+
+    # 步骤回退：把对应字段写回"未完成"值（均为宜搭表单已有选项或清空）
+    STEP_UNDO = {
+        0: lambda: ({"plan_month": ""}, ["plan_month"]),          # 确认合作
+        1: lambda: ({"guideline_status": "", "contract_status": "",
+                     "gmc_status": ""},
+                    ["guideline_status", "contract_status", "gmc_status"]),
+        2: lambda: ({"order_status": ""}, ["order_status"]),      # 下单
+        3: lambda: ({"order_status": "已下单"}, []),              # 收货→退回已下单
+        4: lambda: ({"shoot_status": ""}, ["shoot_status"]),      # 拍摄
+        5: lambda: ({"video_link": ""}, ["video_link"]),          # 提交审核
+        6: lambda: ({"audit_status": "", "recheck_video_url": ""},
+                    ["audit_status", "recheck_video_url"]),       # 审核
+        7: lambda: ({"stage": ""}, ["stage"]),                    # 闭环→退回履约
+    }
+
+    def undo_step(self, collab_id, step: int) -> bool:
+        """回退指定步骤（0-7）；回退后该步骤及之后的状态回到未完成"""
+        fn = self.STEP_UNDO.get(step)
+        if not fn:
+            return False
+        patch, clear = fn()
+        self._upd(collab_id, patch, clear_fields=clear)
+        return True
+
 
 _STORE = None
 

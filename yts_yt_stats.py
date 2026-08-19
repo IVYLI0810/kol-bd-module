@@ -212,19 +212,19 @@ def _save_video_cache(cache: dict):
         pass
 
 
-def fetch_video_stats(url: str) -> dict | None:
+def fetch_video_stats(url: str, force: bool = False) -> dict | None:
     """抓取单条视频的播放/点赞/评论/时长。
 
     返回 {"views", "likes", "comments", "duration", "published_at", "ts"}；
     无 key / 视频不可见 / 未公开链接等失败返回 None（错误结果也缓存1天，
-    避免同一条坏链接反复烧配额）。
+    避免同一条坏链接反复烧配额）。force=True 时无视24h缓存强制重抓。
     """
     vid = extract_video_id(url)
     if not vid:
         return None
     cache = _load_video_cache()
     hit = cache.get(vid)
-    if hit and time.time() - hit.get("ts", 0) < VIDEO_TTL:
+    if not force and hit and time.time() - hit.get("ts", 0) < VIDEO_TTL:
         return hit if not hit.get("err") else None
     if not get_key():
         return hit if hit and not hit.get("err") else None

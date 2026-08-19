@@ -684,6 +684,59 @@ def page_detail(collab_id):
                   on_click=_set_detail_step, args=(collab_id, i))
 
     _render_actions(collab_id, c, sel)
+    _render_danger_zone(collab_id, c, sel, steps)
+
+
+def _confirm_btn(key, label, confirm_label, fn, danger=False):
+    """二次确认按钮：第一次点显示确认态，第二次点才执行"""
+    ck = f"cfm_{key}"
+    if st.session_state.get(ck):
+        cols = st.columns([1, 1])
+        if cols[0].button(confirm_label, key=f"{key}_yes",
+                          type="primary" if danger else "secondary"):
+            st.session_state.pop(ck, None)
+            fn()
+        if cols[1].button("取消", key=f"{key}_no"):
+            st.session_state.pop(ck, None)
+            st.rerun()
+    else:
+        if st.button(label, key=key):
+            st.session_state[ck] = True
+            st.rerun()
+
+
+def _render_danger_zone(cid, c, sel, steps):
+    """更多操作：步骤回退 / 取消合作 / 流回挖掘库 / 淘汰（均二次确认）"""
+    with st.expander("⚙️ 更多操作（回退 / 取消 / 流回 / 淘汰）"):
+        st.caption("以下操作会改变流程状态，均需要二次确认，请谨慎操作")
+        # 1) 回退当前步骤
+        label, state = steps[sel]
+        if state == "done":
+            _confirm_btn(
+                f"undo{sel}", f"↩ 回退「{label}」",
+                f"确认回退「{label}」？该步骤将回到未完成",
+                lambda: (store.undo_step(cid, sel), st.toast(f"已回退「{label}」"),
+                         st.rerun()))
+        else:
+            st.caption(f"当前步骤「{label}」未完成，无需回退")
+        st.divider()
+        # 2) 取消合作 / 流回挖掘库 / 淘汰
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            _confirm_btn(
+                "cancel", "🚫 取消合作", "确认取消合作？退回洽谈中",
+                lambda: (store.cancel_collab(cid), st.toast("已取消合作，退回洽谈中"),
+                         go("activity")), danger=True)
+        with c2:
+            _confirm_btn(
+                "backpool", "🔙 流回挖掘库", "确认流回挖掘库？合作进度清空",
+                lambda: (store.back_to_pool(cid), st.toast("已流回挖掘库"),
+                         go("dig")), danger=True)
+        with c3:
+            _confirm_btn(
+                "remove", "🗑 淘汰网红", "确认淘汰？从挖掘库彻底移除",
+                lambda: (store.remove_influencer(cid), st.toast("已淘汰该网红"),
+                         go("dig")), danger=True)
 
 
 def _render_actions(cid, c, step):
@@ -918,8 +971,9 @@ def _render_actions(cid, c, step):
 
 
 # ============================ 分析模块 ============================
-def _refresh_video_metrics(recs):
-    """闭环视频的播放/点赞/评论每日自动抓取（本地缓存 24h）并回写宜搭。
+def _refresh_video_metrics(recs, force=False):
+    """有视频链接记录的播放/点赞/评论自动抓取（本地缓存 24h）并回写宜搭。
+    force=True 时无视缓存强制重抓（一键刷新用）。
 
     返回 collab_id -> 数据来源标记（"auto" 自动抓取 / "待回填" 抓取失败）"""
     states = {}
@@ -929,7 +983,7 @@ def _refresh_video_metrics(recs):
         url = r.get("video_url") or ""
         if not url:
             continue
-        stats = YT.fetch_video_stats(url)
+        stats = YT.fetch_video_stats(url, force=force)
         if stats is None:
             states[r["collab_id"]] = "待回填"
             continue
@@ -953,17 +1007,29 @@ def page_analysis():
     st.markdown(T.header("分析模块", "视频互动 + 商品转化概览（播放 / 点击率 / 成交量 / GMV）"),
                 unsafe_allow_html=True)
     recs = [r for r in store.list_all() if r.get("plan_month") or r.get("is_closed")]
+    # 自动抓取范围仅闭环记录（履约中链接多为未公开审核链接，抓了也是"待回填"）
     closed_recs = [r for r in recs if r.get("is_closed") and r.get("video_url")]
+    # 一键刷新：无视24h缓存强制重抓闭环视频数据
+    _force = st.session_state.pop("force_refresh", False)
     if closed_recs:
         if YT.get_key():
-            with st.spinner("正在同步闭环视频数据（每日一次）…"):
-                src_states = _refresh_video_metrics(closed_recs)
+            with st.spinner("正在同步闭环视频数据…" if _force
+                            else "正在同步闭环视频数据（每日一次）…"):
+                src_states = _refresh_video_metrics(closed_recs, force=_force)
+            if _force:
+                st.toast("已强制刷新全部闭环视频数据")
         else:
             src_states = {}
-            st.caption("配置 YOUTUBE_API_KEY（Secrets）后，闭环视频的播放/点赞/"
-                       "评论将每日自动同步")
+            st.warning("未配置 YOUTUBE_API_KEY：视频播放/点赞/评论无法抓取。"
+                       "请在 Streamlit Cloud → Settings → Secrets 添加 "
+                       "YOUTUBE_API_KEY 后使用一键刷新")
     else:
         src_states = {}
+    # 一键刷新按钮（范围：仅闭环视频）
+    if st.button("🔄 一键刷新闭环视频数据", key="force_refresh_btn",
+                 help="无视24小时缓存，强制重新抓取所有已闭环视频的播放/点赞/评论"):
+        st.session_state["force_refresh"] = True
+        st.rerun()
     months = sorted({r["plan_month"] for r in recs if r.get("plan_month")},
                     reverse=True)
     if months:
