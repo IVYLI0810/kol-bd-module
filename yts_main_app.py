@@ -815,6 +815,12 @@ def page_analysis():
         if sel != "全部":
             recs = [r for r in recs if r["plan_month"] == sel]
 
+    if not recs:
+        st.markdown(T.empty_hint("暂无履约/闭环记录：确认合作或流程导入「已闭环」后，"
+                                 "自动进这里追踪数据"),
+                    unsafe_allow_html=True)
+        return
+
     has_data = [r for r in recs if (r.get("video_views") or r.get("gmv")
                                    or r.get("orders"))]
     tot_gmv = sum(r.get("gmv") or 0 for r in recs)
@@ -830,15 +836,16 @@ def page_analysis():
     ]), unsafe_allow_html=True)
 
     if not has_data:
-        st.markdown(T.empty_hint("暂无带指标的记录，闭环后回填播放/成交数据即可在此查看"),
-                    unsafe_allow_html=True)
-        return
+        st.caption("指标待回填：闭环后把播放/点赞/成交/GMV 补进宜搭表单，这里自动汇总")
 
     rows = sorted(recs, key=lambda r: r.get("gmv") or 0, reverse=True)
     trows = []
     for r in rows:
+        tag = ' <span class="closed-tag">已闭环</span>' if r.get("is_closed") else ""
         trows.append([
-            f'<b>{esc(r["name"])}</b>',
+            f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+            f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
+            f'{esc(r["name"])}</a>{tag}',
             esc(r.get("plan_month") or "-"),
             f'<span class="num">{r.get("video_views", 0):,}</span>',
             f'<span class="num">{r.get("video_likes", 0):,}</span>',
