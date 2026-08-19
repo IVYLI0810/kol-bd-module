@@ -26,6 +26,10 @@ TTL = 7 * 86400
 MAX_PAGES = 20  # 最多翻 20 页上传（1000 条视频），防配额爆炸
 
 
+# 视频数据缓存 TTL：1天（分析模块每日自动刷新）
+VIDEO_TTL = 86400
+
+
 def get_key() -> str:
     k = os.environ.get("YOUTUBE_API_KEY", "")
     if k:
@@ -35,6 +39,29 @@ def get_key() -> str:
         return local_key or ""
     except Exception:
         return ""
+
+
+def extract_video_id(url: str) -> str:
+    """从任意形态的 YouTube 链接提取 videoId；无法提取返回 ''。
+
+    覆盖：watch?v= / youtu.be/ / shorts/ / embed/ / live/ / 裸ID
+    （注意 Shorts 和短链格式，仅匹配 watch?v= 会漏抓）
+    """
+    s = str(url or "").strip()
+    if not s:
+        return ""
+    # 1) ?v= 参数（watch / m.youtube / 带其它参数）
+    m = re.search(r"[?&]v=([\w-]{11})", s)
+    if m:
+        return m.group(1)
+    # 2) 路径形态：youtu.be/ID · shorts/ID · embed/ID · live/ID · v/ID
+    m = re.search(r"(?:youtu\.be/|/shorts/|/embed/|/live/|/v/)([\w-]{11})", s)
+    if m:
+        return m.group(1)
+    # 3) 裸 videoId
+    if re.fullmatch(r"[\w-]{11}", s):
+        return s
+    return ""
 
 
 def _get(path: str, params: dict) -> dict:
@@ -135,3 +162,68 @@ def fetch_stats(channel_id: str) -> dict | None:
         return rec
     except Exception:
         return hit
+
+
+# ---------------------------------------------------------------------------
+# 单条视频指标（分析模块自动抓取用，TTL 1天）
+# ---------------------------------------------------------------------------
+VIDEO_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                ".yt_video_cache.json")
+
+
+def _load_video_cache() -> dict:
+    try:
+        with open(VIDEO_CACHE_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_video_cache(cache: dict):
+    try:
+        with open(VIDEO_CACHE_PATH, "w") as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def fetch_video_stats(url: str) -> dict | None:
+    """抓取单条视频的播放/点赞/评论/时长。
+
+    返回 {"views", "likes", "comments", "duration", "published_at", "ts"}；
+    无 key / 视频不可见 / 未公开链接等失败返回 None（错误结果也缓存1天，
+    避免同一条坏链接反复烧配额）。
+    """
+    vid = extract_video_id(url)
+    if not vid:
+        return None
+    cache = _load_video_cache()
+    hit = cache.get(vid)
+    if hit and time.time() - hit.get("ts", 0) < VIDEO_TTL:
+        return hit if not hit.get("err") else None
+    if not get_key():
+        return hit if hit and not hit.get("err") else None
+    try:
+        data = _get("videos", {"part": "statistics,contentDetails,snippet",
+                               "id": vid})
+        items = data.get("items") or []
+        if not items:  # 视频不存在/不可见
+            cache[vid] = {"err": True, "ts": time.time()}
+            _save_video_cache(cache)
+            return None
+        stats = items[0].get("statistics") or {}
+        rec = {
+            "views": int(stats.get("viewCount") or 0),
+            "likes": int(stats.get("likeCount") or 0),
+            "comments": int(stats.get("commentCount") or 0),
+            "duration": _parse_secs((items[0].get("contentDetails") or {})
+                                    .get("duration")),
+            "published_at": (items[0].get("snippet") or {}).get("publishedAt", "")[:10],
+            "ts": time.time(),
+        }
+        cache[vid] = rec
+        _save_video_cache(cache)
+        return rec
+    except Exception:
+        # 网络/配额异常不写错误缓存：下次进入分析页会自动重试
+        return hit if hit and not hit.get("err") else None
