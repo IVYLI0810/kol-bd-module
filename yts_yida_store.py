@@ -247,7 +247,25 @@ class YTSStore:
         }
 
     def _upd(self, channel_id, patch, clear_fields=None):
-        r = self.db.update(channel_id, patch, clear_fields=clear_fields)
+        # 快路径：从缓存拿 form_instance_id 直更（1次HTTP，省掉查找+回读）。
+        # 缓存里取不到或直更失败时回退 db.update（搜索→更新，2次HTTP）。
+        inst = ""
+        for r in self._cache.get("all", (0, []))[1]:
+            if r.get("channel_id") == channel_id:
+                inst = r.get("form_instance_id") or ""
+                break
+        if not inst:
+            one = self._cache.get("one:" + channel_id)
+            if one and isinstance(one[1], dict):
+                inst = one[1].get("form_instance_id") or ""
+        if inst:
+            try:
+                self.db.update_instance(inst, patch,
+                                         clear_fields=clear_fields)
+            except Exception:
+                self.db.update(channel_id, patch, clear_fields=clear_fields)
+        else:
+            self.db.update(channel_id, patch, clear_fields=clear_fields)
         self._patch(channel_id, patch)
         # 被清空的字段缓存里也同步清掉
         for code in clear_fields or ():
@@ -257,7 +275,6 @@ class YTSStore:
             one = self._cache.get("one:" + channel_id)
             if one and isinstance(one[1], dict):
                 one[1][code] = ""
-        return r
 
     # ---------------- 编辑基本信息 ----------------
     EDIT_FIELDS = ("price", "plan_month", "email", "channel_url",
@@ -314,11 +331,12 @@ class YTSStore:
         self._upsert_cached(r or rec)
 
     def mark_emailed(self, inf_id):
-        """标记已发邮件 → 留在挖掘池（待「标记洽谈中」后才流入活动）"""
+        """标记已发邮件 → 留在挖掘池（待「标记洽谈中」后才流入活动）。
+        _upd 自带快路径：缓存命中实例ID时单次HTTP直更"""
         self._upd(inf_id, {"email_status": "已发送", "stage": "已发邮件"})
 
     def mark_negotiating(self, inf_id):
-        """标记洽谈中 → 流入活动模块洽谈栏"""
+        """标记洽谈中 → 流入活动模块洽谈栏（_upd 快路径）"""
         self._upd(inf_id, {"stage": "洽谈中"})
 
     # ---------------- 活动模块 ----------------

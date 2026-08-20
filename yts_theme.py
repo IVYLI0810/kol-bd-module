@@ -402,18 +402,17 @@ a.ystep:hover .dot {box-shadow: 0 2px 8px rgba(190,120,145,.25);}
 
 COMP_JS = r"""
 <script>
-// 父页面里紧跟在流程条 iframe 之后的 8 个原生按钮（点击靶子，加载后隐藏）
-function stepButtons() {
-    var fe = window.frameElement;
-    if (!fe) return [];
+// 父页面里紧跟在 iframe 之后的隐藏原生按钮（点击靶子，加载后隐藏）
+function followingButtons(fe, n) {
     var all = window.parent.document.querySelectorAll('button');
     var out = [];
     for (var i = 0; i < all.length; i++) {
         if (fe.compareDocumentPosition(all[i]) & 4 /* FOLLOWING */) out.push(all[i]);
-        if (out.length === 8) break;
+        if (out.length === n) break;
     }
     return out;
 }
+function stepButtons() { return followingButtons(window.frameElement, 8); }
 document.addEventListener('click', function (e) {
     var a = e.target.closest('[data-nav]');
     if (!a) return;
@@ -424,6 +423,14 @@ document.addEventListener('click', function (e) {
         var i = parseInt(nav.slice(6), 10);
         var b = stepButtons()[i];
         if (b) b.click();
+        return;
+    }
+    if (nav.indexOf('#mark=') === 0) {
+        // 挖掘页标记（已发邮件/洽谈中）：同样走隐藏按钮 → 轻量 rerun，不整页跳转
+        var mi = parseInt(nav.slice(6), 10);
+        var cnt = document.querySelectorAll('[data-nav^="#mark="]').length;
+        var mb = followingButtons(window.frameElement, cnt);
+        if (mb[mi]) mb[mi].click();
         return;
     }
     // 普通跳转（卡片等）：sandbox iframe 无 allow-top-navigation，
@@ -440,11 +447,18 @@ document.addEventListener('click', function (e) {
     d.body.appendChild(s);
 });
 (function () {
-    if (!document.querySelector('.ystep')) return;
+    // 隐藏紧跟本 iframe 的点击靶按钮：流程条固定 8 个，
+    // 挖掘页标记按钮数量 = 页内 #mark= 链接数
+    var fe = window.frameElement;
+    if (!fe) return;
+    var n = 0;
+    if (document.querySelector('.ystep')) { n = 8; }
+    else { n = document.querySelectorAll('[data-nav^="#mark="]').length; }
+    if (!n) return;
     var tries = 0;
     function hide() {
-        var bs = stepButtons();
-        if (bs.length === 8) {
+        var bs = followingButtons(fe, n);
+        if (bs.length === n) {
             bs.forEach(function (b) {
                 var el = b;
                 while (el && el !== window.parent.document.body) {
@@ -456,7 +470,7 @@ document.addEventListener('click', function (e) {
                 target.style.setProperty('display', 'none', 'important');
             });
         } else if (tries++ < 50) {
-            // 云端流式渲染：按钮可能晚于流程条到达父页面，轮询等待
+            // 云端流式渲染：按钮可能晚于 iframe 到达父页面，轮询等待
             setTimeout(hide, 200);
         }
     }

@@ -330,13 +330,16 @@ def page_dig():
                     unsafe_allow_html=True)
     else:
         trows = []
+        mark_actions = []  # [(inf_id, "mail"/"neg")]，与 #mark= 链接同序
         for p in rows[(cur - 1) * PAGE: cur * PAGE]:
             if not p.get("emailed"):
-                st_cell = (f'<a class="act act-y" data-nav="?act=mail&id={esc(p["id"])}">'
+                st_cell = (f'<a class="act act-y" data-nav="#mark={len(mark_actions)}">'
                            f'标记已发邮件</a>')
+                mark_actions.append((p["id"], "mail"))
             elif (p.get("stage") or "") in ("", "已发邮件"):
-                st_cell = (f'<a class="act act-b" data-nav="?act=neg&id={esc(p["id"])}">'
+                st_cell = (f'<a class="act act-b" data-nav="#mark={len(mark_actions)}">'
                            f'标记洽谈中</a>')
+                mark_actions.append((p["id"], "neg"))
             elif p.get("stage") == "洽谈中":
                 st_cell = T.badge("洽谈中")
             else:
@@ -353,6 +356,19 @@ def page_dig():
             T.table(["昵称", "垂类", "粉丝数", "挖掘人", "邮箱", "操作"],
                     trows, wrap=False),
             height=48 + len(trows) * 38)
+        # 紧跟 iframe 的隐藏点击靶：JS 会隐藏它们，点表格里的标记链接
+        # 时"按下"对应按钮 → 轻量 rerun（不整页跳转，消除点击卡顿）
+        def _mark_cb(iid, act):
+            if act == "mail":
+                store.mark_emailed(iid)
+                st.toast("已标记「已发邮件」，待标记「洽谈中」后流入活动")
+            else:
+                store.mark_negotiating(iid)
+                st.toast("已标记「洽谈中」，网红已流入活动模块")
+
+        for i, (iid, act) in enumerate(mark_actions):
+            st.button(f"mark{i}", key=f"digmark{i}",
+                      on_click=_mark_cb, args=(iid, act))
 
     p1, p2, p3 = st.columns([1, 3, 1])
     with p1:
@@ -1506,7 +1522,6 @@ elif _qp.get("act") == "neg" and _qp.get("id"):
     store.mark_negotiating(_i)
     st.session_state.page = "dig"
     st.toast("已标记「洽谈中」，网红已流入活动模块")
-    st.rerun()
 elif _qp.get("act") == "mail" and _qp.get("id"):
     _i = _qp.get("id")
     del st.query_params["act"]
@@ -1514,7 +1529,6 @@ elif _qp.get("act") == "mail" and _qp.get("id"):
     store.mark_emailed(_i)
     st.session_state.page = "dig"
     st.toast("已标记「已发邮件」，留在挖掘池，待标记「洽谈中」")
-    st.rerun()
 
 page = st.session_state.page
 if page == "dig":

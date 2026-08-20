@@ -400,17 +400,25 @@ class YidaBDDB:
         )
         self._client.update_form_data_with_options(
             request, self._headers("UpdateFormData"), self._runtime)
-        return self.get_by_channel_id(channel_id)
+        # 不再回读验证：调用方（store层）会就地同步缓存，省1次HTTP提速约1/3
+        return None
 
-    def update_instance(self, instance_id: str, updates: dict) -> bool:
-        """按实例ID直更（批量同步用）：不查找、不回读，单次 HTTP"""
+    def update_instance(self, instance_id: str, updates: dict,
+                        clear_fields: Optional[list] = None) -> bool:
+        """按实例ID直更（批量同步用）：不查找、不回读，单次 HTTP。
+        clear_fields 里的字段显式清空为空串（清空类编辑用）"""
+        form_data = self._to_form_data(updates)
+        for code in clear_fields or ():
+            fid = FIELD_IDS.get(code, "")
+            if fid:
+                form_data[fid] = ""
         request = aliding_models.UpdateFormDataRequest(
             app_type=self.app_type,
             system_token=self.system_token,
             form_instance_id=instance_id,
             language="zh_CN",
             use_latest_version=True,
-            update_form_data_json=json.dumps(self._to_form_data(updates), ensure_ascii=False),
+            update_form_data_json=json.dumps(form_data, ensure_ascii=False),
         )
         self._client.update_form_data_with_options(
             request, self._headers("UpdateFormData"), self._runtime)
