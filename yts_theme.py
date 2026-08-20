@@ -481,7 +481,9 @@ document.addEventListener('click', function (e) {
 
 
 def component_html(body: str, height: int) -> None:
-    import streamlit as st
-    # st.iframe：HTML 字符串以同域 iframe 嵌入，允许 JS 与同源访问
-    #（等价于已弃用的 components.v1.html，Streamlit 2026-06 后移除后者）
-    st.iframe(f"<style>{COMP_CSS}</style>{body}{COMP_JS}", height=height)
+    import streamlit.components.v1 as components
+    # 注意：必须用 components.v1.html，不能用 st.iframe——
+    # 表格/流程条里的点击靶隐藏、data-nav 跳转依赖 iframe 与父页面的
+    # 同源脚本通信；st.iframe 在线上环境该通信不生效（曾导致 mark 按钮裸露）。
+    # components.v1.html 的弃用警告在移除前不影响功能，届时再迁移。
+    components.html(f"<style>{COMP_CSS}</style>{body}{COMP_JS}", height=height)

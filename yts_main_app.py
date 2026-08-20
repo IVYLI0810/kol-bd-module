@@ -239,9 +239,29 @@ def flow_import_panel():
             st.rerun()
 
 
+def _fix_zero_subscribers():
+    """补频道粉丝数：找出粉丝为0的记录，从 YouTube 主页抓取真实粉丝数写回"""
+    zero = [p["id"] for p in store.list_pool()
+            if (p.get("followers") or 0) == 0]
+    if not zero:
+        st.toast("没有粉丝数为 0 的记录，无需补充")
+        return
+    if not YT.get_key():
+        st.warning("未配置 YOUTUBE_API_KEY：无法抓取 YouTube 频道数据。"
+                   "请在 Streamlit Cloud → Settings → Secrets 添加后重试")
+        return
+    with st.spinner(f"正在从 YouTube 抓取 {len(zero)} 个频道的粉丝数…"):
+        n = store.sync_yt_subscribers(zero)
+    if n:
+        st.toast(f"已补充 {n} 个频道的粉丝数（其余频道可能未公开或链接无效）")
+    else:
+        st.warning("未能抓到任何粉丝数：请确认已配置 YOUTUBE_API_KEY，"
+                   "且这些频道的粉丝数在 YouTube 上公开可见")
+
+
 def page_dig():
     home_btn()
-    h1, h2 = st.columns([5, 1])
+    h1, h2, h3 = st.columns([4, 1, 1])
     with h1:
         st.markdown(T.header("挖掘模块",
                              "挖掘站「已发邮件」自动入池；点右上「同步挖掘站」"
@@ -253,6 +273,17 @@ def page_dig():
             st.session_state["dig_sync_ts"] = 0
             st.session_state["dig_force"] = True
             st.rerun()
+    with h3:
+        st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+        if _is_data_owner():
+            if st.button("📡 补频道粉丝数", key="btn_fix_subs",
+                         use_container_width=True,
+                         help="对粉丝数为0的记录，从 YouTube 频道主页抓取真实粉丝数"
+                              "写回宜搭（负责人专属）"):
+                _fix_zero_subscribers()
+        else:
+            st.markdown('<div style="height:38px"></div>',
+                        unsafe_allow_html=True)
     if getattr(store, "sync_from_discovery", None) and \
             time.time() - st.session_state.get("dig_sync_ts", 0) > 300:
         force = st.session_state.pop("dig_force", False)

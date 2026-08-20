@@ -297,6 +297,28 @@ class YTSStore:
                                                     follow_time=_now()))
         self._modify(fn)
 
+    def sync_yt_subscribers(self, ids: list) -> int:
+        """补频道粉丝数（demo 本地版）：抓 YouTube 主页数据写回挖掘池"""
+        import yts_yt_stats as YT
+        if not YT.get_key():
+            return 0
+        n = 0
+        for cid in ids:
+            if not str(cid).startswith("UC"):
+                continue
+            stats = YT.fetch_stats(cid)
+            if not stats:
+                continue
+            sub = int(stats.get("subscribers") or 0)
+            if sub > 0:
+                def fn(data, cid=cid, sub=sub):
+                    for p in data["pool"]:
+                        if p["id"] == cid:
+                            p["followers"] = sub
+                self._modify(fn)
+                n += 1
+        return n
+
     # ---------------- 活动模块 ----------------
     def list_negotiating(self):
         return [c for c in self._load()["collabs"] if c["status"] == "洽谈中"]

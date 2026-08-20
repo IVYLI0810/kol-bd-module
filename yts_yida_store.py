@@ -339,6 +339,25 @@ class YTSStore:
         """标记洽谈中 → 流入活动模块洽谈栏（_upd 快路径）"""
         self._upd(inf_id, {"stage": "洽谈中"})
 
+    def sync_yt_subscribers(self, ids: list) -> int:
+        """补频道粉丝数：对给定记录逐个抓 YouTube 主页数据（缓存7天），
+        粉丝数>0 时写回宜搭。返回成功条数。未配 key/抓取失败跳过。"""
+        import yts_yt_stats as YT
+        if not YT.get_key():
+            return 0
+        n = 0
+        for cid in ids:
+            if not str(cid).startswith("UC"):
+                continue
+            stats = YT.fetch_stats(cid)
+            if not stats:
+                continue
+            sub = int(stats.get("subscribers") or 0)
+            if sub > 0:
+                self._upd(cid, {"subscribers": sub})
+                n += 1
+        return n
+
     # ---------------- 活动模块 ----------------
     def list_negotiating(self):
         return [c for c in (self._to_collab(r) for r in self._all())
