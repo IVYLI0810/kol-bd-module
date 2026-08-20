@@ -2,9 +2,11 @@
 """
 YTS 审核提醒模块（钉钉双通道版：群机器人 + 个人待办）
 ================
-- 提交审核 → ① 群里发一条 markdown 通知并 @审核同学（群自定义机器人）
-             ② 给审核同学建一条钉钉个人待办（带视频链接按钮）
-- 审核/复审出结果 → 给负责运营建一条钉钉个人待办，提醒 check
+- 提交审核 → ① 群里发通知并 @审核同学，附【审核网站】直达链接
+             ② 给审核同学建一条钉钉个人待办（点开直达审核网站）
+- 审核/复审出结果 → ① 群里发通知并 @运营（网红名/负责人/结果/驳回原因，
+                       附主站详情页直达链接）
+                     ② 给负责运营建一条钉钉个人待办，提醒 check
 
 两个通道互相独立：哪个配置好就发哪个，都发时结果合并展示；
 任何一个失败都会把原因写进返回消息，UI 直接展示，绝不静默吞掉。
@@ -14,6 +16,9 @@ YTS 审核提醒模块（钉钉双通道版：群机器人 + 个人待办）
   ok=False → 全部通道失败/未配置，msg 是具体原因
 
 部署配置（Streamlit Secrets 环境变量，或本地 yida_config_local.py）：
+  【网站地址】
+  DINGTALK_REVIEW_SITE_URL  审核网站线上地址（提交审核通知里的跳转链接）
+  DINGTALK_MAIN_SITE_URL    主站线上地址（审核结果通知里的跳转链接，自动拼 ?detail=）
   【个人待办】
   DINGTALK_APP_KEY / DINGTALK_APP_SECRET  钉钉应用凭证
   DINGTALK_REVIEW_USERIDS  名字→userid 的 JSON，如
@@ -23,7 +28,8 @@ YTS 审核提醒模块（钉钉双通道版：群机器人 + 个人待办）
   DINGTALK_WEBHOOK          机器人的 webhook 完整地址（含 access_token）
   DINGTALK_WEBHOOK_SECRET   加签密钥（SEC 开头）
   DINGTALK_REVIEW_MOBILES   名字→手机号 JSON（可选，填了才能 @ 出红点），如
-      {"Minjeong": "01012345678"}
+      {"Minjeong": "01012345678", "艾薇李": "01087654321"}
+  DINGTALK_NOTIFY_OPS       审核结果群通知要 @ 的运营名字，默认「艾薇李」
 """
 import base64
 import hashlib
@@ -211,17 +217,20 @@ def notify_review_submitted(channel_name, video_url, reviewer="Minjeong"):
     """提交审核成功时调用：群机器人@审核同学 + 审核同学个人待办，双通道"""
     name = channel_name or "（이름 없음）"
     parts = []
+    # 操作入口 = 审核网站；没配就退回视频链接
+    site = _cfg("DINGTALK_REVIEW_SITE_URL") or video_url
 
     # 通道一：群机器人（配了 webhook 就发）
     md = (f"### 🎬 새 영상 검토 요청\n\n"
           f"- 크리에이터: **{name}**\n"
           f"- 검토 담당: {reviewer}\n"
-          f"- 영상 링크: [바로가기]({video_url})\n\n"
+          f"- 검토 사이트(审核网站): [👉 바로가기]({site})\n"
+          f"- 영상 링크: [보기]({video_url})\n\n"
           f"확인 부탁드립니다 🙏")
     gok, gmsg = _send_group(f"영상 검토 요청 · {name}", md, reviewer)
     parts.append(gmsg)
 
-    # 通道二：个人待办（配了 userid 就发）
+    # 通道二：个人待办（配了 userid 就发），点开直达审核网站
     uid = _userids().get(reviewer)
     todo_ok = False
     if not uid:
@@ -230,23 +239,53 @@ def notify_review_submitted(channel_name, video_url, reviewer="Minjeong"):
         todo_ok, tok_msg = _send_todo(
             f"🎬 영상 검토 요청 · {name}",
             f"{name} 님의 영상이 검토 대기 중입니다.\n영상 링크: {video_url}",
-            video_url, uid)
+            site, uid)
         parts.append(f"已向 {reviewer} 发送钉钉待办" if todo_ok else f"待办：{tok_msg}")
 
     return gok or todo_ok, "；".join(parts)
 
 
-def notify_review_result(channel_name, result, opinion, owner):
-    """审核/复审出结果时调用：给负责运营发个人待办提醒 check"""
+def notify_review_result(channel_name, result, opinion, owner, detail_id=""):
+    """审核/复审出结果时调用：群里@运营 + 给负责运营发个人待办，双通道"""
     name = channel_name or "（이름 없음）"
+    parts = []
+    passed = result == "已通过"
+    icon, res_ko = ("✅", "검토 통과(审核通过)") if passed else ("❌", "검토 반려(审核驳回)")
+
+    # 通道一：群机器人 @运营（网红名/负责人/结果/驳回原因 + 主站直达链接）
+    ops = _cfg("DINGTALK_NOTIFY_OPS") or "艾薇李"
+    md = (f"### {icon} 검토 결과 알림\n\n"
+          f"- 크리에이터(网红): **{name}**\n"
+          f"- 담당자(负责人): {owner or '-'}\n"
+          f"- 결과: {res_ko}\n")
+    if not passed:
+        md += f"- 반려 사유(驳回原因): {opinion or '-'}\n"
+    main_site = _cfg("DINGTALK_MAIN_SITE_URL")
+    if main_site and detail_id:
+        sep = "&" if "?" in main_site else "?"
+        md += f"\n[👉 사이트에서 확인(去网站查看)]({main_site}{sep}detail={urllib.parse.quote(str(detail_id))})\n"
+    md += "\n확인 부탁드립니다 🙏"
+    gok, gmsg = _send_group(f"검토 결과 · {name}", md, ops)
+    parts.append(gmsg)
+
+    # 通道二：个人待办给负责运营
+    todo_ok = False
     if not owner:
-        return False, "该记录没有挖掘人/负责人，待办未发送"
-    uid = _userids().get(owner)
-    if not uid:
-        return False, f"运营同学 {owner} 的钉钉 userid 未配置，待办未发送"
-    icon = "✅" if result == "已通过" else "❌"
-    ok, msg = _send_todo(
-        f"{icon} 검토 결과 · {name}",
-        f"검토 결과: {result}\n의견: {opinion or '-'}\n확인 부탁드립니다!",
-        "", uid)
-    return ok, (f"已向运营同学 {owner} 发送钉钉待办" if ok else msg)
+        parts.append("待办未发送：该记录没有挖掘人/负责人")
+    else:
+        uid = _userids().get(owner)
+        if not uid:
+            parts.append(f"待办未发送：{owner} 的钉钉 userid 未配置")
+        else:
+            detail_url = ""
+            if main_site and detail_id:
+                sep = "&" if "?" in main_site else "?"
+                detail_url = f"{main_site}{sep}detail={urllib.parse.quote(str(detail_id))}"
+            todo_ok, tok_msg = _send_todo(
+                f"{icon} 검토 결과 · {name}",
+                f"크리에이터: {name}\n담당자: {owner}\n검토 결과: {result}\n"
+                f"의견: {opinion or '-'}\n확인 부탁드립니다!",
+                detail_url, uid)
+            parts.append(f"已向 {owner} 发送钉钉待办" if todo_ok else f"待办：{tok_msg}")
+
+    return gok or todo_ok, "；".join(parts)

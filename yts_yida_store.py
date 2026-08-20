@@ -636,10 +636,11 @@ class YTSStore:
         return self._notify_result(collab_id, "未通过", reason)
 
     def _notify_result(self, collab_id, result, opinion):
-        """审核出结果 → 给负责运营发个人待办提醒 check，返回 (ok, msg)"""
+        """审核出结果 → 群里@运营 + 给负责运营发待办提醒 check，返回 (ok, msg)"""
         rec = self._get(collab_id) or {}
         return N.notify_review_result(rec.get("channel_name") or collab_id,
-                                      result, opinion, rec.get("recruiter") or "")
+                                      result, opinion, rec.get("recruiter") or "",
+                                      detail_id=collab_id)
 
     # ---------------- 复审（运营操作，可循环） ----------------
     def start_recheck(self, collab_id, new_video_url):

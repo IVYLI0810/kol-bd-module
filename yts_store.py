@@ -461,7 +461,8 @@ class YTSStore:
         self._update(collab_id, {"review_status": "已通过", "review_comment": note,
                                  "audit_log": log})
         return N.notify_review_result(c.get("name") or collab_id, "已通过",
-                               note or "审核通过", c.get("recruiter") or "")
+                               note or "审核通过", c.get("recruiter") or "",
+                               detail_id=collab_id)
 
     def review_reject(self, collab_id, reason):
         c = self.get_collab(collab_id)
@@ -471,7 +472,8 @@ class YTSStore:
         self._update(collab_id, {"review_status": "已驳回", "review_comment": reason,
                                  "audit_log": log})
         return N.notify_review_result(c.get("name") or collab_id, "未通过",
-                               reason, c.get("recruiter") or "")
+                               reason, c.get("recruiter") or "",
+                               detail_id=collab_id)
 
     # ---------------- 复审（运营操作，可循环） ----------------
     def start_recheck(self, collab_id, new_video_url):
@@ -485,7 +487,8 @@ class YTSStore:
                     "audit_result": "已通过", "audit_opinion": "复审通过"})
         self._update(collab_id, {"review_status": "复审通过", "audit_log": log})
         return N.notify_review_result(c.get("name") or collab_id, "已通过",
-                               "复审通过", c.get("recruiter") or "")
+                               "复审通过", c.get("recruiter") or "",
+                               detail_id=collab_id)
 
     def recheck_reject(self, collab_id, reason):
         """复审仍不合格 → 回到已驳回，要求网红继续改"""
@@ -496,7 +499,8 @@ class YTSStore:
         self._update(collab_id, {"review_status": "已驳回", "review_comment": reason,
                                  "recheck_video_url": "", "audit_log": log})
         return N.notify_review_result(c.get("name") or collab_id, "未通过",
-                               f"复审驳回：{reason}", c.get("recruiter") or "")
+                               f"复审驳回：{reason}", c.get("recruiter") or "",
+                               detail_id=collab_id)
 
     # ---------------- 上传确认 → 闭环（绿光） ----------------
     def confirm_uploaded(self, collab_id, video_url=None):
