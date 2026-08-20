@@ -31,7 +31,8 @@ def _cfg():
         "access_key_id": os.environ.get("YIDA_ACCESS_KEY_ID", ""),
         "access_key_secret": os.environ.get("YIDA_ACCESS_KEY_SECRET", ""),
         "app_type": "APP_N85O3OPKB9OO52S4KCTD",
-        "system_token": "XE7668C13088ICWHNJPXODYLFX8Y2Y3Z02NSMBT",
+        # system_token 从 Secrets 读取，不再硬编码在代码里（安全整改 2026-08-21）
+        "system_token": os.environ.get("YIDA_SYSTEM_TOKEN", ""),
         "form_uuid": "FORM-2A64DBB4851A4301BAA4C0A5C39E752DHXL0",
         "account_id": "550448",
     }

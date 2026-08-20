@@ -17,7 +17,8 @@ import yts_notify as N
 
 # 宜搭应用常量（与 yts_yida_store._cfg 保持一致）
 APP_TYPE = "APP_N85O3OPKB9OO52S4KCTD"
-SYSTEM_TOKEN = "XE7668C13088ICWHNJPXODYLFX8Y2Y3Z02NSMBT"
+# system_token 从 Secrets 读取，不再硬编码在代码里（安全整改 2026-08-21）
+SYSTEM_TOKEN = os.environ.get("YIDA_SYSTEM_TOKEN", "")
 FORM_UUID = "FORM-2A64DBB4851A4301BAA4C0A5C39E752DHXL0"
 ACCOUNT_ID = "550448"
 
