@@ -12,6 +12,8 @@ import threading
 import uuid
 from datetime import datetime
 
+import yts_notify as N
+
 STORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yts_demo_data.json")
 
 SEED_POOL = [
@@ -338,7 +340,7 @@ class YTSStore:
                     c["price"] = int(price or 0)
         self._modify(fn)
 
-    def get_collab(self, collab_id):
+    def get_collab(self, collab_id, fresh: bool = False):
         for c in self._load()["collabs"]:
             if c["collab_id"] == collab_id:
                 return c
@@ -436,6 +438,8 @@ class YTSStore:
     def submit_review(self, collab_id, video_url):
         self._update(collab_id, {"video_url": video_url, "review_status": "待审核",
                                  "review_comment": ""})
+        c = self.get_collab(collab_id)
+        N.notify_review_submitted(c.get("name") or collab_id, video_url)
 
     # ---------------- 审核网站 ----------------
     def list_pending_reviews(self):
@@ -452,6 +456,8 @@ class YTSStore:
                     "audit_result": "已通过", "audit_opinion": note or "审核通过"})
         self._update(collab_id, {"review_status": "已通过", "review_comment": note,
                                  "audit_log": log})
+        N.notify_review_result(c.get("name") or collab_id, "已通过",
+                               note or "审核通过", c.get("recruiter") or "")
 
     def review_reject(self, collab_id, reason):
         c = self.get_collab(collab_id)
@@ -460,6 +466,8 @@ class YTSStore:
                     "audit_result": "未通过", "audit_opinion": reason})
         self._update(collab_id, {"review_status": "已驳回", "review_comment": reason,
                                  "audit_log": log})
+        N.notify_review_result(c.get("name") or collab_id, "未通过",
+                               reason, c.get("recruiter") or "")
 
     # ---------------- 复审（运营操作，可循环） ----------------
     def start_recheck(self, collab_id, new_video_url):
@@ -472,6 +480,8 @@ class YTSStore:
         log.append({"audit_date": datetime.now().strftime("%Y-%m-%d"),
                     "audit_result": "已通过", "audit_opinion": "复审通过"})
         self._update(collab_id, {"review_status": "复审通过", "audit_log": log})
+        N.notify_review_result(c.get("name") or collab_id, "已通过",
+                               "复审通过", c.get("recruiter") or "")
 
     def recheck_reject(self, collab_id, reason):
         """复审仍不合格 → 回到已驳回，要求网红继续改"""
@@ -481,6 +491,8 @@ class YTSStore:
                     "audit_result": "未通过", "audit_opinion": f"复审驳回：{reason}"})
         self._update(collab_id, {"review_status": "已驳回", "review_comment": reason,
                                  "recheck_video_url": "", "audit_log": log})
+        N.notify_review_result(c.get("name") or collab_id, "未通过",
+                               f"复审驳回：{reason}", c.get("recruiter") or "")
 
     # ---------------- 上传确认 → 闭环（绿光） ----------------
     def confirm_uploaded(self, collab_id, video_url=None):

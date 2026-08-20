@@ -19,7 +19,7 @@ import yts_yt_stats as YT
 import yts_gmc as GMC
 from yts_import_flow import norm_month, norm_date
 
-st.set_page_config(page_title="YTS 网红管理库", page_icon="🎯", layout="wide",
+st.set_page_config(page_title="YTS 全栈项目管理", page_icon="🎯", layout="wide",
                    initial_sidebar_state="collapsed")
 st.markdown(T.THEME_CSS, unsafe_allow_html=True)
 
@@ -680,7 +680,7 @@ def page_detail(collab_id):
                  key="edit_btn"):
         st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
         st.rerun()
-    c = store.get_collab(collab_id)
+    c = store.get_collab(collab_id, fresh=True)  # 直查宜搭：审核状态实时，免手动刷新
     if not c:
         st.error("未找到该合作记录")
         return

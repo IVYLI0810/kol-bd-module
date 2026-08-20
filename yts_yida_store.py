@@ -22,6 +22,7 @@ import streamlit as st
 
 from yida_bd_database import YidaBDDB
 import yts_roster as R
+import yts_notify as N
 
 
 def _cfg():
@@ -503,7 +504,17 @@ class YTSStore:
                     pass
         return n
 
-    def get_collab(self, collab_id):
+    def get_collab(self, collab_id, fresh: bool = False):
+        """读取单条合作记录。fresh=True 时绕过缓存直查宜搭（约1-2秒），
+        用于详情页打开时拿最新审核状态，避免双站缓存不同步"""
+        if fresh:
+            try:
+                r = self.db.get_by_channel_id(collab_id)
+                if r:
+                    self._cache["one:" + collab_id] = (time.time(), r)
+                    return self._to_collab(r)
+            except Exception:
+                pass  # 直查失败降级走缓存
         r = self._get(collab_id)
         return self._to_collab(r) if r else None
 
@@ -597,6 +608,9 @@ class YTSStore:
     def submit_review(self, collab_id, video_url):
         self._upd(collab_id, {"video_link": video_url, "audit_status": "待审核",
                               "stage": "已交视频", "submit_actual": _today()})
+        # 群通知：提醒审核同学（真@），失败静默不影响主流程
+        rec = self._get(collab_id) or {}
+        N.notify_review_submitted(rec.get("channel_name") or collab_id, video_url)
 
     # ---------------- 审核网站 ----------------
     def list_pending_reviews(self):
@@ -612,11 +626,19 @@ class YTSStore:
         self.db.add_audit(collab_id, result="已通过", opinion=note or "审核通过")
         self._audit_patch(collab_id, "已通过", note or "审核通过")
         self._upd(collab_id, {"audit_status": "已通过"})
+        self._notify_result(collab_id, "已通过", note or "审核通过")
 
     def review_reject(self, collab_id, reason):
         self.db.add_audit(collab_id, result="未通过", opinion=reason)
         self._audit_patch(collab_id, "未通过", reason)
         self._upd(collab_id, {"audit_status": "未通过", "stage": "修改中"})
+        self._notify_result(collab_id, "未通过", reason)
+
+    def _notify_result(self, collab_id, result, opinion):
+        """审核出结果 → 群通知提醒运营 check（真@挖掘人），失败静默"""
+        rec = self._get(collab_id) or {}
+        N.notify_review_result(rec.get("channel_name") or collab_id,
+                               result, opinion, rec.get("recruiter") or "")
 
     # ---------------- 复审（运营操作，可循环） ----------------
     def start_recheck(self, collab_id, new_video_url):
@@ -626,11 +648,13 @@ class YTSStore:
         self.db.add_audit(collab_id, result="已通过", opinion="复审通过")
         self._audit_patch(collab_id, "已通过", "复审通过")
         self._upd(collab_id, {"audit_status": "已通过"})
+        self._notify_result(collab_id, "已通过", "复审通过")
 
     def recheck_reject(self, collab_id, reason):
         self.db.add_audit(collab_id, result="未通过", opinion=f"复审驳回：{reason}")
         self._audit_patch(collab_id, "未通过", f"复审驳回：{reason}")
         self._upd(collab_id, {"audit_status": "未通过", "recheck_video_url": ""})
+        self._notify_result(collab_id, "未通过", f"复审驳回：{reason}")
 
     # ---------------- 上传确认 → 闭环（绿光） ----------------
     def confirm_uploaded(self, collab_id, video_url=None):
