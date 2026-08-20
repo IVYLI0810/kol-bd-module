@@ -59,6 +59,7 @@ def _base_collab(inf, **over):
         "channel_url": f'https://youtube.com/channel/{inf["id"]}',
         "group_link": "", "submit_deadline": "", "audit_log": [],
         "videos": [],
+        "ad_needed": False, "ad_done": False,
     }
     c.update(over)
     return c
@@ -502,9 +503,82 @@ class YTSStore:
                                f"复审驳回：{reason}", c.get("recruiter") or "",
                                detail_id=collab_id)
 
+    # ---------------- 审核站表格模式（审核模块 / 投放模块） ----------------
+    def list_review_table(self):
+        order = {"待审核": 0, "已驳回": 1, "已通过": 2, "复审通过": 2}
+        rows = []
+        for c in self._load()["collabs"]:
+            if not c.get("video_url") and not c.get("recheck_video_url"):
+                continue
+            rs = c.get("review_status") or ""
+            if not rs:
+                continue  # 从没提交过审核的不进审核表
+            passed = "Y" if rs in ("已通过", "复审通过") else ("N" if rs == "已驳回" else "")
+            reason = c.get("review_comment") if rs == "已驳回" else ""
+            rows.append({"collab_id": c["collab_id"], "name": c["name"],
+                         "channel_url": c.get("channel_url", ""),
+                         "review_url": c.get("recheck_video_url") or c.get("video_url"),
+                         "passed": passed, "reason": reason or ""})
+        rows.sort(key=lambda x: (order.get(
+            {"Y": "已通过", "N": "已驳回"}.get(x["passed"], "待审核"), 3), x["name"]))
+        return rows
+
+    def apply_review_results(self, changes):
+        applied = []
+        by_id = {c["collab_id"]: c for c in self._load()["collabs"]}
+        for ch in changes:
+            cid = (ch.get("collab_id") or "").strip()
+            passed = str(ch.get("passed") or "").strip().upper()
+            if not cid or passed not in ("Y", "N") or cid not in by_id:
+                continue
+            c = by_id[cid]
+            reason = str(ch.get("reason") or "").strip()
+            already = ("Y" if c.get("review_status") in ("已通过", "复审通过")
+                       else "N" if c.get("review_status") == "已驳回" else "")
+            if passed == already:
+                continue
+            if passed == "Y":
+                self._update(cid, {"review_status": "已通过",
+                                   "review_comment": reason or "审核通过"})
+                applied.append((c["name"], "✅通过", reason or "审核通过"))
+            else:
+                self._update(cid, {"review_status": "已驳回",
+                                   "review_comment": reason or "审核未通过"})
+                applied.append((c["name"], "❌驳回", reason or "审核未通过"))
+        if not applied:
+            return 0, True, "没有需要更新的审核结果"
+        nok, nmsg = N.notify_review_results_batch(applied)
+        return len(applied), nok, nmsg
+
+    def list_ad_table(self):
+        rows = [{"collab_id": c["collab_id"], "name": c["name"],
+                 "channel_url": c.get("channel_url", ""),
+                 "ad_needed": "Y" if c.get("ad_needed") else "",
+                 "ad_done": "Y" if c.get("ad_done") else ""}
+                for c in self._load()["collabs"]
+                if c.get("ad_needed") or c.get("ad_done")]
+        rows.sort(key=lambda x: (0 if x["ad_needed"] and not x["ad_done"] else 1,
+                                 x["name"]))
+        return rows
+
+    def apply_ad_results(self, changes):
+        n = 0
+        by_id = {c["collab_id"]: c for c in self._load()["collabs"]}
+        for ch in changes:
+            cid = (ch.get("collab_id") or "").strip()
+            if not cid or cid not in by_id:
+                continue
+            done = str(ch.get("ad_done") or "").strip().upper() == "Y"
+            if done == bool(by_id[cid].get("ad_done")):
+                continue
+            self._update(cid, {"ad_done": done})
+            n += 1
+        return n
+
     # ---------------- 上传确认 → 闭环（绿光） ----------------
-    def confirm_uploaded(self, collab_id, video_url=None):
-        patch = {"uploaded_confirmed": True, "is_closed": True}
+    def confirm_uploaded(self, collab_id, video_url=None, ad_needed=False):
+        patch = {"uploaded_confirmed": True, "is_closed": True,
+                 "ad_needed": bool(ad_needed)}
         if video_url:
             patch["video_url"] = video_url
         self._update(collab_id, patch)

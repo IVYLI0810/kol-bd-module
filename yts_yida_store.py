@@ -245,6 +245,9 @@ class YTSStore:
             "audit_log": audit_log,
             # ---- 视频明细子表（一行一条视频，闭环时登记） ----
             "videos": r.get("videos") or [],
+            # ---- 投放标记（复用宜搭遗留空字段：ad_auth=是否需要投放，status=是否投放） ----
+            "ad_needed": (r.get("ad_auth") or "") == "Y",
+            "ad_done": (r.get("status") or "") == "Y",
         }
 
     def _upd(self, channel_id, patch, clear_fields=None):
@@ -658,6 +661,104 @@ class YTSStore:
         self._upd(collab_id, {"audit_status": "未通过", "recheck_video_url": ""})
         return self._notify_result(collab_id, "未通过", f"复审驳回：{reason}")
 
+    # ---------------- 审核站表格模式（审核模块 / 投放模块） ----------------
+    def list_review_table(self):
+        """审核模块表格行：所有已提交视频的网红。
+        是否通过：已通过/复审通过=Y，已驳回=N，待审核/复审中=空白"""
+        order = {"待审核": 0, "未通过": 1, "已通过": 2}
+        rows = []
+        for c in (self._to_collab(r) for r in self._all()):
+            if not c["video_url"] and not c["recheck_video_url"]:
+                continue
+            rs = c["review_status"]
+            if not rs:
+                continue  # 从没提交过审核的（如直接闭环）不进审核表
+            passed = "Y" if rs in ("已通过", "复审通过") else ("N" if rs == "已驳回" else "")
+            reason = c["review_comment"] if rs == "已驳回" else ""
+            rows.append({
+                "collab_id": c["collab_id"],
+                "name": c["name"],
+                "channel_url": c["channel_url"],
+                # 复审过就用复审链接，否则用首次提交的视频链接
+                "review_url": c["recheck_video_url"] or c["video_url"],
+                "passed": passed,
+                "reason": reason,
+            })
+        rows.sort(key=lambda x: (order.get(
+            {"Y": "已通过", "N": "未通过"}.get(x["passed"], "待审核"), 3), x["name"]))
+        return rows
+
+    def apply_review_results(self, changes):
+        """批量回填审核结果（表格保存/Excel上传共用）。
+        changes: [{"collab_id","passed"("Y"/"N"),"reason"}]，只处理与现状不同的行。
+        写完统一发一条群通知@运营（不逐条发待办，避免刷屏）。返回 (条数, 通知ok, 通知msg)"""
+        cur = {c["collab_id"]: c for c in
+               (self._to_collab(r) for r in self._all())}
+        done, applied = [], []
+        for ch in changes:
+            cid = (ch.get("collab_id") or "").strip()
+            passed = str(ch.get("passed") or "").strip().upper()
+            if not cid or passed not in ("Y", "N") or cid not in cur:
+                continue
+            c = cur[cid]
+            reason = str(ch.get("reason") or "").strip()
+            already = ("Y" if c["review_status"] in ("已通过", "复审通过")
+                       else "N" if c["review_status"] == "已驳回" else "")
+            if passed == already and (passed == "Y" or reason == (c["review_comment"] or "").strip()):
+                continue  # 没变化就不重复写
+            if passed == "Y":
+                self.db.add_audit(cid, result="已通过", opinion=reason or "审核通过")
+                self._audit_patch(cid, "已通过", reason or "审核通过")
+                self._upd(cid, {"audit_status": "已通过"})
+                applied.append((c["name"], "✅通过", reason or "审核通过"))
+            else:
+                self.db.add_audit(cid, result="未通过", opinion=reason or "审核未通过")
+                self._audit_patch(cid, "未通过", reason or "审核未通过")
+                self._upd(cid, {"audit_status": "未通过", "stage": "修改中"})
+                applied.append((c["name"], "❌驳回", reason or "审核未通过"))
+            done.append(cid)
+        if not applied:
+            return 0, True, "没有需要更新的审核结果"
+        # 一条汇总群通知@运营，代替逐条待办
+        nok, nmsg = N.notify_review_results_batch(applied)
+        return len(applied), nok, nmsg
+
+    def list_ad_table(self):
+        """投放模块表格行：标记了「需要投放」或「已投放」的网红。
+        是否需要投放由主站闭环时选择；是否投放在本表格回填"""
+        rows = [{
+            "collab_id": c["collab_id"],
+            "name": c["name"],
+            "channel_url": c["channel_url"],
+            "ad_needed": "Y" if c["ad_needed"] else "",
+            "ad_done": "Y" if c["ad_done"] else "",
+        } for c in (self._to_collab(r) for r in self._all())
+            if c["ad_needed"] or c["ad_done"]]
+        # 待投放（需投但未投）排最前
+        rows.sort(key=lambda x: (0 if x["ad_needed"] and not x["ad_done"] else 1,
+                                 x["name"]))
+        return rows
+
+    def apply_ad_results(self, changes):
+        """批量回填「是否投放」。changes: [{"collab_id","ad_done"("Y"/"")}]
+        复用遗留字段 status 存储。返回更新条数"""
+        n = 0
+        cur = {c["collab_id"]: c for c in
+               (self._to_collab(r) for r in self._all())}
+        for ch in changes:
+            cid = (ch.get("collab_id") or "").strip()
+            if not cid or cid not in cur:
+                continue
+            done = str(ch.get("ad_done") or "").strip().upper() == "Y"
+            if done == cur[cid]["ad_done"]:
+                continue
+            if done:
+                self._upd(cid, {"status": "Y"})
+            else:
+                self._upd(cid, {"status": ""}, clear_fields=["status"])
+            n += 1
+        return n
+
     # ---------------- 审核状态快速同步（写入就反馈） ----------------
     def sync_review_states(self):
         """审核站和主站是两个进程，缓存互不相通。本方法只挑缓存里
@@ -693,11 +794,17 @@ class YTSStore:
         return changed
 
     # ---------------- 上传确认 → 闭环（绿光） ----------------
-    def confirm_uploaded(self, collab_id, video_url=None):
+    def confirm_uploaded(self, collab_id, video_url=None, ad_needed=False):
         patch = {"stage": "已完成"}
         if video_url:
             patch["video_link"] = video_url
-        self._upd(collab_id, patch)
+        # 是否需要投放：运营在闭环时勾选 → 进审核站投放模块待办
+        if ad_needed:
+            patch["ad_auth"] = "Y"
+            self._upd(collab_id, patch)
+        else:
+            patch["ad_auth"] = ""
+            self._upd(collab_id, patch, clear_fields=["ad_auth"])
 
     # ---------------- 反向操作：回退 / 取消 / 流回 / 淘汰 ----------------
     def cancel_collab(self, collab_id):

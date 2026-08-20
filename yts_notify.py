@@ -289,3 +289,57 @@ def notify_review_result(channel_name, result, opinion, owner, detail_id=""):
             parts.append(f"已向 {owner} 发送钉钉待办" if todo_ok else f"待办：{tok_msg}")
 
     return gok or todo_ok, "；".join(parts)
+
+
+def notify_review_results_batch(applied):
+    """表格批量回填审核结果后：发一条汇总群通知@运营。
+    applied: [(网红名, "✅通过"/"❌驳回", 意见), ...]。返回 (ok, msg)"""
+    ops = _cfg("DINGTALK_NOTIFY_OPS") or "艾薇李"
+    n_pass = sum(1 for _, s, _ in applied if "通过" in s)
+    n_rej = len(applied) - n_pass
+    lines = [f"### 📋 검토 결과 일괄 업데이트 · 총 {len(applied)}건\n"]
+    for name, status, opinion in applied[:20]:
+        line = f"- {status} **{name}**"
+        if "驳回" in status and opinion:
+            line += f"：{opinion}"
+        lines.append(line)
+    if len(applied) > 20:
+        lines.append(f"- … 외 {len(applied) - 20}건")
+    lines.append(f"\n통과 {n_pass}건 / 반려 {n_rej}건 · 확인 부탁드립니다 🙏")
+    return _send_group(f"검토 결과 {len(applied)}건", "\n".join(lines), ops)
+
+
+def notify_daily_review(pending_rows, reviewer="Minjeong"):
+    """每日定时：把待审核清单发到群里@对接同学。
+    pending_rows: [(网红名, 视频链接), ...]。返回 (ok, msg)"""
+    if not pending_rows:
+        return True, "当前没有待审核记录，跳过推送"
+    lines = [f"### ⏰ 검토 대기 목록 · 총 {len(pending_rows)}건\n"]
+    for name, url in pending_rows[:30]:
+        link = f"[영상]({url})" if url else "링크 없음"
+        lines.append(f"- **{name}** · {link}")
+    if len(pending_rows) > 30:
+        lines.append(f"- … 외 {len(pending_rows) - 30}건")
+    lines.append("\n확인 부탁드립니다 🙏")
+    return _send_group(f"검토 대기 {len(pending_rows)}건", "\n".join(lines), reviewer)
+
+
+def notify_daily_ad(pending_rows):
+    """每日定时：把待投放清单以个人待办直发给投放负责人。
+    pending_rows: [(网红名, 主页链接), ...]。返回 (ok, msg)"""
+    if not pending_rows:
+        return True, "当前没有待投放记录，跳过推送"
+    owner = _cfg("DINGTALK_AD_OPS")
+    if not owner:
+        return False, "投放负责人未配置（DINGTALK_AD_OPS），待投放清单未发送"
+    uid = _userids().get(owner)
+    if not uid:
+        return False, f"投放负责人 {owner} 的钉钉 userid 未配置，待投放清单未发送"
+    lines = [f"待投放 {len(pending_rows)} 位网红："]
+    for name, url in pending_rows[:30]:
+        lines.append(f"- {name}：{url or '无主页链接'}")
+    if len(pending_rows) > 30:
+        lines.append(f"… 另有 {len(pending_rows) - 30} 位")
+    ok, msg = _send_todo(f"📣 待投放清单 · {len(pending_rows)}位",
+                         "\n".join(lines), "", uid)
+    return ok, (f"已向投放负责人 {owner} 发送待投放清单待办" if ok else msg)

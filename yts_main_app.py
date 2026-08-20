@@ -1180,7 +1180,9 @@ def _render_step7_videos(cid, c, rs):
                             f'target="_blank">{esc(c["video_url"])}</a>',
                             unsafe_allow_html=True)
             st.markdown('<div class="closed-tag" style="font-size:13px">'
-                        '✨ 已确认发布 · 流程闭环</div>', unsafe_allow_html=True)
+                        '✨ 已确认发布 · 流程闭环'
+                        + ('　📣 需要投放' if c.get("ad_needed") else '')
+                        + '</div>', unsafe_allow_html=True)
             if st.button("✏️ 修改视频登记", key="vedit_open"):
                 st.session_state[f"vedit_{cid}"] = True
                 st.session_state.pop(rows_key, None)
@@ -1235,6 +1237,15 @@ def _render_step7_videos(cid, c, rs):
             st.session_state[rows_key] = rows
             st.rerun()
 
+        # 投放需求：闭环时由运营选择 → 进审核站「投放模块」待投放清单
+        ad_choice = st.radio(
+            "是否需要投放（短视频投，长视频不投）",
+            ["不需要投放", "需要投放"],
+            index=1 if c.get("ad_needed") else 0,
+            horizontal=True, key=f"adneed_{cid}",
+            help="选择「需要投放」后，该网红会进入审核站投放模块，"
+                 "每天 10:00 / 16:00 定时提醒投放负责人")
+
         if st.button("✅ 已确认发布，流程闭环", key="up", type="primary",
                      use_container_width=True):
             filled = [r for r in rows if r["url"].strip()]
@@ -1246,7 +1257,8 @@ def _render_step7_videos(cid, c, rs):
                     pass  # 类型识别失败，错误已提示
                 else:
                     store.save_videos(cid, videos)
-                    store.confirm_uploaded(cid, filled[0]["url"].strip())
+                    store.confirm_uploaded(cid, filled[0]["url"].strip(),
+                                           ad_needed=(ad_choice == "需要投放"))
                     st.session_state.pop(rows_key, None)
                     st.session_state.pop(f"vedit_{cid}", None)
                     st.toast("🎉 流程闭环，视频明细已登记，分析模块将按视频统计")
