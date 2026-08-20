@@ -1187,6 +1187,19 @@ def _pull_product_metrics(closed_recs):
         st.warning("未拉到数据：请检查 GMC 凭证是否有效、选品是否已入池")
 
 
+# 数据更新权限：视频数据（YouTube）与商品数据（GMC）的刷新/拉取
+# 仅限负责人操作；其他成员可查看已同步的数据，但不能触发刷新。
+# 网红基础信息（编辑表单）不受此限制，全员可编辑。
+DATA_OWNER = "艾薇李"
+
+
+def _is_data_owner() -> bool:
+    """当前会话是否为数据负责人：以活动页选定的名字为准（与 URL ?rec= 一致）"""
+    name = st.session_state.get("activity_recruiter") \
+        or st.query_params.get("rec") or ""
+    return R.match_name(str(name), [DATA_OWNER]) == DATA_OWNER
+
+
 def _refresh_videos_granular(closed_recs, force=False):
     """按视频粒度刷新：videos 子表每一行抓 YouTube 互动 + GMC 商品数据，回写对应行。
 
@@ -1202,6 +1215,31 @@ def _refresh_videos_granular(closed_recs, force=False):
     for r in closed_recs:
         vids = r.get("videos") or []
         if not vids:
+            # ---- 老记录兜底：无视频子表时按主 video_url 抓取，回写主字段 ----
+            url = r.get("video_url") or ""
+            if not url:
+                continue
+            stats = YT.fetch_video_stats(url, force=force)
+            if stats is None:
+                if YT.get_key():
+                    failed.append((r["name"], url))
+                continue
+            patch = {}
+            for src_k, dst_k in (("views", "video_views"),
+                                 ("likes", "video_likes"),
+                                 ("comments", "video_comments")):
+                if int(r.get(dst_k) or 0) != int(stats[src_k] or 0):
+                    patch[dst_k] = stats[src_k]
+            if patch:
+                try:
+                    store.update_video_metrics(r,
+                                               patch.get("video_views", r.get("video_views") or 0),
+                                               patch.get("video_likes", r.get("video_likes") or 0),
+                                               patch.get("video_comments", r.get("video_comments") or 0))
+                    r.update(patch)  # 页面快照同步
+                    updated += 1
+                except Exception:
+                    failed.append((r["name"], "回写失败"))
             continue
         changed = False
         new_videos = []
@@ -1255,28 +1293,35 @@ def page_analysis():
     recs = [r for r in store.list_all() if r.get("plan_month") or r.get("is_closed")]
     # 自动抓取范围仅闭环记录（履约中链接多为未公开审核链接，抓了也是"待回填"）
     closed_recs = [r for r in recs if r.get("is_closed")]
-    # 一键刷新：无视24h缓存，按视频粒度强制重抓（YouTube互动 + GMC商品数据）
+    # ---- 数据更新权限门：仅负责人(艾薇李)可触发抓取/刷新；其他人只读 ----
+    is_owner = _is_data_owner()
     _force = st.session_state.pop("force_refresh", False)
-    if closed_recs and (YT.get_key() or GMC.configured()):
-        with st.spinner("正在同步视频数据…" if _force
-                        else "正在同步视频数据（每日一次）…"):
-            n_upd, failed = _refresh_videos_granular(closed_recs, force=_force)
-        if _force:
-            st.toast(f"已强制刷新 {n_upd} 条视频记录的数据")
-        if failed and not YT.get_key():
-            st.warning("未配置 YOUTUBE_API_KEY：播放/点赞/评论无法抓取。"
-                       "请在 Streamlit Cloud → Settings → Secrets 添加后使用一键刷新")
+    if is_owner:
+        if closed_recs and (YT.get_key() or GMC.configured()):
+            with st.spinner("正在同步视频数据…" if _force
+                            else "正在同步视频数据（每日一次）…"):
+                n_upd, failed = _refresh_videos_granular(closed_recs, force=_force)
+            if _force:
+                st.toast(f"已强制刷新 {n_upd} 条视频记录的数据")
+            if failed and not YT.get_key():
+                st.warning("未配置 YOUTUBE_API_KEY：播放/点赞/评论无法抓取。"
+                           "请在 Streamlit Cloud → Settings → Secrets 添加后使用一键刷新")
+        elif closed_recs:
+            st.warning("未配置 YOUTUBE_API_KEY 与 GMC 凭证：视频数据无法自动抓取")
+    if is_owner:
+        fb1, fb2 = st.columns(2)
+        if fb1.button("🔄 一键刷新闭环视频数据", key="force_refresh_btn",
+                      help="无视24小时缓存，按视频粒度重新抓取播放/点赞/评论，"
+                           "并按各视频关联商品拉取点击/CTR/成交/GMV（近30天）"):
+            st.session_state["force_refresh"] = True
+            st.rerun()
+        if fb2.button("📦 一键拉取商品效果数据", key="gmc_perf_btn",
+                      help="从 GMC 报表按合作选品拉取点击/CTR/成交/GMV（近30天），"
+                           "写入主记录指标（兼容老数据）"):
+            _pull_product_metrics(closed_recs)
     elif closed_recs:
-        st.warning("未配置 YOUTUBE_API_KEY 与 GMC 凭证：视频数据无法自动抓取")
-    if st.button("🔄 一键刷新闭环视频数据", key="force_refresh_btn",
-                 help="无视24小时缓存，按视频粒度重新抓取播放/点赞/评论，"
-                      "并按各视频关联商品拉取点击/CTR/成交/GMV（近30天）"):
-        st.session_state["force_refresh"] = True
-        st.rerun()
-    if st.button("📦 一键拉取商品效果数据", key="gmc_perf_btn",
-                 help="从 GMC 报表按合作选品拉取点击/CTR/成交/GMV（近30天），"
-                      "写入主记录指标（兼容老数据）"):
-        _pull_product_metrics(closed_recs)
+        st.caption("📊 视频与商品数据由负责人统一更新；如需刷新请联系艾薇李。"
+                   "下方为最新已同步的数据。")
     months = sorted({r["plan_month"] for r in recs if r.get("plan_month")},
                     reverse=True)
     if months:
@@ -1376,6 +1421,50 @@ def page_analysis():
     st.caption("数据口径：播放/点赞/评论按视频自动抓取（缓存24h）；"
                "CTR/成交/GMV 按该视频关联的商品从 GMC 拉取（近30天）。"
                "同一商品挂在多条视频时，GMV 按商品归属，无法细分到单条视频。")
+
+    # ---- 网红总览：按网红聚合其全部视频（一位网红一行） ----
+    agg = {}
+    for r, v in vrows_data:
+        a = agg.setdefault(r["collab_id"], {
+            "name": r["name"], "n": 0, "views": 0, "likes": 0,
+            "orders": 0, "gmv": 0.0, "ctrs": []})
+        a["n"] += 1
+        if v is not None:
+            a["views"] += int(v.get("views") or 0)
+            a["likes"] += int(v.get("likes") or 0)
+            a["orders"] += int(v.get("orders") or 0)
+            a["gmv"] += float(v.get("gmv") or 0)
+            if float(v.get("ctr") or 0):
+                a["ctrs"].append(float(v["ctr"]))
+        else:
+            a["views"] += int(r.get("video_views") or 0)
+            a["likes"] += int(r.get("video_likes") or 0)
+            a["orders"] += int(r.get("orders") or 0)
+            a["gmv"] += float(r.get("gmv") or 0)
+            if float(r.get("ctr") or 0):
+                a["ctrs"].append(float(r["ctr"]))
+    arows = []
+    for cid, a in sorted(agg.items(), key=lambda kv: kv[1]["gmv"],
+                         reverse=True):
+        avg_ctr = sum(a["ctrs"]) / len(a["ctrs"]) if a["ctrs"] else 0
+        arows.append([
+            f'<a data-nav="?detail={cid}&from=analysis" '
+            f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
+            f'{esc(a["name"])}</a>',
+            f'<span class="num">{a["n"]}</span>',
+            f'<span class="num">{a["views"]:,}</span>',
+            f'<span class="num">{a["likes"]:,}</span>',
+            f'<span class="num">{avg_ctr:.1f}%</span>' if a["ctrs"]
+            else '<span class="num">—</span>',
+            f'<span class="num">{a["orders"]:,}</span>',
+            f'<span class="num"><b>{a["gmv"]:,.0f}</b></span>',
+        ])
+    st.markdown(T.sub("👥 网红总览（聚合该网红全部视频）"),
+                unsafe_allow_html=True)
+    T.component_html(
+        T.table(["网红", "视频数", "总播放", "总点赞", "平均CTR",
+                 "总成交", "总GMV"], arows, wrap=False),
+        height=52 + len(arows) * 36)
 
     top = [(r, v) for r, v in rows
            if (v.get("gmv") if v else r.get("gmv"))][:10]
