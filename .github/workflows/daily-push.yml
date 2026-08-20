@@ -1,0 +1,35 @@
+name: daily-push
+
+# 每天 10:00 / 16:00（北京时间 = UTC+8，故 UTC 02:00 / 08:00）定时推送：
+#   待审核清单 → 钉钉群机器人 @对接同学
+#   待投放清单 → 钉钉个人待办直发投放负责人
+# GitHub 的 cron 可能有几分钟延迟，属正常现象。
+on:
+  schedule:
+    - cron: "0 2 * * *"
+    - cron: "0 8 * * *"
+  workflow_dispatch: {}  # 允许在 Actions 页面手动点 Run 测试
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+      - name: 执行每日推送
+        env:
+          YIDA_ACCESS_KEY_ID: ${{ secrets.YIDA_ACCESS_KEY_ID }}
+          YIDA_ACCESS_KEY_SECRET: ${{ secrets.YIDA_ACCESS_KEY_SECRET }}
+          DINGTALK_APP_KEY: ${{ secrets.DINGTALK_APP_KEY }}
+          DINGTALK_APP_SECRET: ${{ secrets.DINGTALK_APP_SECRET }}
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_WEBHOOK_SECRET: ${{ secrets.DINGTALK_WEBHOOK_SECRET }}
+          DINGTALK_REVIEW_USERIDS: ${{ secrets.DINGTALK_REVIEW_USERIDS }}
+          DINGTALK_REVIEW_MOBILES: ${{ secrets.DINGTALK_REVIEW_MOBILES }}
+          DINGTALK_AD_OPS: ${{ secrets.DINGTALK_AD_OPS }}
+          DINGTALK_LIAISON: ${{ secrets.DINGTALK_LIAISON }}
+        run: python yts_daily_push.py
