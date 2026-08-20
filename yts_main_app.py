@@ -742,9 +742,12 @@ def page_detail(collab_id):
         ("收货", _flow_state(c["received"], c["order_done"] and not c["received"])),
         ("拍摄", _flow_state(c["shoot_status"] == "已完成",
                              c["received"] and c["shoot_status"] != "已完成")),
-        ("提交审核", _flow_state(bool(c["video_url"]),
-                                 c["shoot_status"] == "已完成" and not c["video_url"])),
-        ("审核", _flow_state(rs in ("已通过", "复审通过"), bool(c["video_url"]))),
+        # 提交审核：有视频链接 或 已有审核结果（表里没填链接但审核已过的情况）都算完成
+        ("提交审核", _flow_state(bool(c["video_url"]) or rs != "",
+                                 c["shoot_status"] == "已完成"
+                                 and not c["video_url"] and rs == "")),
+        ("审核", _flow_state(rs in ("已通过", "复审通过"),
+                             bool(c["video_url"]) or rs != "")),
         ("闭环", _flow_state(c["is_closed"],
                              rs in ("已通过", "复审通过") and not c["is_closed"])),
     ]
@@ -990,8 +993,13 @@ def _render_actions(cid, c, step):
         with st.container():
             st.markdown(T.ycard_open(), unsafe_allow_html=True)
             st.markdown(T.sub("审核"), unsafe_allow_html=True)
-            if not c["video_url"]:
+            if not c["video_url"] and rs == "":
                 st.markdown(T.empty_hint("尚未提交审核，先在「提交审核」节点录入视频链接"),
+                            unsafe_allow_html=True)
+            elif not c["video_url"] and rs != "":
+                # 表里没填链接但已有审核结果：直接展示结果，不卡在"尚未提交"
+                st.markdown(f'{T.badge(rs)}　审核结果已同步（视频链接未登记，'
+                            f'可在「提交审核」节点补录）',
                             unsafe_allow_html=True)
             elif rs == "待审核":
                 st.markdown(f'{T.badge("待审核")}　⏳ 等待审核同学在审核站操作…',
