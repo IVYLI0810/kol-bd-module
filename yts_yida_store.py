@@ -608,9 +608,10 @@ class YTSStore:
     def submit_review(self, collab_id, video_url):
         self._upd(collab_id, {"video_link": video_url, "audit_status": "待审核",
                               "stage": "已交视频", "submit_actual": _today()})
-        # 群通知：提醒审核同学（真@），失败静默不影响主流程
+        # 个人待办：提醒审核同学。返回 (ok, msg) 供页面展示发送结果
         rec = self._get(collab_id) or {}
-        N.notify_review_submitted(rec.get("channel_name") or collab_id, video_url)
+        return N.notify_review_submitted(rec.get("channel_name") or collab_id,
+                                         video_url)
 
     # ---------------- 审核网站 ----------------
     def list_pending_reviews(self):
@@ -626,19 +627,19 @@ class YTSStore:
         self.db.add_audit(collab_id, result="已通过", opinion=note or "审核通过")
         self._audit_patch(collab_id, "已通过", note or "审核通过")
         self._upd(collab_id, {"audit_status": "已通过"})
-        self._notify_result(collab_id, "已通过", note or "审核通过")
+        return self._notify_result(collab_id, "已通过", note or "审核通过")
 
     def review_reject(self, collab_id, reason):
         self.db.add_audit(collab_id, result="未通过", opinion=reason)
         self._audit_patch(collab_id, "未通过", reason)
         self._upd(collab_id, {"audit_status": "未通过", "stage": "修改中"})
-        self._notify_result(collab_id, "未通过", reason)
+        return self._notify_result(collab_id, "未通过", reason)
 
     def _notify_result(self, collab_id, result, opinion):
-        """审核出结果 → 群通知提醒运营 check（真@挖掘人），失败静默"""
+        """审核出结果 → 给负责运营发个人待办提醒 check，返回 (ok, msg)"""
         rec = self._get(collab_id) or {}
-        N.notify_review_result(rec.get("channel_name") or collab_id,
-                               result, opinion, rec.get("recruiter") or "")
+        return N.notify_review_result(rec.get("channel_name") or collab_id,
+                                      result, opinion, rec.get("recruiter") or "")
 
     # ---------------- 复审（运营操作，可循环） ----------------
     def start_recheck(self, collab_id, new_video_url):
@@ -648,13 +649,47 @@ class YTSStore:
         self.db.add_audit(collab_id, result="已通过", opinion="复审通过")
         self._audit_patch(collab_id, "已通过", "复审通过")
         self._upd(collab_id, {"audit_status": "已通过"})
-        self._notify_result(collab_id, "已通过", "复审通过")
+        return self._notify_result(collab_id, "已通过", "复审通过")
 
     def recheck_reject(self, collab_id, reason):
         self.db.add_audit(collab_id, result="未通过", opinion=f"复审驳回：{reason}")
         self._audit_patch(collab_id, "未通过", f"复审驳回：{reason}")
         self._upd(collab_id, {"audit_status": "未通过", "recheck_video_url": ""})
-        self._notify_result(collab_id, "未通过", f"复审驳回：{reason}")
+        return self._notify_result(collab_id, "未通过", f"复审驳回：{reason}")
+
+    # ---------------- 审核状态快速同步（写入就反馈） ----------------
+    def sync_review_states(self):
+        """审核站和主站是两个进程，缓存互不相通。本方法只挑缓存里
+        处于「待审核 / 复审中」的记录逐条直查宜搭（通常只有几条，1-2秒），
+        有变化就地补丁缓存。返回状态发生变化的网红名列表，供页面提示。
+        活动模块每次打开自动调用 → 审核站一驳回，回到主站几秒内可见。"""
+        rows = self._cache.get("all", (0, []))[1]
+        changed = []
+        for r in rows:
+            cid = r.get("channel_id")
+            if not cid:
+                continue
+            if (r.get("audit_status") or "") not in ("待审核", "未通过"):
+                continue
+            try:
+                fresh = self.db.get_by_channel_id(cid)
+            except Exception:
+                continue
+            if not fresh:
+                continue
+            diff = ((fresh.get("audit_status") or "") != (r.get("audit_status") or "")) \
+                or len(fresh.get("audit_log") or []) != len(r.get("audit_log") or []) \
+                or ((fresh.get("recheck_video_url") or "") != (r.get("recheck_video_url") or ""))
+            if not diff:
+                continue
+            r.clear()
+            r.update(fresh)  # 就地补丁，列表里其他引用同步生效
+            one = self._cache.get("one:" + cid)
+            if one and isinstance(one[1], dict):
+                one[1].clear()
+                one[1].update(fresh)
+            changed.append(fresh.get("channel_name") or cid)
+        return changed
 
     # ---------------- 上传确认 → 闭环（绿光） ----------------
     def confirm_uploaded(self, collab_id, video_url=None):

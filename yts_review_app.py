@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """YTS 网红管理系统 - 独立审核站（中韩双语 · 韩国审核同学为主、中文对照）"""
 import html
+import time
 
 import streamlit as st
 
@@ -37,12 +38,22 @@ st.markdown(T.header(bih("YTS 영상 심사", "YTS 视频审核站"),
                          "审核同学专用 · 操作结果自动回传主管理后台")),
             unsafe_allow_html=True)
 
-# 审核站与主站是两个独立进程（缓存互不相通）：主站刚提交的审核，
-# 这里要等缓存过期才可见。提供手动刷新，清空本站缓存立即重拉。
+# 上一步操作提示（通过/驳回后，钉钉待办发送成功还是失败，明明白白显示）
+_f = st.session_state.pop("rev_flash", None)
+if _f:
+    (st.success if _f[0] == "ok" else st.warning)(_f[1])
+
+# 审核站与主站是两个独立进程（缓存互不相通）。自动刷新：每 60 秒清一次
+# 本站缓存重拉，主站刚提交的审核最多等 1 分钟自动可见，无需手动点按钮
+if time.time() - st.session_state.get("rev_sync_ts", 0) > 60:
+    st.session_state["rev_sync_ts"] = time.time()
+    store._invalidate()
+
 hb, _ = st.columns([1, 4])
 if hb.button("🔄 목록 새로고침 · 刷新列表",
-             help="主站刚提交的审核若未显示，点此立即刷新"):
+             help="主站刚提交的审核若未显示，点此立即刷新（平时每 60 秒也会自动刷新）"):
     store._invalidate()
+    st.session_state["rev_sync_ts"] = time.time()
     st.rerun()
 
 pending = store.list_pending_reviews()
@@ -84,8 +95,10 @@ with tab1:
                         st.error("반려 시 사유/수정 의견을 반드시 입력하세요 · 驳回必须填写原因/修改意见")
                     else:
                         st.session_state.pop(f"rej_{key}", None)
-                        store.review_reject(key, reason.strip())
-                        st.toast(f"{c['name']}：반려 · 已驳回，메인 사이트 재심사 절차로 · 主站将进入复审")
+                        ok, msg = store.review_reject(key, reason.strip())
+                        st.session_state["rev_flash"] = (
+                            "ok" if ok else "warn",
+                            f"{c['name']}：반려 · 已驳回，主站将进入复审 · {msg}")
                         st.rerun()
                 if c2.button("↩ 취소 · 取消", key=f"rejno_{key}"):
                     st.session_state.pop(f"rej_{key}", None)
@@ -95,8 +108,10 @@ with tab1:
                 c1, c2 = st.columns(2)
                 if c1.button("✅ 승인 · 通过", key=f"pass_{key}", type="primary",
                              use_container_width=True):
-                    store.review_pass(key, "")
-                    st.toast(f"{c['name']}：승인 · 已通过，결과 회신 완료 · 已回传主站")
+                    ok, msg = store.review_pass(key, "")
+                    st.session_state["rev_flash"] = (
+                        "ok" if ok else "warn",
+                        f"{c['name']}：승인 · 已通过，结果已回传主站 · {msg}")
                     st.rerun()
                 if c2.button("❌ 반려 · 驳回", key=f"rejbtn_{key}",
                              use_container_width=True):

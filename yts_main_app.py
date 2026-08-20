@@ -17,6 +17,7 @@ import yts_guide_gen as G
 import yts_roster as R
 import yts_yt_stats as YT
 import yts_gmc as GMC
+import yts_contract as C
 from yts_import_flow import norm_month, norm_date
 
 st.set_page_config(page_title="YTS 全栈项目管理", page_icon="🎯", layout="wide",
@@ -39,6 +40,19 @@ def go(page, **kw):
     st.session_state.page = page
     st.session_state.update(kw)
     st.rerun()
+
+
+def flash(level, msg):
+    """存一条消息，下次渲染时显示（st.rerun 会冲掉当场的 st.success/warning）。
+    level: ok / warn / err。用于展示待办发送结果等跨 rerun 提示"""
+    st.session_state["_flash"] = (level, msg)
+
+
+def _render_flash():
+    f = st.session_state.pop("_flash", None)
+    if f:
+        {"ok": st.success, "warn": st.warning,
+         "err": st.error}[f[0]](f[1])
 
 
 def home_btn():
@@ -445,6 +459,18 @@ def _current_node(c):
 
 def page_activity():
     home_btn()
+    # 审核状态快速同步（写入就反馈）：审核站与主站是两个进程、缓存不通，
+    # 这里每次打开活动模块就把「待审核/已驳回待复审」的记录逐条直查宜搭
+    # （通常只有几条，1-2秒），审核站的驳回/通过几秒内即可见，无需手动刷新
+    if getattr(store, "sync_review_states", None) and \
+            time.time() - st.session_state.get("act_sync_ts", 0) > 20:
+        st.session_state["act_sync_ts"] = time.time()
+        try:
+            changed = store.sync_review_states()
+        except Exception:
+            changed = []
+        for nm in changed:
+            st.toast(f"🔄 审核状态已更新：{nm}")
     h1, h2 = st.columns([5, 1])
     with h1:
         st.markdown(T.header("活动模块", "选择你的名字，管理你挖掘的网红"),
@@ -684,6 +710,7 @@ def page_detail(collab_id):
     if not c:
         st.error("未找到该合作记录")
         return
+    _render_flash()  # 显示上一步操作的提示（如待办发送结果）
     st.markdown(T.header(f"履约详情 · {c['name']}",
                          f'挖掘人 {c.get("recruiter") or "-"}'),
                 unsafe_allow_html=True)
@@ -876,6 +903,64 @@ def _render_actions(cid, c, step):
                 st.toast("清单已保存，可增减后重新校验")
                 st.rerun()
 
+            # ---- 合同生成（分支B 配套）：自动填充 → 核对修改 → 一键生成 Word ----
+            st.markdown(T.sub("合同生成 · 계약서 생성"), unsafe_allow_html=True)
+            st.caption("已自动带出系统里的信息（网红名 / 报价 / 频道 / 交稿截止），"
+                       "核对无误后生成正式合同 Word，发给网红签字")
+            with st.container(border=True):
+                with st.form(f"ct_form_{cid}"):
+                    f1, f2, f3 = st.columns(3)
+                    ct_name = f1.text_input("网红名 · 크리에이터명",
+                                            value=c["name"], key="ct_name")
+                    ct_amount = f2.number_input(
+                        "合同金额（韩币） · 계약금액", min_value=0, step=10000,
+                        value=int(c.get("price") or 0), key="ct_amount")
+                    ct_url = f3.text_input("频道链接 · 채널 URL",
+                                           value=c.get("channel_url") or "",
+                                           key="ct_url")
+                    f4, f5, _f6 = st.columns(3)
+                    ct_dl = f4.text_input("交付日期 · 납품일（YYYY-MM-DD）",
+                                          value=c.get("submit_deadline") or "",
+                                          key="ct_dl")
+                    ct_sign = f5.text_input("签署日期 · 서명일（默认当天）",
+                                            value=datetime.now().strftime("%Y-%m-%d"),
+                                            key="ct_sign")
+                    st.caption("平台默认填写 YouTube 영상；网红个人信息"
+                               "（生日 / 地址 / 收款账户 / 税类型）在合同中留空，"
+                               "由网红本人填写")
+                    if st.form_submit_button("📄 核对完毕，生成合同",
+                                             type="primary",
+                                             use_container_width=True):
+                        if not ct_name.strip():
+                            st.error("网红名不能为空")
+                        elif not ct_amount:
+                            st.error("合同金额为 0，请先填写金额（或在上方编辑信息里补报价）")
+                        else:
+                            try:
+                                doc_bytes = C.generate_contract({
+                                    "name": ct_name.strip(),
+                                    "amount": ct_amount,
+                                    "channel_url": ct_url.strip(),
+                                    "delivery_date": ct_dl.strip(),
+                                    "sign_date": ct_sign.strip(),
+                                })
+                                st.session_state[f"ct_doc_{cid}"] = (
+                                    doc_bytes, C.contract_filename(ct_name.strip()))
+                                st.toast("合同已生成，点下方按钮下载")
+                            except FileNotFoundError:
+                                st.error("未找到合同模板文件，请联系管理员")
+                            except Exception as e:
+                                st.error(f"合同生成失败：{e}")
+                ct_saved = st.session_state.get(f"ct_doc_{cid}")
+                if ct_saved:
+                    st.download_button(
+                        f"⬇ 下载合同 · {ct_saved[1]}",
+                        data=ct_saved[0], file_name=ct_saved[1],
+                        mime="application/vnd.openxmlformats-officedocument"
+                             ".wordprocessingml.document",
+                        key="ct_dl_btn", use_container_width=True)
+                    st.caption("网红签回后，回到上方「分支B」点「标记已签署」")
+
             # ---- 生成 Guide（分支A 配套）：原版韩文 guide + 千问强带货脚本建议 ----
             st.markdown(T.sub("生成 Guide · 가이드 생성"), unsafe_allow_html=True)
             st.caption("基于原版韩文 가이드，由千问为该网红追加「内容方向 & 强带货脚本建议」；"
@@ -967,8 +1052,9 @@ def _render_actions(cid, c, step):
             elif not c["video_url"]:
                 url = st.text_input("未公开视频链接", key="vurl")
                 if st.button("📨 提交审核", key="sr", type="primary") and url.strip():
-                    store.submit_review(cid, url.strip())
-                    st.toast("已推送至审核站，状态：待审核")
+                    ok, msg = store.submit_review(cid, url.strip())
+                    flash("ok" if ok else "warn",
+                          "已推送至审核站，状态：待审核 · " + msg)
                     st.rerun()
             else:
                 st.markdown(f'初审链接：<a class="yts-link" href="{esc(c["video_url"])}" '
@@ -1008,11 +1094,13 @@ def _render_actions(cid, c, step):
                 st.warning(f"复审中 · 复审链接：{c['recheck_video_url']}")
                 a1, a2 = st.columns([1, 2])
                 if a1.button("✅ 复审通过", key="rp", type="primary"):
-                    store.recheck_pass(cid)
+                    ok, msg = store.recheck_pass(cid)
+                    flash("ok" if ok else "warn", "复审已通过 · " + msg)
                     st.rerun()
                 reason = a2.text_input("仍不合格的原因", key="rr")
                 if a2.button("❌ 仍不合格", key="rr2") and reason.strip():
-                    store.recheck_reject(cid, reason.strip())
+                    ok, msg = store.recheck_reject(cid, reason.strip())
+                    flash("ok" if ok else "warn", "复审已驳回 · " + msg)
                     st.rerun()
             else:
                 st.markdown(T.badge(rs or "待审核"), unsafe_allow_html=True)

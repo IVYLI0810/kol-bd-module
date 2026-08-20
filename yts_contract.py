@@ -80,8 +80,9 @@ def hangul_amount(n) -> str:
 # ---------------------------------------------------------------------------
 def _replace_in_paragraph(paragraph, old: str, new: str) -> bool:
     """在段落内替换 old→new，支持 old 被拆到多个 run 的情况。
-    优先逐 run 精准替换（保留格式）；若仍有残留则整段回写兜底。
-    用有限循环，绝不死循环。"""
+    ⚠ 两个坑必须处理（否则如署名行 new 里包含 old 时会越替换越多）：
+    1. 每次插入后把搜索游标移到新文本之后，避免 find 命中刚插入的内容；
+    2. 兜底整段回写前，先挖掉已插入的 new 再判断是否真有残留。"""
     runs = paragraph.runs
     if not runs:
         return False
@@ -89,11 +90,11 @@ def _replace_in_paragraph(paragraph, old: str, new: str) -> bool:
     if old not in combined:
         return False
 
-    # 逐 run 精准替换（有限次，次数=出现次数）
+    start = 0
     for _ in range(combined.count(old)):
         runs = paragraph.runs
         cur = "".join(r.text for r in runs)
-        idx = cur.find(old)
+        idx = cur.find(old, start)
         if idx < 0:
             break
         end = idx + len(old)
@@ -110,19 +111,25 @@ def _replace_in_paragraph(paragraph, old: str, new: str) -> bool:
                 placed = True
             else:
                 r.text = pre + post
+        start = idx + len(new)  # 跳过刚插入的新文本
 
-    # 兜底：若仍有残留（极端 run 结构），整段回写
+    # 兜底：极端 run 结构导致逐 run 没替干净。先把已插入的 new 挖掉再看
+    # 是否仍有真残留，回写时只替换真残留（保留已插入的 new 原样）
     runs = paragraph.runs
     cur = "".join(r.text for r in runs)
-    if old in cur:
-        runs[0].text = cur.replace(old, new)
+    if old in cur.replace(new, "\x00"):
+        fixed = new.join(seg.replace(old, new) for seg in cur.split(new))
+        runs[0].text = fixed
         for r in runs[1:]:
             r.text = ""
     return True
 
 
 def _iter_paragraphs(doc):
-    """遍历正文 + 所有表格（含一层嵌套）里的段落"""
+    """遍历正文 + 所有表格（含一层嵌套）里的段落。
+    已实测：合并单元格不会造成段落重复访问（row.cells 重复返回的单元格
+    内部段落对象各自独立），无需去重；切勿用 id() 去重——lxml 代理对象
+    的 id 不稳定，会误跳段落"""
     body = doc.element.body
     for child in body.iterchildren():
         if child.tag == qn("w:p"):
@@ -197,20 +204,25 @@ def generate_contract(fields: dict, template_path: str = None) -> bytes:
     sign_d = _parse_date(fields.get("sign_date")) or datetime.now()
     delivery_d = _parse_date(fields.get("delivery_date"))
 
-    # ---- 1) 交付日期（납품일/게시일）：必须先替换，因为「2026년 MM월 DD일」
-    #         是它的子串，若先替换签署日期会把交付行的日期吃掉 ----
+    # ---- 1) 交付日期（납품일/게시일）优先替换 ----
     if delivery_d:
         _replace_doc(doc, "납품일 (게시일) : 2026년 MM월 DD일",
                      f"납품일 (게시일) : {_kor_date(delivery_d)}")
 
-    # ---- 2) 签署日期（默认当日）----
-    # 模板签署行用不换行空格 \xa0，须精确匹配
-    _replace_doc(doc, "2026년\xa0 MM월\xa0 DD일", _kor_date(sign_d))
-    # 普通空格兜底：仅当交付行已被替换（或本就无交付日期占位）时才安全，
-    # 否则会把交付行的占位误吃掉
-    if delivery_d:
-        _replace_doc(doc, "2026년  MM월  DD일", _kor_date(sign_d))
-        _replace_doc(doc, "2026년 MM월 DD일", _kor_date(sign_d))
+    # ---- 2) 签署日期（默认当日）：按段落特征定位——含 MM월 且不含
+    #         납품일 的段落才是签署行（交付日在表格行里，带 납품일 前缀），
+    #         三种空格形态都试（模板可能用普通/双/不换行空格）----
+    sign_str = _kor_date(sign_d)
+    for p in _iter_paragraphs(doc):
+        t = "".join(r.text for r in p.runs)
+        if "MM월" not in t or "납품일" in t:
+            continue
+        for pat in ("2026년\xa0 MM월\xa0 DD일",
+                    "2026년  MM월  DD일",
+                    "2026년 MM월 DD일"):
+            if pat in t:
+                _replace_in_paragraph(p, pat, sign_str)
+                break
 
     # ---- 3) 合同金额（韩文大写 + 数字）----
     hangul = hangul_amount(amount)
@@ -229,8 +241,9 @@ def generate_contract(fields: dict, template_path: str = None) -> bytes:
                  f"{name}, {channel_url}" if channel_url else name)
     # 合同名 & 캠페인 标题里的 (크리에이터명)
     _replace_doc(doc, "(크리에이터명)", name)
-    # 平台
-    _replace_doc(doc, "(플랫폼 기재. 예) 인스타그램 릴스)", "YouTube")
+    # 平台：默认写 YouTube 영상（模板占位符句点后有两个空格，两种形态都试）
+    _replace_doc(doc, "(플랫폼 기재.  예) 인스타그램 릴스)", "YouTube 영상")
+    _replace_doc(doc, "(플랫폼 기재. 예) 인스타그램 릴스)", "YouTube 영상")
     # 签署栏：성명(에이전시명)
     _replace_doc(doc, "성명(에이전시명) :", f"성명(에이전시명) : {name}")
 
