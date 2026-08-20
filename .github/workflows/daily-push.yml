@@ -24,7 +24,6 @@ jobs:
         env:
           YIDA_ACCESS_KEY_ID: ${{ secrets.YIDA_ACCESS_KEY_ID }}
           YIDA_ACCESS_KEY_SECRET: ${{ secrets.YIDA_ACCESS_KEY_SECRET }}
-          YIDA_SYSTEM_TOKEN: ${{ secrets.YIDA_SYSTEM_TOKEN }}
           DINGTALK_APP_KEY: ${{ secrets.DINGTALK_APP_KEY }}
           DINGTALK_APP_SECRET: ${{ secrets.DINGTALK_APP_SECRET }}
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
