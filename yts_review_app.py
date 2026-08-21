@@ -12,7 +12,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-from yts_yida_store import get_yts_store
+from yts_yida_store import get_yts_store, YidaFetchError
 import yts_theme as T
 
 st.set_page_config(page_title="YTS 심사 스테이션 · YTS 审核站", page_icon="🎬",
@@ -104,8 +104,18 @@ if hb.button("🔄 목록 새로고침 · 刷新列表",
     st.session_state["rev_sync_ts"] = time.time()
     st.rerun()
 
-review_rows = store.list_review_table()
-ad_rows = store.list_ad_table()
+# 数据加载：宜搭首次连接失败时不再整页崩溃，显示友好提示+重试按钮
+try:
+    review_rows = store.list_review_table()
+    ad_rows = store.list_ad_table()
+except YidaFetchError as e:
+    st.error("⚠️ 宜搭数据暂时连不上，页面未能加载。\n\n"
+             "这通常是宜搭接口短暂波动，**不是你的操作问题**。")
+    st.caption(f"详情：{e}")
+    if st.button("🔄 重试加载", type="primary"):
+        st.rerun()
+    st.stop()
+
 n_pending = sum(1 for r in review_rows if not r["passed"])
 n_ad_wait = sum(1 for r in ad_rows if r["ad_needed"] and not r["ad_done"])
 n_done = sum(1 for r in review_rows if r["passed"])

@@ -59,6 +59,11 @@ def _now_min():
 _FETCH_LOCK = threading.Lock()
 
 
+class YidaFetchError(RuntimeError):
+    """宜搭数据加载失败（已重试仍失败）。页面层捕获后显示友好提示+重试按钮，
+    避免整页崩溃成英文 traceback"""
+
+
 class YTSStore:
     """与 demo 版 YTSStore 同接口，底层为宜搭（带缓存 + 后台刷新，避免页面卡顿）"""
 
@@ -100,15 +105,27 @@ class YTSStore:
                                  args=(cache_key, fetch_fn), daemon=True).start()
             return hit[1]
 
-        # 完全无缓存（首次加载）：同步拉取，显示 spinner
+        # 完全无缓存（首次加载 / 部署后第一次打开）：同步拉取，带重试保护。
+        # 宜搭 API 偶发超时/抖动，重试 2 次；仍失败则抛出自定义异常，
+        # 由页面层捕获并显示友好提示，而非整页崩溃。
+        last_err = None
         with _FETCH_LOCK:
             hit = self._cache.get(cache_key)
             if hit is not None:
                 return hit[1]
-            with st.spinner("正在同步宜搭数据…"):
-                value = fetch_fn()
-            self._cache[cache_key] = (time.time(), value)
-            return value
+            for attempt in range(3):
+                try:
+                    with st.spinner("正在同步宜搭数据…" if attempt == 0
+                                    else f"宜搭连接失败，第 {attempt + 1} 次重试…"):
+                        value = fetch_fn()
+                    self._cache[cache_key] = (time.time(), value)
+                    return value
+                except Exception as e:
+                    last_err = e
+                    if attempt < 2:
+                        time.sleep(1.5)  # 短暂等待再重试
+        # 3 次都失败：抛出带中文说明的异常，页面层可捕获展示
+        raise YidaFetchError(f"宜搭数据加载失败（已重试 3 次）：{last_err}") from last_err
 
     def _all(self):
         return self._fetch_with_lock("all", self.db.get_all)
