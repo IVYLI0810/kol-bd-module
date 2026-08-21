@@ -49,56 +49,66 @@ def _today():
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def _now_min():
+    """当前时间，精确到分钟（提交/审核时间戳用）"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
 # 防缓存击穿：进程级单例被10个会话共享，缓存过期瞬间只让1个会话
 # 真正回源宜搭，其他会话等待结果，避免并发全表拉取风暴
 _FETCH_LOCK = threading.Lock()
 
 
 class YTSStore:
-    """与 demo 版 YTSStore 同接口，底层为宜搭（带 60 秒缓存，避免页面卡顿）"""
+    """与 demo 版 YTSStore 同接口，底层为宜搭（带缓存 + 后台刷新，避免页面卡顿）"""
 
     CACHE_TTL = 300  # 秒；写操作就地补丁缓存，不再全量重拉
 
     def __init__(self, db=None):
         self.db = db or YidaBDDB(**_cfg())
         self._cache = {}
+        self._refreshing = set()  # 正在后台刷新的 cache_key 集合
+
+    def _bg_refresh(self, cache_key, fetch_fn):
+        """后台线程回源：刷新完成写回缓存。失败则保留旧数据。"""
+        try:
+            value = fetch_fn()
+            self._cache[cache_key] = (time.time(), value)
+        except Exception:
+            pass  # 回源失败：旧缓存继续可用，下次访问再试
+        finally:
+            self._refreshing.discard(cache_key)
 
     def _fetch_with_lock(self, cache_key, fetch_fn):
-        """带回源锁的取数：核心是「一人慢不拖累全员」。
+        """stale-while-revalidate 取数：核心是「任何人都不阻塞」。
 
-        10 人共用同一进程缓存，若 A 正在回源宜搭（网络慢时可达 10-20s），
-        绝不能让其余 9 人排队等待。策略：
-        - 缓存有效：直接返回（快路径）。
-        - 用非阻塞方式抢锁：抢不到说明他人正在回源 →
-          有旧缓存立刻用旧缓存（零等待），仅首次加载（无任何缓存）才等锁。
+        10 人共用同一进程缓存，宜搭回源慢时可达 10-20s。策略：
+        - 缓存有效（TTL 内）：直接返回（快路径）。
+        - 缓存过期但有旧数据：**立即返回旧数据**，同时起后台线程刷新；
+          同一 key 只允许一个后台刷新在跑（_refreshing 去重）。
+        - 完全无缓存（首次加载）：只能同步等待并显示 spinner（不可避免）。
         """
         hit = self._cache.get(cache_key)
         if hit is not None and time.time() - hit[0] <= self.CACHE_TTL:
+            return hit[1]  # 快路径：缓存新鲜
+
+        if hit is not None:
+            # 有过期数据：先返回旧的，后台刷新（用户零等待）
+            if cache_key not in self._refreshing:
+                self._refreshing.add(cache_key)
+                threading.Thread(target=self._bg_refresh,
+                                 args=(cache_key, fetch_fn), daemon=True).start()
             return hit[1]
-        if not _FETCH_LOCK.acquire(timeout=0):
-            # 他人正在回源：有旧缓存就用旧的，完全不排队
+
+        # 完全无缓存（首次加载）：同步拉取，显示 spinner
+        with _FETCH_LOCK:
             hit = self._cache.get(cache_key)
             if hit is not None:
                 return hit[1]
-            # 完全无缓存（首次加载）：只能等锁
-            _FETCH_LOCK.acquire()
-        try:
-            # 拿到锁后二次检查：可能他人刚回源完成
-            hit = self._cache.get(cache_key)
-            if hit is not None and time.time() - hit[0] <= self.CACHE_TTL:
-                return hit[1]
-            try:
-                with st.spinner("正在同步宜搭数据…"):
-                    value = fetch_fn()
-                self._cache[cache_key] = (time.time(), value)
-                return value
-            except Exception:
-                hit = self._cache.get(cache_key)
-                if hit is not None:  # 回源失败：返回旧缓存保住可用
-                    return hit[1]
-                raise
-        finally:
-            _FETCH_LOCK.release()
+            with st.spinner("正在同步宜搭数据…"):
+                value = fetch_fn()
+            self._cache[cache_key] = (time.time(), value)
+            return value
 
     def _all(self):
         return self._fetch_with_lock("all", self.db.get_all)
@@ -118,6 +128,17 @@ class YTSStore:
 
     def _invalidate(self):
         self._cache.clear()
+
+    def _soft_invalidate(self):
+        """让缓存过期但保留旧数据：下次读取立即返回旧值，同时触发回源刷新。
+
+        与 _invalidate()（清空）的区别：清空后缓存为空，下一个访问者必须
+        阻塞等待全表重拉（宜搭慢时 10-20s，期间页面卡死）。软失效保留旧数据，
+        _fetch_with_lock 会「先返回旧值、后台刷新」，任何人都不阻塞。
+        审核站定时同步用这个，避免周期性卡顿。"""
+        for key in list(self._cache.keys()):
+            _ts, val = self._cache[key]
+            self._cache[key] = (0.0, val)  # 时间戳置0=视为过期，但数据仍在
 
     def url_index(self):
         """频道链接 -> channel_id，流程导入判断新增/更新用"""
@@ -165,8 +186,8 @@ class YTSStore:
             rows.append(rec)
 
     def _audit_patch(self, channel_id, result, opinion):
-        """与 db.add_audit 同步：向缓存里的 audit_log 追加同一条记录"""
-        entry = {"audit_date": datetime.now().strftime("%Y-%m-%d"),
+        """与 db.add_audit 同步：向缓存里的 audit_log 追加同一条记录（精确到分钟）"""
+        entry = {"audit_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                  "audit_result": result, "audit_opinion": opinion}
         rows = list(self._cache.get("all", (0, []))[1])
         one = self._cache.get("one:" + channel_id)
@@ -242,6 +263,10 @@ class YTSStore:
             "channel_url": r.get("channel_url") or "",
             "group_link": r.get("group_link") or "",
             "submit_deadline": r.get("submit_deadline") or "",
+            # 提交审核时间（精确到分钟，宜搭读回已是 YYYY-MM-DD HH:MM）
+            "submit_actual": r.get("submit_actual") or "",
+            # 最近一次审核时间（取审核记录最后一条的日期，精确到分钟）
+            "audit_time": (audit_log[-1].get("audit_date", "") if audit_log else ""),
             "notes": r.get("notes") or "",
             "audit_log": audit_log,
             # ---- 视频明细子表（一行一条视频，闭环时登记） ----
@@ -610,8 +635,9 @@ class YTSStore:
 
     # ---------------- 提交审核 ----------------
     def submit_review(self, collab_id, video_url):
+        # 提交时间精确到分钟（YYYY-MM-DD HH:MM），宜搭 dateField 存毫秒时间戳
         self._upd(collab_id, {"video_link": video_url, "audit_status": "待审核",
-                              "stage": "已交视频", "submit_actual": _today()})
+                              "stage": "已交视频", "submit_actual": _now_min()})
         # 个人待办：提醒审核同学。返回 (ok, msg) 供页面展示发送结果
         rec = self._get(collab_id) or {}
         return N.notify_review_submitted(rec.get("channel_name") or collab_id,
@@ -665,7 +691,8 @@ class YTSStore:
     # ---------------- 审核站表格模式（审核模块 / 投放模块） ----------------
     def list_review_table(self):
         """审核模块表格行：所有已提交视频的网红。
-        是否通过：已通过/复审通过=Y，已驳回=N，待审核/复审中=空白"""
+        是否通过：已通过/复审通过=Y，已驳回=N，待审核/复审中=空白
+        附带：提交时间(submit_actual)、审核时间(audit_time)、状态(review_status) 用于展示区分"""
         order = {"待审核": 0, "未通过": 1, "已通过": 2}
         rows = []
         for c in (self._to_collab(r) for r in self._all()):
@@ -684,6 +711,10 @@ class YTSStore:
                 "review_url": c["recheck_video_url"] or c["video_url"],
                 "passed": passed,
                 "reason": reason,
+                # ---- 新增：用于展示与区分 ----
+                "status": rs,                       # 待审核/已通过/已驳回/复审中/复审通过
+                "submit_actual": c.get("submit_actual") or "",  # 提交时间（精确到分钟）
+                "audit_time": c.get("audit_time") or "",        # 审核时间（精确到分钟）
             })
         rows.sort(key=lambda x: (order.get(
             {"Y": "已通过", "N": "未通过"}.get(x["passed"], "待审核"), 3), x["name"]))
@@ -692,10 +723,18 @@ class YTSStore:
     def apply_review_results(self, changes):
         """批量回填审核结果（表格保存/Excel上传共用）。
         changes: [{"collab_id","passed"("Y"/"N"),"reason"}]，只处理与现状不同的行。
-        写完统一发一条群通知@运营（不逐条发待办，避免刷屏）。返回 (条数, 通知ok, 通知msg)"""
+        写完统一发一条群通知@运营（不逐条发待办，避免刷屏）。返回 (条数, 通知ok, 通知msg)
+
+        修复要点（2026-08-21）：
+        - 每条审核合并为 1 次宜搭写入（add_audit 内部已含 audit_status，
+          stage 通过 extra_fields 一并写入），原先 3 次 HTTP 减到 2 次，提速且降低超时风险。
+        - add_audit 返回 False（记录未找到/写入失败）时不再静默，
+          计入失败并在通知消息里如实提示，避免"显示已保存实际没保存"。
+        """
         cur = {c["collab_id"]: c for c in
                (self._to_collab(r) for r in self._all())}
-        done, applied = [], []
+        done, applied, failed = [], [], []
+        now_min = _now_min()  # 审核时间精确到分钟
         for ch in changes:
             cid = (ch.get("collab_id") or "").strip()
             passed = str(ch.get("passed") or "").strip().upper()
@@ -708,20 +747,36 @@ class YTSStore:
             if passed == already and (passed == "Y" or reason == (c["review_comment"] or "").strip()):
                 continue  # 没变化就不重复写
             if passed == "Y":
-                self.db.add_audit(cid, result="已通过", opinion=reason or "审核通过")
-                self._audit_patch(cid, "已通过", reason or "审核通过")
-                self._upd(cid, {"audit_status": "已通过"})
-                applied.append((c["name"], "✅通过", reason or "审核通过"))
+                ok = self.db.add_audit(cid, result="已通过",
+                                       opinion=reason or "审核通过",
+                                       audit_date=now_min)
+                if ok:
+                    self._audit_patch(cid, "已通过", reason or "审核通过")
+                    self._patch(cid, {"audit_status": "已通过"})
+                    applied.append((c["name"], "✅通过", reason or "审核通过"))
+                else:
+                    failed.append(c["name"])
             else:
-                self.db.add_audit(cid, result="未通过", opinion=reason or "审核未通过")
-                self._audit_patch(cid, "未通过", reason or "审核未通过")
-                self._upd(cid, {"audit_status": "未通过", "stage": "修改中"})
-                applied.append((c["name"], "❌驳回", reason or "审核未通过"))
+                # 驳回：stage=修改中 通过 extra_fields 一并写入，省一次 HTTP
+                ok = self.db.add_audit(cid, result="未通过",
+                                       opinion=reason or "审核未通过",
+                                       audit_date=now_min,
+                                       extra_fields={"stage": "修改中"})
+                if ok:
+                    self._audit_patch(cid, "未通过", reason or "审核未通过")
+                    self._patch(cid, {"audit_status": "未通过", "stage": "修改中"})
+                    applied.append((c["name"], "❌驳回", reason or "审核未通过"))
+                else:
+                    failed.append(c["name"])
             done.append(cid)
-        if not applied:
+        if not applied and not failed:
             return 0, True, "没有需要更新的审核结果"
         # 一条汇总群通知@运营，代替逐条待办
         nok, nmsg = N.notify_review_results_batch(applied)
+        if failed:
+            nmsg = (nmsg + f"；⚠️ {len(failed)} 条写入失败（未找到记录）："
+                    + "、".join(failed[:10]))
+            nok = False
         return len(applied), nok, nmsg
 
     def list_ad_table(self):

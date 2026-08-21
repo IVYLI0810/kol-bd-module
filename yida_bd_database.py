@@ -135,7 +135,7 @@ def _date_to_ms(value):
     s = str(value).strip()
     if s.isdigit():
         return int(s)
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
             return int(datetime.strptime(s, fmt).replace(
                 tzinfo=_TZ_CN).timestamp() * 1000)
@@ -151,6 +151,17 @@ def _ms_to_date(value):
     except (TypeError, ValueError):
         return value
     return datetime.fromtimestamp(ms / 1000, _TZ_CN).strftime("%Y-%m-%d")
+
+
+def _ms_to_datetime_min(value):
+    """毫秒时间戳 -> 'YYYY-MM-DD HH:MM'（精确到分钟）；
+    纯日期（00:00，旧数据）时省略时间只留日期；非数字原样返回"""
+    try:
+        ms = float(value)
+    except (TypeError, ValueError):
+        return value
+    s = datetime.fromtimestamp(ms / 1000, _TZ_CN).strftime("%Y-%m-%d %H:%M")
+    return s[:-6] if s.endswith(" 00:00") else s
 
 
 class YidaBDDB:
@@ -258,7 +269,7 @@ class YidaBDDB:
         for fid, value in row.items():
             code = rev.get(fid, fid)
             if code == "audit_date":
-                value = _ms_to_date(value)
+                value = _ms_to_datetime_min(value)
             out[code] = value
         return out
 
@@ -278,7 +289,10 @@ class YidaBDDB:
                 rows = value if isinstance(value, list) else []
                 rec["videos"] = [self._from_video_row(r) for r in rows]
             else:
-                if code in DATE_FIELDS:
+                if code == "submit_actual":
+                    # 实际提交时间保留到分钟；其他日期字段仍按天显示
+                    value = _ms_to_datetime_min(value)
+                elif code in DATE_FIELDS:
                     value = _ms_to_date(value)
                 rec[code] = value
         rec.setdefault("audit_log", [])
@@ -481,27 +495,29 @@ class YidaBDDB:
     # ------------------------- YTS 流程：审核流 -------------------------
 
     def add_audit(self, channel_id: str, result: str, opinion: str,
-                  audit_date: str = "") -> bool:
+                  audit_date: str = "", extra_fields: dict = None) -> bool:
         """追加一条审核记录到子表，并同步更新「审核状态」主字段
 
         result: 「已通过」或「未通过」
         opinion: 审核意见
-        audit_date: 审核日期（YYYY-MM-DD），默认取当天
+        audit_date: 审核时间（YYYY-MM-DD HH:MM 或 YYYY-MM-DD），默认取当前时刻（精确到分钟）
+        extra_fields: 需要一并写入的其他字段（如 {"stage": "修改中"}），省一次 HTTP
         """
-        from datetime import date
+        from datetime import datetime as _dt
         rec = self.get_by_channel_id(channel_id)
         if not rec:
             return False
         audit_log = list(rec.get("audit_log") or [])
         audit_log.append({
-            "audit_date": audit_date or date.today().isoformat(),
+            "audit_date": audit_date or _dt.now().strftime("%Y-%m-%d %H:%M"),
             "audit_result": result,
             "audit_opinion": opinion,
         })
-        self.update(channel_id, {
-            "audit_log": audit_log,
-            "audit_status": result,
-        })
+        # 一次 HTTP 同时写子表+主状态(+附加字段)
+        updates = {"audit_log": audit_log, "audit_status": result}
+        if extra_fields:
+            updates.update(extra_fields)
+        self.update(channel_id, updates)
         return True
 
     def get_audit_log(self, channel_id: str) -> list:

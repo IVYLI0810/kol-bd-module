@@ -35,10 +35,22 @@ def bih(ko, zh):
 C_NAME = "크리에이터 网红"
 C_HOME = "홈페이지 링크 主页链接"
 C_VIDEO = "검토 링크 审核链接"
+C_STATUS = "상태 状态"
+C_SUBMIT = "제출 시각 提交时间"
+C_AUDIT = "심사 시각 审核时间"
 C_PASS = "통과 여부 是否通过"
 C_REASON = "반려 사유 驳回原因"
 C_AD_NEED = "광고 필요 여부 是否需要投放"
 C_AD_DONE = "광고 완료 여부 是否投放"
+
+# 状态 → 带 emoji 的显示文案（让待审核/已审核一眼可辨）
+_STATUS_EMOJI = {
+    "待审核": "⏳ 待审核",
+    "已通过": "✅ 已通过",
+    "已驳回": "❌ 已驳回",
+    "复审中": "🔄 复审中",
+    "复审通过": "✅ 复审通过",
+}
 
 
 def _norm(v):
@@ -78,16 +90,17 @@ _f = st.session_state.pop("rev_flash", None)
 if _f:
     (st.success if _f[0] == "ok" else st.warning)(_f[1])
 
-# 审核站与主站是两个独立进程（缓存互不相通）。每 60 秒自动清缓存重拉，
-# 主站刚提交的审核/刚闭环的投放需求最多等 1 分钟自动可见
+# 审核站与主站是两个独立进程（缓存互不相通）。每 60 秒软失效一次：
+# 保留旧数据立即返回（不阻塞），同时后台刷新，主站刚提交的审核最多 1 分钟可见。
+# 用 _soft_invalidate 而非 _invalidate，避免清空缓存后下一个访问者被全表重拉卡住。
 if time.time() - st.session_state.get("rev_sync_ts", 0) > 60:
     st.session_state["rev_sync_ts"] = time.time()
-    store._invalidate()
+    store._soft_invalidate()
 
 hb, _ = st.columns([1, 4])
 if hb.button("🔄 목록 새로고침 · 刷新列表",
              help="主站刚提交的内容若未显示，点此立即刷新（平时每 60 秒也会自动刷新）"):
-    store._invalidate()
+    store._soft_invalidate()
     st.session_state["rev_sync_ts"] = time.time()
     st.rerun()
 
@@ -112,9 +125,13 @@ with tab_rev:
                "可以直接在表格里填，也可以下载 Excel 拿给审核侧离线填写后上传回来。")
 
     orig_df = pd.DataFrame([{
+        C_STATUS: _STATUS_EMOJI.get(r["status"], r["status"]),
         C_NAME: r["name"], C_HOME: r["channel_url"], C_VIDEO: r["review_url"],
+        C_SUBMIT: r["submit_actual"], C_AUDIT: r["audit_time"],
         C_PASS: r["passed"], C_REASON: r["reason"],
     } for r in review_rows])
+    # 行位置 -> collab_id（与 orig_df 行序一致，比按名字匹配更稳，避免重名/空格问题）
+    id_by_pos = [r["collab_id"] for r in review_rows]
     id_by_name = {r["name"]: r["collab_id"] for r in review_rows}
     id_by_url = {r["channel_url"]: r["collab_id"] for r in review_rows
                  if r["channel_url"]}
@@ -123,9 +140,12 @@ with tab_rev:
         orig_df, key="rev_grid", hide_index=True, use_container_width=True,
         height=min(560, 80 + 38 * (len(orig_df) + 1)),
         column_config={
+            C_STATUS: st.column_config.TextColumn("상태 状态", disabled=True, width="small"),
             C_NAME: st.column_config.TextColumn("크리에이터 网红", disabled=True, width="medium"),
             C_HOME: st.column_config.LinkColumn("홈페이지 主页", disabled=True, width="medium"),
             C_VIDEO: st.column_config.LinkColumn("검토 영상 审核视频", disabled=True, width="medium"),
+            C_SUBMIT: st.column_config.TextColumn("제출 시각 提交时间", disabled=True, width="medium"),
+            C_AUDIT: st.column_config.TextColumn("심사 시각 审核时间", disabled=True, width="medium"),
             C_PASS: st.column_config.TextColumn("통과? 通过? (Y/N)", width="small"),
             C_REASON: st.column_config.TextColumn("반려 사유 驳回原因", width="large"),
         })
@@ -149,7 +169,9 @@ with tab_rev:
             if passed == "N" and not reason:
                 missing_reason.append(str(row[C_NAME]))
                 continue
-            changes.append({"collab_id": id_by_name.get(str(row[C_NAME]), ""),
+            # 优先按行位置取 collab_id（与表格行序一一对应），名字匹配作兜底
+            cid = id_by_pos[i] if i < len(id_by_pos) else id_by_name.get(str(row[C_NAME]), "")
+            changes.append({"collab_id": cid,
                             "passed": passed, "reason": reason})
         if missing_reason:
             st.error("반려 시 사유 필수 · 以下驳回行未填原因，请补上再保存："
