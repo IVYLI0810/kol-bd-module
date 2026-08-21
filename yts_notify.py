@@ -324,22 +324,44 @@ def notify_daily_review(pending_rows, reviewer="Minjeong"):
     return _send_group(f"검토 대기 {len(pending_rows)}건", "\n".join(lines), reviewer)
 
 
+def _send_group_ad(title, md_text, at_uids=None):
+    """投放群机器人（DINGTALK_AD_WEBHOOK）发送。与审核机器人独立。返回 (ok, msg)"""
+    webhook = _cfg("DINGTALK_AD_WEBHOOK")
+    if not webhook:
+        return False, "投放机器人未配置（DINGTALK_AD_WEBHOOK）"
+    body = {"msgtype": "markdown",
+            "markdown": {"title": title, "text": md_text},
+            "at": {"atUserIds": [str(u) for u in (at_uids or [])],
+                   "isAtAll": False}}
+    try:
+        r = requests.post(_sign_webhook_url(webhook, _cfg("DINGTALK_AD_WEBHOOK_SECRET")),
+                          json=body, timeout=8)
+        data = r.json() or {}
+        if data.get("errcode") == 0:
+            return True, "投放群通知已发送"
+        em = str(data.get("errmsg") or r.text or "")[:120]
+        if "sign not match" in em or "sign" in em:
+            return False, "投放机器人加签密钥不对，请核对 DINGTALK_AD_WEBHOOK_SECRET"
+        return False, f"投放群通知发送失败：{em}"
+    except Exception as e:
+        return False, f"投放群通知发送失败：{e}"
+
+
 def notify_daily_ad(pending_rows):
-    """每日定时：把待投放清单以个人待办直发给投放负责人。
+    """每日定时：把待投放清单经投放机器人发到投放群，@投放负责人。
     pending_rows: [(网红名, 主页链接), ...]。返回 (ok, msg)"""
     if not pending_rows:
         return True, "当前没有待投放记录，跳过推送"
     owner = _cfg("DINGTALK_AD_OPS")
-    if not owner:
-        return False, "投放负责人未配置（DINGTALK_AD_OPS），待投放清单未发送"
-    uid = _userids().get(owner)
-    if not uid:
-        return False, f"投放负责人 {owner} 的钉钉 userid 未配置，待投放清单未发送"
-    lines = [f"待投放 {len(pending_rows)} 位网红："]
+    lines = [f"### 📣 待投放清单 · {len(pending_rows)} 位网红", ""]
     for name, url in pending_rows[:30]:
         lines.append(f"- {name}：{url or '无主页链接'}")
     if len(pending_rows) > 30:
         lines.append(f"… 另有 {len(pending_rows) - 30} 位")
-    ok, msg = _send_todo(f"📣 待投放清单 · {len(pending_rows)}位",
-                         "\n".join(lines), "", uid)
-    return ok, (f"已向投放负责人 {owner} 发送待投放清单待办" if ok else msg)
+    at_uids = []
+    if owner:
+        lines.append(f"\n@{owner} 请处理投放")
+        at_uids = [owner]
+    ok, msg = _send_group_ad(f"📣 待投放清单 · {len(pending_rows)}位",
+                             "\n".join(lines), at_uids)
+    return ok, msg
