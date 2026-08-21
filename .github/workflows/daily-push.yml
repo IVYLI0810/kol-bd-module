@@ -24,10 +24,13 @@ jobs:
         env:
           YIDA_ACCESS_KEY_ID: ${{ secrets.YIDA_ACCESS_KEY_ID }}
           YIDA_ACCESS_KEY_SECRET: ${{ secrets.YIDA_ACCESS_KEY_SECRET }}
+          YIDA_SYSTEM_TOKEN: ${{ secrets.YIDA_SYSTEM_TOKEN }}
           DINGTALK_APP_KEY: ${{ secrets.DINGTALK_APP_KEY }}
           DINGTALK_APP_SECRET: ${{ secrets.DINGTALK_APP_SECRET }}
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
           DINGTALK_WEBHOOK_SECRET: ${{ secrets.DINGTALK_WEBHOOK_SECRET }}
+          DINGTALK_AD_WEBHOOK: ${{ secrets.DINGTALK_AD_WEBHOOK }}
+          DINGTALK_AD_WEBHOOK_SECRET: ${{ secrets.DINGTALK_AD_WEBHOOK_SECRET }}
           DINGTALK_REVIEW_USERIDS: ${{ secrets.DINGTALK_REVIEW_USERIDS }}
           DINGTALK_REVIEW_MOBILES: ${{ secrets.DINGTALK_REVIEW_MOBILES }}
           DINGTALK_AD_OPS: ${{ secrets.DINGTALK_AD_OPS }}
