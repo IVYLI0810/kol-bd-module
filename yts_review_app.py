@@ -139,12 +139,15 @@ with tab_rev:
         C_NAME: r["name"], C_HOME: r["channel_url"], C_VIDEO: r["review_url"],
         C_SUBMIT: r["submit_actual"], C_AUDIT: r["audit_time"],
         C_PASS: r["passed"], C_REASON: r["reason"],
+        "collab_id": r["collab_id"],
     } for r in review_rows])
-    # 行位置 -> collab_id（与 orig_df 行序一致，比按名字匹配更稳，避免重名/空格问题）
-    id_by_pos = [r["collab_id"] for r in review_rows]
-    id_by_name = {r["name"]: r["collab_id"] for r in review_rows}
+    # 主页链接 -> collab_id（Excel 上传辅助匹配用；网格保存直接用行内 collab_id）
     id_by_url = {r["channel_url"]: r["collab_id"] for r in review_rows
                  if r["channel_url"]}
+    # 名字 -> collab_id 列表：同名多条记录时按名字匹配有歧义，须跳过并提示
+    name_ids = {}
+    for r in review_rows:
+        name_ids.setdefault(r["name"], []).append(r["collab_id"])
 
     edited = st.data_editor(
         orig_df, key="rev_grid", hide_index=True, use_container_width=True,
@@ -158,12 +161,14 @@ with tab_rev:
             C_AUDIT: st.column_config.TextColumn("심사 시각 审核时间", disabled=True, width="medium"),
             C_PASS: st.column_config.TextColumn("통과? 通过? (Y/N)", width="small"),
             C_REASON: st.column_config.TextColumn("반려 사유 驳回原因", width="large"),
+            # 主键隐藏列：保存时按它回写宜搭，不依赖行号/昵称反查
+            "collab_id": st.column_config.TextColumn("collab_id", hidden=True),
         })
 
     b1, b2, b3 = st.columns(3)
     if b1.button("💾 변경 사항 저장 · 保存修改", type="primary",
                  use_container_width=True, disabled=orig_df.empty):
-        changes, missing_reason = [], []
+        changes, missing_reason, no_id = [], [], []
         for i in range(len(edited)):
             row = edited.iloc[i]
             o = orig_df.iloc[i] if i < len(orig_df) else None
@@ -176,27 +181,34 @@ with tab_rev:
                 st.stop()
             if not passed:
                 continue
+            cid = _norm(row["collab_id"])
+            if not cid:  # 缺主键的行无法回写，跳过并提示
+                no_id.append(str(row[C_NAME]))
+                continue
             if passed == "N" and not reason:
                 missing_reason.append(str(row[C_NAME]))
                 continue
-            # 优先按行位置取 collab_id（与表格行序一一对应），名字匹配作兜底
-            cid = id_by_pos[i] if i < len(id_by_pos) else id_by_name.get(str(row[C_NAME]), "")
             changes.append({"collab_id": cid,
                             "passed": passed, "reason": reason})
         if missing_reason:
             st.error("반려 시 사유 필수 · 以下驳回行未填原因，请补上再保存："
                      + "、".join(missing_reason))
-        elif not changes:
-            st.info("변경 사항이 없습니다 · 没有检测到修改")
         else:
-            n, nok, nmsg = store.apply_review_results(changes)
-            st.session_state["rev_flash"] = (
-                "ok" if nok else "warn",
-                f"✅ {n}건의 결과가 메인 시스템에 반영됨 · 已回传 {n} 条审核结果 · {nmsg}")
-            st.rerun()
+            if no_id:
+                st.warning("以下行缺少 collab_id 主键，已跳过未回写："
+                           + "、".join(no_id))
+            if changes:
+                n, nok, nmsg = store.apply_review_results(changes)
+                st.session_state["rev_flash"] = (
+                    "ok" if nok else "warn",
+                    f"✅ {n}건의 결과가 메인 시스템에 반영됨 · 已回传 {n} 条审核结果 · {nmsg}")
+                st.rerun()
+            elif not no_id:
+                st.info("변경 사항이 없습니다 · 没有检测到修改")
 
     if b2.download_button("⬇ Excel 다운로드 · 下载Excel",
-                          data=_df_to_bytes(orig_df),
+                          data=_df_to_bytes(orig_df.drop(columns=["collab_id"],
+                                                         errors="ignore")),
                           file_name=f"검토현황_{datetime.now():%Y%m%d}.xlsx",
                           use_container_width=True):
         pass
@@ -217,14 +229,21 @@ with tab_rev:
         if not col_name or not col_pass:
             st.error("表头不对：请上传从本站「下载Excel」得到的表格（含 网红/是否通过 列）")
             st.stop()
-        changes, skipped, bad = [], 0, []
+        changes, skipped, bad, dup = [], 0, [], []
         for _, row in up_df.iterrows():
             nm, home = _norm(row[col_name]), (_norm(row[col_home]) if col_home else "")
-            cid = id_by_url.get(home) or id_by_name.get(nm)
+            cid = id_by_url.get(home, "")
             if not cid:
-                if nm:
-                    skipped += 1
-                continue
+                ids = name_ids.get(nm, [])
+                if len(ids) == 1:
+                    cid = ids[0]
+                elif len(ids) > 1:
+                    dup.append(nm)  # 同名多条记录：无法确定是哪一条，跳过
+                    continue
+                else:
+                    if nm:
+                        skipped += 1
+                    continue
             passed = _norm(row[col_pass]).upper()
             if passed not in ("Y", "N"):
                 continue
@@ -235,11 +254,15 @@ with tab_rev:
             changes.append({"collab_id": cid, "passed": passed, "reason": reason})
         if bad:
             st.error("반려 시 사유 필수 · 以下驳回行未填原因，未写入：" + "、".join(bad[:10]))
+        if dup:
+            st.warning("以下网红同名匹配到多条记录，无法确定回写哪一条，已跳过："
+                       + "、".join(dup[:10]))
         if not changes:
             st.info("쓸 내용이 없습니다 · 没有可写入的结果（空白/未变化的行会自动跳过）")
         else:
             n, nok, nmsg = store.apply_review_results(changes)
-            extra = f"（{skipped} 行未匹配到网红被跳过）" if skipped else ""
+            extra = (f"（{skipped} 行未匹配到网红被跳过）" if skipped else "") \
+                + (f"（{len(dup)} 行同名多记录被跳过）" if dup else "")
             st.session_state["rev_flash"] = (
                 "ok" if nok else "warn",
                 f"✅ Excel 업로드 완료 · 上传成功，回传 {n} 条审核结果{extra} · {nmsg}")
@@ -255,10 +278,15 @@ with tab_ad:
     ad_df = pd.DataFrame([{
         C_NAME: r["name"], C_HOME: r["channel_url"],
         C_AD_NEED: r["ad_needed"], C_AD_DONE: r["ad_done"],
+        "collab_id": r["collab_id"],
     } for r in ad_rows])
-    ad_id_by_name = {r["name"]: r["collab_id"] for r in ad_rows}
+    # 主页链接 -> collab_id（Excel 上传辅助匹配用；网格保存直接用行内 collab_id）
     ad_id_by_url = {r["channel_url"]: r["collab_id"] for r in ad_rows
                     if r["channel_url"]}
+    # 名字 -> collab_id 列表：同名多条记录时按名字匹配有歧义，须跳过并提示
+    ad_name_ids = {}
+    for r in ad_rows:
+        ad_name_ids.setdefault(r["name"], []).append(r["collab_id"])
 
     if ad_df.empty:
         st.markdown(T.empty_hint(bih(
@@ -274,19 +302,30 @@ with tab_ad:
                 C_HOME: st.column_config.LinkColumn("홈페이지 主页", disabled=True, width="medium"),
                 C_AD_NEED: st.column_config.TextColumn("광고 필요? 需要投放?", disabled=True, width="small"),
                 C_AD_DONE: st.column_config.TextColumn("광고 완료? 已投放? (Y)", width="small"),
+                # 主键隐藏列：保存时按它回写宜搭，不依赖行号/昵称反查
+                "collab_id": st.column_config.TextColumn("collab_id", hidden=True),
             })
         c1, c2, c3 = st.columns(3)
         if c1.button("💾 변경 사항 저장 · 保存修改", type="primary",
                      use_container_width=True):
-            changes = []
+            changes, no_id = [], []
             for i in range(len(ad_edited)):
-                done = _norm(ad_edited.iloc[i][C_AD_DONE]).upper() == "Y"
+                row = ad_edited.iloc[i]
+                done = _norm(row[C_AD_DONE]).upper() == "Y"
                 was = _norm(ad_df.iloc[i][C_AD_DONE]).upper() == "Y"
                 if done != was:
-                    changes.append({"collab_id": ad_id_by_name.get(
-                        str(ad_edited.iloc[i][C_NAME]), ""), "ad_done": "Y" if done else ""})
+                    cid = _norm(row["collab_id"])
+                    if not cid:  # 缺主键的行无法回写，跳过并提示
+                        no_id.append(str(row[C_NAME]))
+                        continue
+                    changes.append({"collab_id": cid,
+                                    "ad_done": "Y" if done else ""})
+            if no_id:
+                st.warning("以下行缺少 collab_id 主键，已跳过未回写："
+                           + "、".join(no_id))
             if not changes:
-                st.info("변경 사항이 없습니다 · 没有检测到修改")
+                if not no_id:
+                    st.info("변경 사항이 없습니다 · 没有检测到修改")
             else:
                 n = store.apply_ad_results(changes)
                 st.session_state["rev_flash"] = (
@@ -294,7 +333,8 @@ with tab_ad:
                 st.rerun()
 
         if c2.download_button("⬇ Excel 다운로드 · 下载Excel",
-                              data=_df_to_bytes(ad_df),
+                              data=_df_to_bytes(ad_df.drop(columns=["collab_id"],
+                                                           errors="ignore")),
                               file_name=f"광고현황_{datetime.now():%Y%m%d}.xlsx",
                               use_container_width=True):
             pass
@@ -313,18 +353,29 @@ with tab_ad:
             if not col_name or not col_done:
                 st.error("表头不对：请上传从本站「下载Excel」得到的表格（含 网红/是否投放 列）")
                 st.stop()
-            changes, skipped = [], 0
+            changes, skipped, dup = [], 0, []
             for _, row in up_df.iterrows():
                 nm, home = _norm(row[col_name]), (_norm(row[col_home]) if col_home else "")
-                cid = ad_id_by_url.get(home) or ad_id_by_name.get(nm)
+                cid = ad_id_by_url.get(home, "")
                 if not cid:
-                    if nm:
-                        skipped += 1
-                    continue
+                    ids = ad_name_ids.get(nm, [])
+                    if len(ids) == 1:
+                        cid = ids[0]
+                    elif len(ids) > 1:
+                        dup.append(nm)  # 同名多条记录：无法确定是哪一条，跳过
+                        continue
+                    else:
+                        if nm:
+                            skipped += 1
+                        continue
                 changes.append({"collab_id": cid,
                                 "ad_done": "Y" if _norm(row[col_done]).upper() == "Y" else ""})
+            if dup:
+                st.warning("以下网红同名匹配到多条记录，无法确定回写哪一条，已跳过："
+                           + "、".join(dup[:10]))
             n = store.apply_ad_results(changes)
-            extra = f"（{skipped} 行未匹配到网红被跳过）" if skipped else ""
+            extra = (f"（{skipped} 行未匹配到网红被跳过）" if skipped else "") \
+                + (f"（{len(dup)} 行同名多记录被跳过）" if dup else "")
             st.session_state["rev_flash"] = (
                 "ok", f"✅ Excel 업로드 완료 · 上传成功，更新 {n} 条投放状态{extra}")
             st.rerun()

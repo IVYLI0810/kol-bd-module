@@ -488,8 +488,9 @@ class YTSStore:
         return {"added": added, "patched": patched, "total": len(rows)}
 
     def sync_basic_info(self, force: bool = False, progress=None) -> dict:
-        """全量同步挖掘站基础信息：粉丝量刷新为挖掘站最新值（YouTube API 抓的），
-        垂类/频道名仅空缺时补；进度类字段一律不动。"""
+        """全量同步挖掘站基础信息：粉丝量只补不盖（仅宜搭侧为空/0 时
+        才写挖掘站的值，已有粉丝量一律不动），垂类/频道名仅空缺时补；
+        进度类字段一律不动。"""
         rows = R.fetch_all_channels(force=force)
         if not rows:
             return {"matched": 0, "updated": 0, "total": 0}
@@ -510,7 +511,8 @@ class YTSStore:
             patch = {}
             new_sub = int(m.get("subscribers") or 0)
             cur_sub = int(rec.get("subscribers") or 0)
-            if new_sub > 0 and new_sub != cur_sub:
+            # 粉丝量只补不盖：仅宜搭侧为空/0 时才写挖掘站的值
+            if cur_sub <= 0 and new_sub > 0:
                 patch["subscribers"] = new_sub
             if not (rec.get("category") or "").strip() \
                     and (m.get("category") or "").strip():
@@ -597,21 +599,55 @@ class YTSStore:
         self._upd(collab_id, {"video_link": new_url.strip()})
 
     # ---------------- 视频明细子表（闭环时登记，一条视频一行） ----------------
+    def _fresh_videos(self, collab_id):
+        """写前直读宜搭，拿该记录视频子表此刻的最新值（绕过本地缓存，
+        并发合并用；读失败降级为空列表，按传入列表照常写）"""
+        try:
+            rec = self.db.get_by_channel_id(collab_id)
+        except Exception:
+            return []
+        return list((rec or {}).get("videos") or [])
+
+    @staticmethod
+    def _merge_video_rows(fresh, edited):
+        """视频子表并集合并：以 video_url 为行内唯一键，edited 版本优先；
+        fresh 里有而 edited 里没有的行原样保留（宁可复活不可丢，
+        防止两个会话整表覆写时互相抹掉对方新增的行）"""
+        edited_urls = {(v.get("video_url") or "").strip() for v in edited}
+        merged = [dict(v) for v in edited]
+        merged.extend(dict(v) for v in fresh
+                      if (v.get("video_url") or "").strip() not in edited_urls)
+        return merged
+
+    def merge_videos(self, collab_id, edited: list):
+        """fresh 重读视频子表并与 edited 并集合并，返回 (合并结果, fresh 现状)"""
+        fresh = self._fresh_videos(collab_id)
+        return self._merge_video_rows(fresh, edited), fresh
+
     def save_videos(self, collab_id, videos: list) -> None:
-        """全量覆写视频明细子表。videos 每项：
+        """覆写视频明细子表。videos 每项：
         {"video_type","video_url","product_ids","views","likes","comments",
          "clicks","ctr","orders","gmv"}
-        ⚠ 宜搭子表是整表覆写：必须传完整列表，不能只传增量行"""
-        self._upd(collab_id, {"videos": videos})
+        ⚠ 宜搭子表是整表覆写：写前先 fresh 重读宜搭现状做并集合并
+        （edited 优先，fresh 独有行保留），合并结果与现状完全一致时
+        跳过写库，避免无意义写入与并发互踩"""
+        merged, fresh = self.merge_videos(collab_id, videos)
+        if merged == fresh:
+            self._patch(collab_id, {"videos": merged})  # 仅对齐本地缓存
+            return
+        self._upd(collab_id, {"videos": merged})
 
     def update_video_row(self, collab: dict, index: int, patch: dict) -> None:
         """更新视频明细第 index 行的指标字段（分析模块一键刷新用）。
-        先读当前全量 → 改对应行 → 整表覆写回"""
+        先读当前全量 → 改对应行 → fresh 重读并集合并后写回（防并发互抹）"""
         videos = [dict(v) for v in (collab.get("videos") or [])]
         if not (0 <= index < len(videos)):
             return
         videos[index].update(patch)
-        self._upd(collab["collab_id"], {"videos": videos})
+        merged, fresh = self.merge_videos(collab["collab_id"], videos)
+        if merged == fresh:
+            return
+        self._upd(collab["collab_id"], {"videos": merged})
 
     def update_video_metrics(self, collab: dict, views: int, likes: int,
                              comments: int) -> bool:
@@ -893,7 +929,8 @@ class YTSStore:
     # ---------------- 反向操作：回退 / 取消 / 流回 / 淘汰 ----------------
     def cancel_collab(self, collab_id):
         """取消合作：退回洽谈中（清空上线月份，进度保留）"""
-        self._upd(collab_id, {"plan_month": ""}, clear_fields=["plan_month"])
+        self._upd(collab_id, {"plan_month": "", "stage": "洽谈中"},
+                  clear_fields=["plan_month"])
 
     def back_to_pool(self, collab_id):
         """流回挖掘库：退回挖掘池（清空月份+洽谈标记，保留已发邮件标记）"""

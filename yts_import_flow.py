@@ -235,19 +235,56 @@ def _fallback_id(url: str) -> str:
     return "HDL_" + slug
 
 
+def _norm_refs(*parts):
+    """把频道ID/主页链接/handle 归一成可比较的标识集合（去重用）。"""
+    refs = set()
+    for s in parts:
+        if not s:
+            continue
+        s = str(s).strip().lower()
+        if not s:
+            continue
+        s = re.sub(r"^https?://", "", s)
+        s = re.sub(r"^www\.", "", s)
+        s = s.rstrip("/")
+        s = re.sub(r"^(youtube\.com|youtu\.be)/", "", s)
+        m = re.match(r"^(?:channel/|c/|user/)?(@?[a-z0-9._-]+)$", s)
+        if m:
+            refs.add(m.group(1).lstrip("@"))
+    return refs
+
+
 def resolve_ids(rows: list, existing_by_url: dict):
-    """url -> (channel_id, resolved:bool)；已有记录复用其ID"""
+    """url -> (channel_id, resolved:bool, is_existing:bool)。
+
+    防幽灵重复记录：同一频道在库里可能以另一种链接写法存在
+    （@handle vs channel/UCxxx），按归一化标识先匹配已有记录；
+    反查得到的 UC ID 若已在库里（链接写法不同）也复用；
+    都匹配不上才用 HDL_ 别名兜底。"""
     out = {}
     todo = []
+    existing_refs = [(cid, _norm_refs(cid, url))
+                     for url, cid in existing_by_url.items()]
+    existing_cids = set(existing_by_url.values())
     for r in rows:
         url = str(r["channel_url"]).strip()
         if url in existing_by_url:
-            out[url] = (existing_by_url[url], True)
-        else:
-            todo.append(url)
+            out[url] = (existing_by_url[url], True, True)
+            continue
+        # 链接写法不同但指向同一频道：归一化匹配已有记录
+        urefs = _norm_refs(url)
+        hit = next((cid for cid, refs in existing_refs if urefs & refs), "")
+        if hit:
+            out[url] = (hit, True, True)
+            continue
+        todo.append(url)
     with ThreadPoolExecutor(max_workers=6) as ex:
         for url, cid in zip(todo, ex.map(_fetch_channel_id, todo)):
-            out[url] = (cid or _fallback_id(url), bool(cid))
+            if cid:
+                # 反查到的 UC ID 已在库里（URL 写法不同）→ 复用，不新建
+                out[url] = (cid, True, cid in existing_cids)
+            else:
+                out[url] = (_fallback_id(url), False, False)
     return out
 
 

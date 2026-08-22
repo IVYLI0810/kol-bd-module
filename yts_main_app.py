@@ -227,9 +227,9 @@ def flow_import_panel():
         preview, pend = [], []
         for raw in rows:
             url = str(raw["channel_url"]).strip()
-            cid, resolved = ids[url]
+            cid, resolved, is_existing = ids[url]
             rec = FI.derive_record(raw, cid)
-            is_new = url not in existing
+            is_new = not is_existing
             preview.append({
                 "频道名称": rec["channel_name"], "负责人": rec["recruiter"],
                 "归属月份": rec.get("plan_month", "") or "-",
@@ -284,7 +284,9 @@ def page_dig():
                     unsafe_allow_html=True)
     with h2:
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
-        if st.button("🔄 同步挖掘站", key="btn_sync_dig", use_container_width=True):
+        if st.button("🔄 同步挖掘站", key="btn_sync_dig", use_container_width=True,
+                     help="把挖掘站基础信息刷进宜搭；粉丝量仅在 YTS 为空时补齐，"
+                          "不覆盖已有值"):
             st.session_state["dig_sync_ts"] = 0
             st.session_state["dig_force"] = True
             st.rerun()
@@ -1178,7 +1180,7 @@ def _init_video_rows(cid, c):
 
 def _clear_video_row_widgets(cid):
     """清空视频登记行的所有控件状态（删除/新增行后调用，防止控件值错位串数据）"""
-    for prefix in ("vurl_", "vtype_", "vprod_"):
+    for prefix in ("vurl_", "vtype_", "vprods_", "vprod_"):
         for k in [x for x in st.session_state.keys()
                   if str(x).startswith(f"{prefix}{cid}")]:
             del st.session_state[k]
@@ -1452,6 +1454,14 @@ def _refresh_videos_granular(closed_recs, force=False):
             new_videos.append(nv)
         if changed:
             try:
+                # 并发合并（宜搭版 store）：fresh 重读子表做并集合并，
+                # 合并结果与宜搭现状完全相同则跳过写库，避免无意义写入
+                if getattr(store, "merge_videos", None):
+                    merged, fresh = store.merge_videos(r["collab_id"], new_videos)
+                    if merged == fresh:
+                        r["videos"] = fresh  # 宜搭侧已是最新：仅同步页面快照
+                        continue
+                    new_videos = merged
                 store.save_videos(r["collab_id"], new_videos)
                 r["videos"] = new_videos  # 页面快照同步，避免缓存延迟
                 updated += 1

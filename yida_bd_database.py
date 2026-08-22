@@ -494,6 +494,15 @@ class YidaBDDB:
 
     # ------------------------- YTS 流程：审核流 -------------------------
 
+    @staticmethod
+    def _audit_key(row: dict):
+        """审核记录去重三元组：(日期, 结论, 意见)。
+        ⚠ 宜搭审核子表没有「操作人」字段，第三元以审核意见补位：
+        同天同结论同意见视为同一条，避免并发场景重复追加"""
+        return (str(row.get("audit_date") or ""),
+                str(row.get("audit_result") or ""),
+                str(row.get("audit_opinion") or ""))
+
     def add_audit(self, channel_id: str, result: str, opinion: str,
                   audit_date: str = "", extra_fields: dict = None) -> bool:
         """追加一条审核记录到子表，并同步更新「审核状态」主字段
@@ -502,19 +511,27 @@ class YidaBDDB:
         opinion: 审核意见
         audit_date: 审核时间（YYYY-MM-DD HH:MM 或 YYYY-MM-DD），默认取当前时刻（精确到分钟）
         extra_fields: 需要一并写入的其他字段（如 {"stage": "修改中"}），省一次 HTTP
+
+        并发防护：写回前**重新**读取该实例最新的 audit_log（fresh），
+        合并 = fresh 列表 + 新条目中按三元组不在 fresh 里的条目，
+        再整体写回 —— 两个会话同时审核不会互相覆盖丢记录
         """
         from datetime import datetime as _dt
         rec = self.get_by_channel_id(channel_id)
         if not rec:
             return False
-        audit_log = list(rec.get("audit_log") or [])
-        audit_log.append({
+        new_entry = {
             "audit_date": audit_date or _dt.now().strftime("%Y-%m-%d %H:%M"),
             "audit_result": result,
             "audit_opinion": opinion,
-        })
+        }
+        # 写前 fresh 重读：拿宜搭侧此刻最新的子表（而非早些时候的快照）
+        fresh = self.get_audit_log(channel_id)
+        known = {self._audit_key(x) for x in fresh}
+        merged = list(fresh) + [e for e in (new_entry,)
+                                if self._audit_key(e) not in known]
         # 一次 HTTP 同时写子表+主状态(+附加字段)
-        updates = {"audit_log": audit_log, "audit_status": result}
+        updates = {"audit_log": merged, "audit_status": result}
         if extra_fields:
             updates.update(extra_fields)
         self.update(channel_id, updates)
