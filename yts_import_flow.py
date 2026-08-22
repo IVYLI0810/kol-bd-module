@@ -82,6 +82,12 @@ def build_template_bytes(roster=None) -> bytes:
             dv.error = "请从下拉里选名字；新成员先在挖掘站登记，再重新下载模板"
             ws.add_data_validation(dv)
             dv.add("C2:C500")
+    # 拍摄状态列（O列）下拉：只认 拍摄中/已完成，留空=还没到拍摄
+    dv2 = DataValidation(type="list", formula1='"拍摄中,已完成"', allow_blank=True)
+    dv2.errorTitle = "拍摄状态写法不对"
+    dv2.error = "请从下拉里选「拍摄中」或「已完成」；还没拍到就留空"
+    ws.add_data_validation(dv2)
+    dv2.add("O2:O500")
     ws2 = wb.create_sheet("填写说明")
     for line in [
         "带*为必填；Y/N 列填 Y 或留空；归属月份形如 2026-09 或 9月。",
@@ -94,6 +100,11 @@ def build_template_bytes(roster=None) -> bytes:
         "不再出现在履约中；记得把播放/点赞/评论/点击/成交/GMV 补满。",
         "负责人列带下拉（名单与挖掘站实时同步）；新成员请先到挖掘站登记，"
         "再重新下载模板。手写名字也可以，导入时会自动模糊匹配到名单。",
+        "「拍摄状态」列带下拉：只有「拍摄中 / 已完成」两种，还没拍到就留空。"
+        "团队进度表里的其他写法（拍摄完成、待上传等）导入时会自动翻译，"
+        "翻译不了的先按「拍摄中」导入并在预览里提醒你核对。",
+        "填了拍摄状态的行不用怕漏填「已下单/已收货」：能拍到视频说明货早收了，"
+        "导入时会自动把下单收货补齐，详情页不会出现「先完成收货」的锁。",
         "团队现有进度表也可直接上传，能识别的列（频道名称/频道链接/负责人/"
         "归属月份/视频上传时间/核心类目等）会自动映射。",
     ]:
@@ -106,6 +117,30 @@ def build_template_bytes(roster=None) -> bytes:
 # ---------------------------------------------------------------------------
 def yn(v) -> bool:
     return str(v or "").strip().lower() in ("y", "yes", "是", "1", "true", "✅")
+
+
+# 系统只认两种拍摄状态：拍摄中 / 已完成。
+# 团队进度表里常见写法的对照（含「待上传」这类=拍摄已完成、等传视频）
+_SHOOT_DONE = ("已完成", "完成", "拍摄完成", "拍完", "待上传", "已上传",
+               "已发布", "done", "y", "yes", "✅")
+_SHOOT_DOING = ("拍摄中", "进行中", "拍摄", "재촬영", "촬영중", "촬영 중")
+
+
+def norm_shoot(v):
+    """拍摄状态归一化。返回 (状态, 是否识别)；空值返回 ("", True)。
+    识别不了的写法兜底为「拍摄中」（保证拍摄节点可操作、不卡流程），
+    并由调用方在导入预览里提示人工核对。"""
+    s = str(v or "").strip()
+    if not s:
+        return "", True
+    sl = s.lower()
+    if sl in _SHOOT_DONE:
+        return "已完成", True
+    if sl in _SHOOT_DOING:
+        return "拍摄中", True
+    if any(k in s for k in ("完成", "上传", "发布")):
+        return "已完成", False
+    return "拍摄中", False
 
 
 def norm_month(v) -> str:
@@ -322,8 +357,20 @@ def derive_record(raw: dict, channel_id: str) -> dict:
         rec["order_status"] = "已下单"
     if yn(raw.get("received")):
         rec["order_status"] = "已收货"
-    if raw.get("shoot_status"):
-        rec["shoot_status"] = str(raw["shoot_status"]).strip()
+    # 拍摄状态：归一成系统认识的「拍摄中/已完成」，进度表写法自动对照；
+    # 识别不了的兜底「拍摄中」并把原值记在 _shoot_raw，由导入预览提示核对。
+    # 填了视频链接/审核结果但拍摄状态空着 → 有视频必然拍完了，推导为已完成。
+    shoot, shoot_ok = norm_shoot(raw.get("shoot_status"))
+    if not shoot and (rec.get("video_link") or raw.get("audit")):
+        shoot = "已完成"
+    if shoot:
+        rec["shoot_status"] = shoot
+        # 都拍到视频/传了链接了，下单收货必然完成 → 回填，
+        # 否则详情页拍摄区会被「先完成收货」锁住（存量进度表常缺这两列）
+        if rec.get("order_status") != "已收货":
+            rec["order_status"] = "已收货"
+        if not shoot_ok:
+            rec["_shoot_raw"] = str(raw.get("shoot_status")).strip()
     dl = norm_date(raw.get("submit_deadline"))
     if dl:
         rec["submit_deadline"] = dl

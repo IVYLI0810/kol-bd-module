@@ -229,13 +229,25 @@ def flow_import_panel():
             url = str(raw["channel_url"]).strip()
             cid, resolved, is_existing = ids[url]
             rec = FI.derive_record(raw, cid)
+            # 归一化时没认出的拍摄状态原值：提示人工核对（不能带进库）
+            raw_ss = rec.pop("_shoot_raw", "")
+            if raw_ss:
+                st.warning(f"「{rec['channel_name']}」的拍摄状态「{raw_ss}」不是系统写法，"
+                           f"已按「{rec.get('shoot_status') or '-'}」导入，"
+                           "导入后请到详情页拍摄节点核对")
             is_new = not is_existing
+            if rec.get("stage") == "已完成":
+                prog = "已闭环 → 分析模块"
+            elif rec.get("shoot_status") == "已完成":
+                prog = "履约中 · 拍摄已完成"
+            elif rec.get("shoot_status") == "拍摄中":
+                prog = "履约中 · 拍摄中"
+            else:
+                prog = rec.get("stage") or "挖掘池"
             preview.append({
                 "频道名称": rec["channel_name"], "负责人": rec["recruiter"],
                 "归属月份": rec.get("plan_month", "") or "-",
-                "导入后进度": "已闭环 → 分析模块"
-                if rec.get("stage") == "已完成"
-                else (rec.get("stage") or "挖掘池"),
+                "导入后进度": prog,
                 "新增/更新": "新增" if is_new else "更新",
                 "频道ID": cid if resolved else f"{cid}（待反查）",
             })
