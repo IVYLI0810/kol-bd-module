@@ -152,6 +152,10 @@ with tab_rev:
     edited = st.data_editor(
         orig_df, key="rev_grid", hide_index=True, use_container_width=True,
         height=min(560, 80 + 38 * (len(orig_df) + 1)),
+        # 主键列不显示：column_order 未列出的列自动隐藏（新版 streamlit 已删 hidden 参数，
+        # 旧版也支持 column_order），保存时仍按行内 collab_id 回写宜搭，不依赖行号反查
+        column_order=[C_STATUS, C_NAME, C_HOME, C_VIDEO,
+                      C_SUBMIT, C_AUDIT, C_PASS, C_REASON],
         column_config={
             C_STATUS: st.column_config.TextColumn("상태 状态", disabled=True, width="small"),
             C_NAME: st.column_config.TextColumn("크리에이터 网红", disabled=True, width="medium"),
@@ -161,8 +165,6 @@ with tab_rev:
             C_AUDIT: st.column_config.TextColumn("심사 시각 审核时间", disabled=True, width="medium"),
             C_PASS: st.column_config.TextColumn("통과? 通过? (Y/N)", width="small"),
             C_REASON: st.column_config.TextColumn("반려 사유 驳回原因", width="large"),
-            # 主键隐藏列：保存时按它回写宜搭，不依赖行号/昵称反查
-            "collab_id": st.column_config.TextColumn("collab_id", hidden=True),
         })
 
     b1, b2, b3 = st.columns(3)
@@ -297,13 +299,13 @@ with tab_ad:
         ad_edited = st.data_editor(
             ad_df, key="ad_grid", hide_index=True, use_container_width=True,
             height=min(560, 80 + 38 * (len(ad_df) + 1)),
+            # 主键列不显示（新版 streamlit 已删 hidden 参数，column_order 新旧通用）
+            column_order=[C_NAME, C_HOME, C_AD_NEED, C_AD_DONE],
             column_config={
                 C_NAME: st.column_config.TextColumn("크리에이터 网红", disabled=True, width="medium"),
                 C_HOME: st.column_config.LinkColumn("홈페이지 主页", disabled=True, width="medium"),
                 C_AD_NEED: st.column_config.TextColumn("광고 필요? 需要投放?", disabled=True, width="small"),
                 C_AD_DONE: st.column_config.TextColumn("광고 완료? 已投放? (Y)", width="small"),
-                # 主键隐藏列：保存时按它回写宜搭，不依赖行号/昵称反查
-                "collab_id": st.column_config.TextColumn("collab_id", hidden=True),
             })
         c1, c2, c3 = st.columns(3)
         if c1.button("💾 변경 사항 저장 · 保存修改", type="primary",

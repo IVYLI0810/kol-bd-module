@@ -587,6 +587,12 @@ class YTSStore:
                 r = self.db.get_by_channel_id(collab_id)
                 if r:
                     self._cache["one:" + collab_id] = (time.time(), r)
+                    # 全量缓存里同一行也就地补丁，否则列表/看板仍显示旧状态
+                    for row in self._cache.get("all", (0, []))[1]:
+                        if row.get("channel_id") == collab_id:
+                            row.clear()
+                            row.update(r)
+                            break
                     return self._to_collab(r)
             except Exception:
                 pass  # 直查失败降级走缓存

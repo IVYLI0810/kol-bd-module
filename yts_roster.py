@@ -8,6 +8,7 @@ YTS - 团队成员名单（唯一数据源 = 挖掘站 Supabase members 表）
 """
 import difflib
 import time
+from datetime import datetime
 
 import requests
 
@@ -138,10 +139,15 @@ def fetch_statuses(force: bool = False) -> dict:
 
 
 def mark_introduced(channel_id: str) -> bool:
-    """回写挖掘站：把指定网红标记为「已引入」"""
+    """回写挖掘站：把指定网红标记为「已引入」。
+    同时补齐状态变更时间和引入日期（与挖掘站自身改状态的字段口径一致，
+    避免 YTS 标完后挖掘站只有状态、没有时间）"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
     r = requests.patch(f"{SUPABASE_URL}/rest/v1/influencers",
                        params={"channel_id": f"eq.{channel_id}"},
-                       json={"status": "已引入"},
+                       json={"status": "已引入",
+                             "status_date": now,
+                             "introduced_date": now},
                        headers={"apikey": SUPABASE_KEY,
                                 "Authorization": f"Bearer {SUPABASE_KEY}",
                                 "Content-Type": "application/json",
