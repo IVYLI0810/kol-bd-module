@@ -852,6 +852,13 @@ def _render_danger_zone(cid, c, sel, steps):
                 f"确认回退「{label}」？该步骤将回到未完成",
                 lambda: (store.undo_step(cid, sel), st.toast(f"已回退「{label}」"),
                          st.rerun()))
+        elif sel == 4 and state == "doing" \
+                and (c.get("shoot_status") or "") == "拍摄中":
+            _confirm_btn(
+                "undo4", "↩ 回退「拍摄中」",
+                "确认回退「拍摄中」？回到收货·待拍摄",
+                lambda: (store.undo_step(cid, 4),
+                         st.toast("已回退：拍摄中 → 收货（待拍摄）"), st.rerun()))
         else:
             st.caption(f"当前步骤「{label}」未完成，无需回退")
         st.divider()
@@ -1070,6 +1077,14 @@ def _render_actions(cid, c, step):
                              disabled=c["shoot_status"] == "已完成"):
                     store.mark_shoot(cid, "已完成")
                     st.rerun()
+                if c["shoot_status"] == "拍摄中":
+                    st.markdown("")
+                    _confirm_btn(
+                        "undo_shoot", "↩ 回退到收货（撤销拍摄中）",
+                        "确认撤销「拍摄中」？回到收货·待拍摄",
+                        lambda: (store.undo_step(cid, 4),
+                                 st.toast("已回退：拍摄中 → 收货（待拍摄）"),
+                                 st.rerun()))
 
     elif step == 5:
         with st.container():
