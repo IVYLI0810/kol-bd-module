@@ -27,3 +27,7 @@ Thumbs.db
 *.bak
 *.log
 *.png
+
+# Local test data & credentials
+yts_demo_data.json
+yida_config_local.py

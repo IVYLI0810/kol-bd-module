@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
@@ -375,8 +376,22 @@ def page_dig():
                     unsafe_allow_html=True)
     else:
         trows = []
-        mark_actions = []  # [(inf_id, "mail"/"neg")]，与 #mark= 链接同序
+        mark_actions = []  # [(inf_id, act)]，与 #mark= 链接同序
         for p in rows[(cur - 1) * PAGE: cur * PAGE]:
+            # 昵称 → 可点进 YouTube 主页
+            url = (p.get("url") or "").strip()
+            pid = (p.get("id") or "").strip()
+            if not url and pid.startswith("UC"):
+                url = f"https://www.youtube.com/channel/{pid}"
+            elif not url and pid.startswith("@"):
+                url = f"https://www.youtube.com/{pid}"
+            if url:
+                name_cell = (f'<a class="nl" title="打开YouTube主页" '
+                             f'data-nav="#open={quote(url, safe="")}">'
+                             f'{esc(p.get("name") or pid)}</a>')
+            else:
+                name_cell = f'<b>{esc(p.get("name") or pid)}</b>'
+
             if not p.get("emailed"):
                 st_cell = (f'<a class="act act-y" data-nav="#mark={len(mark_actions)}">'
                            f'标记已发邮件</a>')
@@ -385,12 +400,18 @@ def page_dig():
                 st_cell = (f'<a class="act act-b" data-nav="#mark={len(mark_actions)}">'
                            f'标记洽谈中</a>')
                 mark_actions.append((p["id"], "neg"))
+                st_cell += (f' <a class="act act-u" title="取消「已发邮件」标记" '
+                            f'data-nav="#mark={len(mark_actions)}">↩ 取消</a>')
+                mark_actions.append((p["id"], "unmail"))
             elif p.get("stage") == "洽谈中":
                 st_cell = T.badge("洽谈中")
+                st_cell += (f' <a class="act act-u" title="取消「洽谈中」，退回已发邮件" '
+                            f'data-nav="#mark={len(mark_actions)}">↩ 取消</a>')
+                mark_actions.append((p["id"], "unneg"))
             else:
                 st_cell = T.badge("已流入活动")
             trows.append([
-                f'<b>{esc(p.get("name") or p.get("id"))}</b>',
+                name_cell,
                 esc(p.get("category") or "-"),
                 f'<span class="num">{p.get("followers", 0):,}</span>',
                 esc(p.get("recruiter") or "-"),
@@ -407,9 +428,15 @@ def page_dig():
             if act == "mail":
                 store.mark_emailed(iid)
                 st.toast("已标记「已发邮件」，待标记「洽谈中」后流入活动")
-            else:
+            elif act == "neg":
                 store.mark_negotiating(iid)
                 st.toast("已标记「洽谈中」，网红已流入活动模块")
+            elif act == "unmail":
+                store.unmark_emailed(iid)
+                st.toast("已取消「已发邮件」标记，回到未触达状态")
+            elif act == "unneg":
+                store.unmark_negotiating(iid)
+                st.toast("已取消「洽谈中」，退回已发邮件状态")
 
         for i, (iid, act) in enumerate(mark_actions):
             st.button(f"mark{i}", key=f"digmark{i}",

@@ -359,6 +359,7 @@ class YTSStore:
             out.append({
                 "id": r.get("channel_id"),
                 "name": r.get("channel_name") or r.get("channel_id"),
+                "url": r.get("channel_url") or "",
                 "platform": "YouTube",
                 "followers": r.get("subscribers") or 0,
                 "category": r.get("category") or "",
@@ -385,6 +386,16 @@ class YTSStore:
     def mark_negotiating(self, inf_id):
         """标记洽谈中 → 流入活动模块洽谈栏（_upd 快路径）"""
         self._upd(inf_id, {"stage": "洽谈中"})
+
+    def unmark_emailed(self, inf_id):
+        """取消「已发邮件」标记 → 回到未触达状态。
+        注意：_to_form_data 跳过空值，清空必须走 clear_fields。"""
+        self._upd(inf_id, {}, clear_fields=["email_status", "stage"])
+
+    def unmark_negotiating(self, inf_id):
+        """取消「洽谈中」→ 退回已发邮件状态（保留已发邮件标记，
+        仅当还未流入活动月份时允许，UI 侧控制）"""
+        self._upd(inf_id, {"stage": "已发邮件"})
 
     def sync_yt_subscribers(self, ids: list) -> int:
         """补频道粉丝数：对给定记录逐个抓 YouTube 主页数据（缓存7天），

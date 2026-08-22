@@ -97,6 +97,10 @@ a.act-y, .act-y {background: #fdf3d3; color: #a07a00;}
 a.act-y:hover, .act-y:hover {background: #fae9b3;}
 a.act-b, .act-b {background: #ddebfb; color: #2b6cb0;}
 a.act-b:hover, .act-b:hover {background: #c8def5;}
+a.nl {color: inherit; text-decoration: none; font-weight: 700;}
+a.nl:hover {color: #0a84ff; text-decoration: underline;}
+a.act-u, .act-u {background: #f0f0f2; color: #86868b;}
+a.act-u:hover, .act-u:hover {background: #e4e4e7; color: #555555;}
 
 /* ---------- 流程图（单块渲染，横向） ---------- */
 .yts-steps {display: flex; margin: 10px 0 20px 0;}
@@ -431,6 +435,16 @@ document.addEventListener('click', function (e) {
         var cnt = document.querySelectorAll('[data-nav^="#mark="]').length;
         var mb = followingButtons(window.frameElement, cnt);
         if (mb[mi]) mb[mi].click();
+        return;
+    }
+    if (nav.indexOf('#open=') === 0) {
+        // 外链（网红YouTube主页等）：sandbox iframe 自己开不了新标签，
+        // 向父页面注入脚本用顶层上下文 window.open
+        var ou = decodeURIComponent(nav.slice(6));
+        var d0 = window.parent.document;
+        var s0 = d0.createElement('script');
+        s0.textContent = 'window.open(' + JSON.stringify(ou) + ', "_blank");';
+        d0.body.appendChild(s0);
         return;
     }
     // 普通跳转（卡片等）：sandbox iframe 无 allow-top-navigation，

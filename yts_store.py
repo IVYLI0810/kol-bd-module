@@ -300,6 +300,22 @@ class YTSStore:
                                                     follow_time=_now()))
         self._modify(fn)
 
+    def unmark_emailed(self, inf_id):
+        """取消「已发邮件」标记 → 回到未触达（demo 本地版）"""
+        def fn(data):
+            for inf in data["pool"]:
+                if inf["id"] == inf_id:
+                    inf["emailed"] = False
+        self._modify(fn)
+
+    def unmark_negotiating(self, inf_id):
+        """取消「洽谈中」→ 退回已发邮件（demo 本地版：删洽谈 collab）"""
+        def fn(data):
+            data["collabs"] = [c for c in data["collabs"]
+                               if not (c["influencer_id"] == inf_id
+                                       and c["status"] == "洽谈中")]
+        self._modify(fn)
+
     def sync_yt_subscribers(self, ids: list) -> int:
         """补频道粉丝数（demo 本地版）：抓 YouTube 主页数据写回挖掘池"""
         import yts_yt_stats as YT
