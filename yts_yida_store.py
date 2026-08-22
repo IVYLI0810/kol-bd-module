@@ -445,7 +445,8 @@ class YTSStore:
         """挖掘站「已发邮件」自动同步进挖掘池。
 
         新增：补基础信息并标记已发邮件；
-        已存在：补空标记 + 补空基础信息（粉丝数/垂类），已有进度一律不动。
+        已存在：补空标记 + 粉丝量以挖掘站最新值覆盖、垂类/邮箱仅空缺时补，
+        已有进度一律不动。
         """
         rows = R.fetch_emailed_channels(force=force)
         existing = {r.get("channel_id"): r for r in self._all()}
@@ -474,10 +475,10 @@ class YTSStore:
                     patch["email_status"] = "已发送"
                     if not cur.get("stage"):
                         patch["stage"] = "已发邮件"
-                # 旧记录基础信息空缺时，用挖掘站数据补（已有值一律不动）
+                # 旧记录基础信息：粉丝量以挖掘站最新值覆盖，垂类/邮箱仅空缺时补
                 cur_sub = int(cur.get("subscribers") or 0)
                 new_sub = int(x.get("subscribers") or 0)
-                if cur_sub <= 0 < new_sub:
+                if new_sub > 0 and new_sub != cur_sub:
                     patch["subscribers"] = new_sub
                 if not (cur.get("category") or "").strip() \
                         and (x.get("category") or "").strip():
@@ -493,9 +494,9 @@ class YTSStore:
 
     def sync_basic_info(self, force: bool = False, progress=None,
                         limit: int = 0) -> dict:
-        """全量同步挖掘站基础信息：粉丝量只补不盖（仅宜搭侧为空/0 时
-        才写挖掘站的值，已有粉丝量一律不动），垂类/频道名/邮箱仅空缺时补；
-        进度类字段一律不动。
+        """全量同步挖掘站基础信息：粉丝量以挖掘站最新值覆盖更新
+        （挖掘站>0 且与宜搭不同就写，保持新鲜）；垂类/频道名/邮箱
+        属人工维护字段，仅空缺时补，已有值一律不动；进度类字段一律不动。
         limit>0 时本轮最多写 limit 条（自动同步限速；按钮全量传 0）。"""
         rows = R.fetch_all_channels(force=force)
         if not rows:
@@ -517,8 +518,8 @@ class YTSStore:
             patch = {}
             new_sub = int(m.get("subscribers") or 0)
             cur_sub = int(rec.get("subscribers") or 0)
-            # 粉丝量只补不盖：仅宜搭侧为空/0 时才写挖掘站的值
-            if cur_sub <= 0 and new_sub > 0:
+            # 粉丝量覆盖更新：挖掘站有新值且与宜搭不同就写（客观数据保持新鲜）
+            if new_sub > 0 and new_sub != cur_sub:
                 patch["subscribers"] = new_sub
             if not (rec.get("category") or "").strip() \
                     and (m.get("category") or "").strip():
