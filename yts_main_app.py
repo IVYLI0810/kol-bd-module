@@ -285,7 +285,7 @@ def page_dig():
     with h2:
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
         if st.button("🔄 同步挖掘站", key="btn_sync_dig", use_container_width=True,
-                     help="把挖掘站基础信息刷进宜搭；粉丝量仅在 YTS 为空时补齐，"
+                     help="把挖掘站基础信息刷进宜搭；粉丝量/邮箱仅在 YTS 为空时补齐，"
                           "不覆盖已有值"):
             st.session_state["dig_sync_ts"] = 0
             st.session_state["dig_force"] = True
@@ -315,17 +315,20 @@ def page_dig():
             res = store.sync_from_discovery(force=force)
             back = store.push_back_introduced(force=force) \
                 if getattr(store, "push_back_introduced", None) else 0
-            basic = store.sync_basic_info(force=force, progress=_cb) \
-                if force and getattr(store, "sync_basic_info", None) \
-                else {"updated": 0}
+            basic = store.sync_basic_info(force=force, progress=_cb,
+                                          limit=0 if force else 30) \
+                if getattr(store, "sync_basic_info", None) \
+                else {"updated": 0, "emails_filled": 0}
         if bar:
             bar.empty()
         st.session_state["dig_sync_ts"] = time.time()
         if res["added"] or res["patched"] or back or basic["updated"]:
             st.toast(f"已同步挖掘站：新增 {res['added']} 位、补信息 {res['patched']} 位"
                      f"、回流已引入 {back} 位"
-                     + (f"、粉丝量等基础信息同步 {basic['updated']} 位"
-                        if basic["updated"] else ""))
+                     + (f"、基础信息同步 {basic['updated']} 位"
+                        if basic["updated"] else "")
+                     + (f"（其中补邮箱 {basic['emails_filled']} 位）"
+                        if basic.get("emails_filled") else ""))
     pool = store.list_pool()
 
     c1, c2, c3, c4, c5, c6 = st.columns([2.2, 1.1, 1.1, 1.9, 1.1, 1.1])
