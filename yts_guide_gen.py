@@ -8,6 +8,8 @@ YTS Guide 生成模块
 - 组装完整 guide（原版 + AI 章节），支持导出 Word（python-docx）
 
 Key 读取顺序：环境变量/Secrets DASHSCOPE_API_KEY -> 本地 dashscope_key_local.py（不入库）
+模型名可用 DASHSCOPE_MODEL 覆盖（默认 qwen-plus）；接口地址可用 DASHSCOPE_URL
+覆盖（任何 OpenAI 兼容服务都行）。三者都在 Streamlit Cloud Secrets 改，不用动代码。
 """
 import io
 import os
@@ -18,7 +20,13 @@ import requests
 DASHSCOPE_URL = os.environ.get(
     "DASHSCOPE_URL",
     "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
-MODEL = "qwen-plus"
+DEFAULT_MODEL = "qwen-plus"
+
+
+def get_model() -> str:
+    """模型名：Secrets/环境变量 DASHSCOPE_MODEL 优先，未设置用 qwen-plus。
+    调用时读取，Secrets 改完重启即生效。"""
+    return os.environ.get("DASHSCOPE_MODEL", "").strip() or DEFAULT_MODEL
 
 # ---------------------------------------------------------------------------
 # 原版 가이드（韩文，忠实于 Word 原件）
@@ -133,7 +141,7 @@ def call_dashscope(messages: list, timeout: int = 120) -> str:
         DASHSCOPE_URL,
         headers={"Authorization": f"Bearer {key}",
                  "Content-Type": "application/json"},
-        json={"model": MODEL, "messages": messages, "temperature": 0.8},
+        json={"model": get_model(), "messages": messages, "temperature": 0.8},
         timeout=timeout,
     )
     if resp.status_code != 200:
