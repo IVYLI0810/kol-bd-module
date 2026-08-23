@@ -10,7 +10,26 @@
 """
 import csv
 import io
+import os
 import re
+
+# ---------------------------------------------------------------------------
+# 汇率：网红报价存韩币，商品报表销售额是美金。
+# CPM 等成本指标统一换算成美金口径（汇率可配，默认1538韩币/美金）。
+# ---------------------------------------------------------------------------
+def usd_rate() -> float:
+    try:
+        v = float(os.environ.get("USD_RATE", "") or 1538)
+        return v if v > 0 else 1538
+    except ValueError:
+        return 1538
+
+
+def krw_to_usd(krw) -> float:
+    try:
+        return float(krw) / usd_rate()
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _norm_pid(s: str) -> str:
@@ -99,9 +118,10 @@ def build_product_rows(csv_data: dict, product_list: list) -> list:
 
 def allocate_to_videos(videos: list, product_rows: list, price: float) -> list:
     """均摊方案B：把每个商品的销售额/订单按「挂它的视频数」平分到各视频，
-    并按 报价÷播放量×1000 计算各视频 CPM。返回更新后的 videos 列表。
+    并按 报价(美金)÷播放量×1000 计算各视频 CPM。返回更新后的 videos 列表。
 
     videos 每项含 product_ids（逗号分隔的ID或链接）。
+    price: 网红报价（韩币），内部自动换算美金（销售额是美金，成本口径统一）。
     """
     prods_by_id = {r["pid"]: r for r in product_rows}
     # 统计每个商品被几个视频挂（用于均摊分母）
@@ -125,10 +145,11 @@ def allocate_to_videos(videos: list, product_rows: list, price: float) -> list:
         if gmv or orders:
             v["gmv"] = round(gmv, 2)
             v["orders"] = round(orders, 2)
-        # CPM：报价÷播放量×1000（播放为0跳过）
+        # CPM：报价(韩币→美金)÷播放量×1000（播放为0跳过）
         views = _f(v.get("views"))
-        if price and views:
-            v["cpm"] = round(price / views * 1000, 2)
+        price_usd = krw_to_usd(price)
+        if price_usd and views:
+            v["cpm"] = round(price_usd / views * 1000, 2)
         updated.append(v)
     return updated
 
