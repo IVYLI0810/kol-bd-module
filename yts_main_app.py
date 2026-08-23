@@ -240,6 +240,16 @@ def flow_import_panel():
             if auto_m:
                 st.warning(f"「{rec['channel_name']}」没填归属月份，已按进度自动补为"
                            f"「{auto_m}」以便流入履约；月份不对可到履约详情里改")
+            # 一个单元格多条链接 → 已拆成多条视频行
+            split_n = rec.pop("_split_n", 0)
+            if split_n:
+                st.info(f"「{rec['channel_name']}」填了 {split_n} 条视频链接，"
+                        f"已自动拆为 {split_n} 条视频行（播放等指标先挂首链接）")
+            # 标了已闭环但没填链接 → 先按未闭环导入
+            if rec.pop("_closed_no_link", False):
+                st.warning(f"「{rec['channel_name']}」标了已闭环但没填视频链接："
+                           "闭环必须以视频链接为准，本行先按未闭环导入，"
+                           "请到详情页登记发布视频后再闭环")
             is_new = not is_existing
             if rec.get("stage") == "已完成":
                 prog = "已闭环 → 分析模块"
@@ -830,8 +840,10 @@ def page_detail(collab_id):
         ("收货", _flow_state(c["received"], c["order_done"] and not c["received"])),
         ("拍摄", _flow_state(c["shoot_status"] == "已完成",
                              c["received"] and c["shoot_status"] != "已完成")),
-        ("提交审核", _flow_state(bool(c["video_url"]),
-                                 c["shoot_status"] == "已完成" and not c["video_url"])),
+        ("提交审核", _flow_state(
+            bool(c["video_url"]) or rs in ("已通过", "复审通过"),
+            c["shoot_status"] == "已完成" and not c["video_url"]
+            and rs not in ("已通过", "复审通过"))),
         ("审核", _flow_state(rs in ("已通过", "复审通过"), bool(c["video_url"]))),
         ("闭环", _flow_state(c["is_closed"],
                              rs in ("已通过", "复审通过") and not c["is_closed"])),
@@ -1170,13 +1182,16 @@ def _render_actions(cid, c, step):
             if c["shoot_status"] != "已完成":
                 st.markdown(T.empty_hint("拍摄完成后，在此录入未公开视频链接推送到审核站"),
                             unsafe_allow_html=True)
-            elif not c["video_url"]:
+            elif not c["video_url"] and rs not in ("已通过", "复审通过"):
                 url = st.text_input("未公开视频链接", key="vurl")
                 if st.button("📨 提交审核", key="sr", type="primary") and url.strip():
                     ok, msg = store.submit_review(cid, url.strip())
                     flash("ok" if ok else "warn",
                           "已推送至审核站，状态：待审核 · " + msg)
                     st.rerun()
+            elif not c["video_url"]:
+                st.caption("审核已通过，无需补填送审链接；"
+                           "正式发布链接在「闭环」节点登记即可")
             else:
                 st.markdown(f'初审链接：<a class="yts-link" href="{esc(c["video_url"])}" '
                             f'target="_blank">{esc(c["video_url"])}</a>　'
@@ -1197,7 +1212,7 @@ def _render_actions(cid, c, step):
         with st.container():
             st.markdown(T.ycard_open(), unsafe_allow_html=True)
             st.markdown(T.sub("审核"), unsafe_allow_html=True)
-            if not c["video_url"]:
+            if not c["video_url"] and rs not in ("已通过", "复审通过"):
                 st.markdown(T.empty_hint("尚未提交审核，先在「提交审核」节点录入视频链接"),
                             unsafe_allow_html=True)
             elif rs == "待审核":
@@ -1820,8 +1835,8 @@ def page_analysis():
             tag = ' <span class="closed-tag">已闭环</span>' if r.get("is_closed") else ""
             if v is not None:
                 # 视频级行（子表数据）
-                vt = v.get("video_type") or "-"
-                vt_badge = T.badge("Shorts" if vt == "Shorts" else "长视频")
+                vt = v.get("video_type") or ""
+                vt_badge = T.badge(vt if vt not in ("", "自动识别") else "长视频")
                 url = v.get("video_url") or ""
                 pids = [p for p in str(v.get("product_ids") or "").split(",")
                         if p.strip()]

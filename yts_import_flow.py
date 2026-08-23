@@ -96,6 +96,13 @@ def build_template_bytes(roster=None) -> bytes:
         "两种视频链接别填混：「上传视频链接」= 正式发布链接，已闭环的填正式上线的"
         "YouTube 链接（闭环以它为准）；还在审核中的先填当前审核链接，审核通过后"
         "在网页闭环节点改填正式链接即可。驳回后重新审核的链接另填「复审链接」。",
+        "一个网红发了多条视频（YouTube+TikTok+Instagram 等）：「上传视频链接」"
+        "单元格里一行填一条，导入会自动拆成多条视频行；播放/点赞/GMV 先挂在"
+        "第一条链接上，其余视频的数据靠一键刷新各自抓取。",
+        "「已闭环(Y/N)」填 Y 必须同时有视频链接：没填链接的行会先按未闭环导入，"
+        "预览里提醒，到详情页登记视频后再闭环。",
+        "「审核结果」填了已通过 = 审核已完成，不用再补审核链接；闭环时直接登记"
+        "正式发布链接即可。",
         "「已闭环(Y/N)」填 Y：该网红直接进 📊 分析模块追踪数据，"
         "不再出现在履约中；记得把播放/点赞/评论/点击/成交/GMV 补满。",
         "负责人列带下拉（名单与挖掘站实时同步）；新成员请先到挖掘站登记，"
@@ -191,6 +198,26 @@ def _num(v):
         return int(f) if f == int(f) else f
     except (TypeError, ValueError):
         return None
+
+
+def _split_links(v):
+    """一个单元格填了多条链接（换行/逗号/分号分隔）→ 拆成链接列表。
+    数据是视频维度：一条视频一行。"""
+    s = str(v or "").strip()
+    if not s:
+        return []
+    return [u for u in re.split(r"[\s,，;；]+", s)
+            if u.startswith(("http", "www."))]
+
+
+def _guess_type(url):
+    """按链接形态猜视频类型（导入不联网，闭环登记时可再改）"""
+    u = (url or "").lower()
+    if "/shorts/" in u:
+        return "Shorts"
+    if any(d in u for d in ("tiktok.com", "instagram.com", "bilibili.com")):
+        return "其他平台"
+    return "长视频"
 
 
 def _match_header(cell) -> str:
@@ -337,10 +364,22 @@ def derive_record(raw: dict, channel_id: str) -> dict:
     pr = _num(raw.get("price"))
     if pr:
         rec["price"] = int(pr)
-    for key in ("category", "email", "video_link", "recheck"):
+    for key in ("category", "email", "recheck"):
         if raw.get(key):
             rec[key if key != "recheck" else "recheck_video_url"] = \
                 str(raw[key]).strip()
+    # 视频链接：一个单元格填多条（换行/逗号分隔）时拆成多条视频行
+    # （数据是视频维度）；首链接作为主链接，播放等指标先挂在首链接上
+    links = _split_links(raw.get("video_link"))
+    if links:
+        rec["video_link"] = links[0]
+        if len(links) > 1:
+            rec["videos"] = [
+                {"video_url": u, "video_type": _guess_type(u),
+                 "product_ids": "", "views": 0, "likes": 0, "comments": 0,
+                 "clicks": 0, "ctr": 0, "orders": 0, "gmv": 0}
+                for u in links]
+            rec["_split_n"] = len(links)
     if raw.get("email"):
         rec["email"] = str(raw["email"]).strip()
     if yn(raw.get("emailed")):
@@ -386,12 +425,29 @@ def derive_record(raw: dict, channel_id: str) -> dict:
         n = _num(raw.get(key))
         if n is not None:
             rec[key] = n
+    if rec.get("videos"):
+        # 拆分多链接时：表里的播放/点赞/成交/GMV 先挂在首链接（主视频）上，
+        # 其余视频行由一键刷新按视频各自抓取
+        rec["videos"][0].update({
+            "views": rec.get("video_views") or 0,
+            "likes": rec.get("video_likes") or 0,
+            "comments": rec.get("video_comments") or 0,
+            "clicks": rec.get("product_views") or 0,
+            "orders": rec.get("orders") or 0,
+            "gmv": rec.get("gmv") or 0,
+        })
+    # 闭环必须以视频链接为准：标了已闭环却没填任何链接 → 先按未闭环导入，
+    # 由预览提醒运营到详情页登记视频后再闭环
+    closed_flag = yn(raw.get("closed"))
+    if closed_flag and not links:
+        closed_flag = False
+        rec["_closed_no_link"] = True
     # 归属月份兜底（2026-08-23 实际案例）：有真实履约进度（分支/下单收货/
     # 拍摄/视频/审核任一）却没填归属月份的，自动补上——否则这些网红会变成
     # 「孤儿」：审核站看得到、主站活动模块却不显示。优先用视频上传时间的月份，
     # 没有就用当月；标记 _plan_auto 由导入预览提示核对。已闭环的不补（分析
     # 模块不需要月份）。
-    if not rec.get("plan_month") and not yn(raw.get("closed")) and any(
+    if not rec.get("plan_month") and not closed_flag and any(
             rec.get(k) for k in ("guideline_status", "contract_status",
                                  "gmc_status", "order_status", "shoot_status",
                                  "video_link", "audit_status",
@@ -400,7 +456,7 @@ def derive_record(raw: dict, channel_id: str) -> dict:
             else f"{NOW_YEAR}-{datetime.now().month:02d}"
         rec["plan_month"] = auto
         rec["_plan_auto"] = auto
-    if yn(raw.get("closed")):
+    if closed_flag:
         rec["stage"] = "已完成"
     elif rec.get("plan_month"):
         rec["stage"] = "已确认"
