@@ -148,7 +148,8 @@ with tab_rev:
     def _status_cell(r):
         s = _STATUS_EMOJI.get(r["status"], r["status"])
         # ⚠️ = 没有归属月份、未流入主站活动模块履约的「孤儿」记录
-        if not r["plan_month"] and not r["is_closed"]:
+        # （.get 兜底：云端进程若缓存了旧版 store 模块也不至于 KeyError）
+        if not r.get("plan_month") and not r.get("is_closed"):
             s += " ⚠️"
         return s
 
@@ -157,7 +158,7 @@ with tab_rev:
     st.caption("通过填 Y、驳回填 N、还没出结果留空。驳回必须填写原因。"
                "可以直接在表格里填，也可以下载 Excel（只下载当前范围）"
                "拿给审核侧离线填写后上传回来。")
-    if any(not r["plan_month"] and not r["is_closed"] for r in view_rows):
+    if any(not r.get("plan_month") and not r.get("is_closed") for r in view_rows):
         st.caption("⚠️ = 该网红还没有归属月份，不在主站活动模块的履约里，"
                    "请到主站确认合作并补上月份")
 
