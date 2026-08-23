@@ -1848,9 +1848,148 @@ def _render_issue_list(kols):
                      height=52 + len(rows) * 36)
 
 
+# ============================ 数据健康检查 ============================
+
+def _health_facts(r):
+    """单条记录的闭环数据事实：
+    返回 (有视频链接, 有商品链接, 播放, 成交, GMV)。
+    有子表 videos 时按子表汇总，否则用主记录级老字段兜底。"""
+    vids = r.get("videos") or []
+    has_video = bool((r.get("video_url") or "").strip()) or any(
+        (v.get("video_url") or "").strip() for v in vids)
+    has_product = bool(r.get("product_list")) or any(
+        str(v.get("product_ids") or "").strip() for v in vids)
+    if vids:
+        views = sum(int(v.get("views") or 0) for v in vids)
+        orders = sum(int(v.get("orders") or 0) for v in vids)
+        gmv = sum(float(v.get("gmv") or 0) for v in vids)
+    else:
+        views = int(r.get("video_views") or 0)
+        orders = int(r.get("orders") or 0)
+        gmv = float(r.get("gmv") or 0)
+    return has_video, has_product, views, orders, gmv
+
+
+def _data_health(all_recs):
+    """跑 6 条数据健康规则，返回 [{icon,title,hint,fix,rows,status}]。
+    rows=命中该规则的记录列表，status=每条记录的缺失明细。"""
+    closed = [r for r in all_recs if r.get("is_closed")]
+    facts = {r["collab_id"]: _health_facts(r) for r in closed}
+
+    def has_url(r):
+        return bool((r.get("channel_url") or "").strip())
+
+    # 规则1：缺主页链接（所有网红）
+    r1 = [r for r in all_recs if not has_url(r)]
+    # 规则2：有链接但缺频道信息（名称/粉丝数）
+    r2 = []
+    for r in all_recs:
+        if not has_url(r):
+            continue  # 已在规则1计过
+        name_missing = (not r.get("name")) or r.get("name") == r.get("collab_id")
+        if name_missing or not r.get("followers"):
+            r2.append(r)
+    # 规则3~6：仅已闭环
+    r3, r4, r5, r6 = [], [], [], []
+    for r in closed:
+        hv, hp, views, orders, gmv = facts[r["collab_id"]]
+        if not hv:
+            r3.append(r)
+        else:
+            if not hp:
+                r4.append(r)
+            if views <= 0:
+                r5.append(r)
+            # 规则6 仅在已有播放（数据在流）但无成交时报，
+            # 播放为 0 的根因已在规则5报过，避免重复
+            if hp and views > 0 and orders <= 0 and gmv <= 0:
+                r6.append(r)
+
+    def st2(r):  # 规则2明细
+        miss = []
+        if (not r.get("name")) or r.get("name") == r.get("collab_id"):
+            miss.append("频道名")
+        if not r.get("followers"):
+            miss.append("粉丝数")
+        return "缺 " + "、".join(miss)
+
+    return [
+        {"icon": "🔗", "title": "缺主页链接",
+         "hint": "所有网红必须有 YouTube 主页链接",
+         "fix": "在详情页补主页链接",
+         "rows": r1, "status": lambda r: "无主页链接"},
+        {"icon": "📇", "title": "有链接但缺频道信息",
+         "hint": "有主页链接却没抓到频道名称 / 粉丝数",
+         "fix": "重新抓取或手填频道信息",
+         "rows": r2, "status": st2},
+        {"icon": "🎬", "title": "已闭环·缺视频链接",
+         "hint": "闭环必须有视频链接",
+         "fix": "在详情页补视频链接",
+         "rows": r3, "status": lambda r: "无视频链接"},
+        {"icon": "🛒", "title": "已闭环·缺商品链接",
+         "hint": "闭环必须有挂载商品",
+         "fix": "在视频行补挂载商品ID",
+         "rows": r4, "status": lambda r: "视频未挂商品"},
+        {"icon": "📉", "title": "已闭环·缺视频数据",
+         "hint": "有视频但播放量为 0（未抓取或视频未公开）",
+         "fix": "点「一键刷新」抓取，或检查视频是否公开",
+         "rows": r5, "status": lambda r: "播放量为 0"},
+        {"icon": "💸", "title": "已闭环·缺商品数据",
+         "hint": "挂了商品但无成交 / GMV",
+         "fix": "点「一键拉取商品效果数据」或等 GMC 回流",
+         "rows": r6, "status": lambda r: "无成交/GMV"},
+    ]
+
+
+def _health_name_link(r):
+    return (f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+            f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
+            f'{esc(r["name"])}</a>'
+            + (' <span class="closed-tag">已闭环</span>' if r.get("is_closed") else ""))
+
+
+def _render_health(all_recs):
+    """数据健康 Tab：逐条规则列出问题记录，点名字跳详情页修改。"""
+    checks = _data_health(all_recs)
+    total_issues = sum(len(c["rows"]) for c in checks)
+    n_closed = sum(1 for r in all_recs if r.get("is_closed"))
+    st.markdown(T.stats_row([
+        ("🧾 检查记录数", f"{len(all_recs):,}", "c-pink"),
+        ("✅ 已闭环", f"{n_closed:,}", "c-purple"),
+        ("🚨 问题项", f"{total_issues:,}", "c-amber" if total_issues else "c-green"),
+    ]), unsafe_allow_html=True)
+    st.caption("检查全量数据（不受月份筛选影响）· 点网红名字直接跳详情页修改。")
+    if total_issues == 0:
+        st.markdown(T.empty_hint("🎉 全部合规：所有网红主页链接、频道信息、"
+                                 "闭环视频/商品/数据都齐了"),
+                    unsafe_allow_html=True)
+        return
+    for c in checks:
+        rows, st_fn = c["rows"], c["status"]
+        head = f'{c["icon"]} {c["title"]}（{len(rows)} 人）'
+        st.markdown(T.sub(head), unsafe_allow_html=True)
+        if not rows:
+            st.markdown(T.empty_hint(f'✅ 无此问题 · {c["hint"]}'),
+                        unsafe_allow_html=True)
+            continue
+        st.caption(f'{c["hint"]} · 建议：{c["fix"]}')
+        trows = []
+        for r in sorted(rows, key=lambda x: (x.get("plan_month") or "",
+                                             x.get("name") or "")):
+            trows.append([
+                _health_name_link(r),
+                esc(r.get("recruiter") or "-"),
+                esc(r.get("plan_month") or "-"),
+                f'<span class="num">{esc(st_fn(r))}</span>',
+            ])
+        T.component_html(
+            T.table(["网红", "负责人", "归属月份", "缺失项"], trows, wrap=False),
+            height=52 + len(trows) * 36)
+
+
 def page_analysis():
     home_btn()
-    st.markdown(T.header("分析模块", "数据看板（声量×GMV 四象限）+ 全量数据明细"),
+    st.markdown(T.header("分析模块", "数据看板（声量×GMV 四象限）+ 全量数据明细 + 数据健康"),
                 unsafe_allow_html=True)
     recs = [r for r in store.list_all() if r.get("plan_month") or r.get("is_closed")]
     # 自动抓取范围仅闭环记录（履约中链接多为未公开审核链接，抓了也是"待回填"）
@@ -1908,7 +2047,7 @@ def page_analysis():
             vrows_data.append((r, None))  # 老数据兜底
 
     # ================= 双 Tab：数据看板（四象限）/ 全量数据 =================
-    tab_dash, tab_data = st.tabs(["📊 数据看板", "📋 全量数据"])
+    tab_dash, tab_data, tab_health = st.tabs(["📊 数据看板", "📋 全量数据", "🩺 数据健康"])
 
     # ---- 看板 tab：仅统计已闭环网红（声量 × GMV 四象限） ----
     with tab_dash:
@@ -2080,6 +2219,10 @@ def page_analysis():
 
         st.markdown(T.foot("视频级数据由闭环节点登记、一键刷新自动写入"),
                     unsafe_allow_html=True)
+
+    # ---- 数据健康 tab：全量数据质量检查（不受月份筛选影响） ----
+    with tab_health:
+        _render_health(store.list_all())
 
 
 # ============================ 路由 ============================
