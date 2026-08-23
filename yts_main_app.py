@@ -687,8 +687,8 @@ def _auto_gmc_check(cid, c):
 
 
 def _gen_guide(cid, c, req):
-    """调 AI 生成「内容方向&强带货脚本建议」，组装完整 guide 存 session"""
-    with st.spinner("AI 正在生成脚本建议（约1-3分钟，期间请勿操作页面）· 생성 중..."):
+    """调 AI 生成「定制选题&爆款逻辑」，组装完整 guide 存 session"""
+    with st.spinner("AI 正在生成选题&爆款逻辑建议（约1-3分钟，期间请勿操作页面）· 생성 중..."):
         try:
             script = G.call_dashscope(G.build_prompt(c, req))
         except RuntimeError as e:
@@ -696,6 +696,18 @@ def _gen_guide(cid, c, req):
             return
     st.session_state[f"guide_{cid}"] = G.assemble_full_guide(script)
     st.toast("Guide 生成完成 · 가이드 생성 완료")
+
+
+def _gen_scripts(cid, c):
+    """选品后：AI 结合商品+网红风格，出 3 个爆款脚本框架（只给框架不写全台词）"""
+    with st.spinner("AI 正在根据选品制作脚本框架（约1-3分钟，期间请勿操作页面）· 생성 중..."):
+        try:
+            scr = G.call_dashscope(G.build_script_prompt(c))
+        except RuntimeError as e:
+            st.error(str(e))
+            return
+    st.session_state[f"scripts_{cid}"] = scr
+    st.toast("脚本框架生成完成 · 스크립트 생성 완료")
 
 
 def _edit_info_form(cid, c):
@@ -1017,10 +1029,11 @@ def _render_actions(cid, c, step):
                         key="ct_dl_btn", use_container_width=True)
                     st.caption("网红签回后，回到上方「分支B」点「标记已签署」")
 
-            # ---- 生成 Guide（分支A 配套）：原版韩文 guide + 千问强带货脚本建议 ----
+            # ---- 生成 Guide（分支A 配套）：原版韩文 guide + AI 定制选题&爆款逻辑 ----
             st.markdown(T.sub("生成 Guide · 가이드 생성"), unsafe_allow_html=True)
-            st.caption("基于原版韩文 가이드，由 AI 为该网红追加「内容方向 & 强带货脚本建议」；"
-                       "生成后可复制 / 下载 Word 发给网红，再回到分支A 标记已发送")
+            st.caption("基于原版韩文 가이드，由 AI 为该网红定制「选题 & 爆款逻辑」（选品前不给具体脚本）；"
+                       "选品保存后用下方「视频脚本推荐」出脚本框架；生成后可复制 / 下载 Word 发给网红，"
+                       "再回到分支A 标记已发送")
             req = st.text_area("附加要求（选填，「按要求生成」时生效）· 추가 요청 (선택)",
                                key="guide_req", height=70,
                                placeholder="例：这次想强推厨房小物，视频控制在30秒内，"
@@ -1047,6 +1060,31 @@ def _render_actions(cid, c, step):
                     mime="application/vnd.openxmlformats-officedocument"
                          ".wordprocessingml.document",
                     key="gdocx")
+
+            # ---- 视频脚本推荐（选品后解锁）：AI 结合选品出 3 个爆款脚本框架 ----
+            st.markdown(T.sub("视频脚本推荐 · 영상 스크립트 추천"), unsafe_allow_html=True)
+            has_prods = bool(c.get("product_list"))
+            if has_prods:
+                st.caption("选品已保存，已解锁：AI 结合商品 + 该网红内容风格，出 3 个爆款脚本框架"
+                           "（只给主题角度 / 时间轴结构 / 转化点框架，不写全台词）")
+            else:
+                st.caption("在上方「选品清单」保存商品链接后，这里解锁脚本框架生成"
+                           "（选品前 Guide 只提供选题 & 爆款逻辑）")
+            if st.button("🎬 生成视频脚本推荐", key="sg1", type="primary",
+                         use_container_width=True, disabled=not has_prods):
+                _gen_scripts(cid, c)
+            scr_md = st.session_state.get(f"scripts_{cid}")
+            if scr_md:
+                st.markdown(scr_md)
+                with st.expander("📋 复制全文（点右上角复制按钮）· 전체 복사"):
+                    st.code(scr_md, language=None, height=320)
+                st.download_button(
+                    "⬇ 下载 Word 版 · Word 다운로드",
+                    data=G.md_to_docx(scr_md),
+                    file_name=f"YTS_스크립트_{c['name']}.docx",
+                    mime="application/vnd.openxmlformats-officedocument"
+                         ".wordprocessingml.document",
+                    key="sdocx")
 
     elif step == 2:
         with st.container():
