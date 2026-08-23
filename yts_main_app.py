@@ -688,7 +688,7 @@ def _auto_gmc_check(cid, c):
 
 def _gen_guide(cid, c, req):
     """调千问生成「内容方向&强带货脚本建议」，组装完整 guide 存 session"""
-    with st.spinner("千问正在生成脚本建议（约10-20秒）· 생성 중..."):
+    with st.spinner("AI 正在生成脚本建议（约10-20秒）· 생성 중..."):
         try:
             script = G.call_dashscope(G.build_prompt(c, req))
         except RuntimeError as e:
