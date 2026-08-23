@@ -931,7 +931,8 @@ def _render_actions(cid, c, step):
         with st.container():
             st.markdown(T.ycard_open(), unsafe_allow_html=True)
             st.markdown(T.sub("三分支并行"), unsafe_allow_html=True)
-            st.caption("发Guideline / 签合同 / 选品+GMC校验，三者全部完成才解锁下单")
+            st.caption("发Guideline / 签合同 / 选品+GMC校验，三者全部完成才解锁下单；"
+                       "点击下方对应模块展开相应工具")
             b1, b2, b3 = st.columns(3)
             with b1:
                 st.markdown(T.branch_card("分支A · 发Guideline", branches["guideline"],
@@ -957,68 +958,126 @@ def _render_actions(cid, c, step):
                           use_container_width=True,
                           on_click=store.set_branch,
                           args=(cid, "gmc", not branches["gmc"]))
-                if st.button("🤖 自动校验选品是否在池", key="gc_auto",
-                             use_container_width=True,
-                             help="从选品清单提取商品ID，逐个查 GMC 池（KR-YOUTUBE），"
-                                  "在池=通过，不在=不通过"):
-                    _auto_gmc_check(cid, c)
-            prods = st.text_area("选品清单（每行一个链接）",
-                                 value="\n".join(c["product_list"]), key="prods",
-                                 height=80)
-            if st.button("💾 保存选品清单", key="sp"):
-                store.set_products(cid, [p.strip() for p in prods.splitlines()
-                                         if p.strip()])
-                st.toast("清单已保存，可增减后重新校验")
-                st.rerun()
+            # ---- 三分支工具折叠化：点对应模块才展开内容，不再一屏全铺开 ----
+            _default_open = None
+            for _bk, _ek in (("guideline", "a"), ("contract", "b"), ("gmc", "c")):
+                if not branches[_bk]:
+                    _default_open = _ek
+                    break
+            _st_a = "✅ 已发送" if branches["guideline"] else "未发送"
+            _st_b = "✅ 已签署" if branches["contract"] else "未签署"
+            _st_c = "✅ 校验通过" if branches["gmc"] else "待校验"
 
-            # ---- 合同生成（分支B 配套）：自动填充 → 核对修改 → 一键生成 Word ----
-            st.markdown(T.sub("合同生成 · 계약서 생성"), unsafe_allow_html=True)
-            st.caption("已自动带出系统里的信息（网红名 / 报价 / 频道 / 交稿截止），"
-                       "核对无误后生成正式合同 Word，发给网红签字")
-            with st.container(border=True):
-                with st.form(f"ct_form_{cid}"):
-                    f1, f2, f3 = st.columns(3)
-                    ct_name = f1.text_input("网红名 · 크리에이터명",
-                                            value=c["name"], key="ct_name")
-                    ct_amount = f2.number_input(
-                        "合同金额（韩币） · 계약금액", min_value=0, step=10000,
-                        value=int(c.get("price") or 0), key="ct_amount")
-                    ct_url = f3.text_input("频道链接 · 채널 URL",
-                                           value=c.get("channel_url") or "",
-                                           key="ct_url")
-                    f4, f5, _f6 = st.columns(3)
-                    ct_dl = f4.text_input("交付日期 · 납품일（YYYY-MM-DD）",
-                                          value=c.get("submit_deadline") or "",
-                                          key="ct_dl")
-                    ct_sign = f5.text_input("签署日期 · 서명일（默认当天）",
-                                            value=datetime.now().strftime("%Y-%m-%d"),
-                                            key="ct_sign")
-                    st.caption("平台默认填写 YouTube 영상；网红个人信息"
-                               "（生日 / 地址 / 收款账户 / 税类型）在合同中留空，"
-                               "由网红本人填写")
-                    if st.form_submit_button("📄 核对完毕，生成合同",
-                                             type="primary",
-                                             use_container_width=True):
-                        if not ct_name.strip():
-                            st.error("网红名不能为空")
-                        elif not ct_amount:
-                            st.error("合同金额为 0，请先填写金额（或在上方编辑信息里补报价）")
-                        else:
-                            try:
-                                doc_bytes = C.generate_contract({
-                                    "name": ct_name.strip(),
-                                    "amount": ct_amount,
-                                    "channel_url": ct_url.strip(),
-                                    "delivery_date": ct_dl.strip(),
-                                    "sign_date": ct_sign.strip(),
-                                })
-                                st.session_state[f"ct_doc_{cid}"] = (
-                                    doc_bytes, C.contract_filename(ct_name.strip()))
-                                st.toast("合同已生成，点下方按钮下载")
-                            except FileNotFoundError:
-                                st.error("未找到合同模板文件，请联系管理员")
-                            except Exception as e:
-                                st.error(f"合同生成失败：{e}")
+            with st.expander(f"📤 分支A · 生成 Guide & 视频脚本推荐 · {_st_a}",
+                             expanded=(_default_open == "a")
+                             or bool(st.session_state.get(f"guide_{cid}"))
+                             or bool(st.session_state.get(f"scripts_{cid}"))):
+                # ---- 生成 Guide：原版韩文 guide + AI 定制选题&爆款逻辑 ----
+                st.caption("基于原版韩文 가이드，由 AI 为该网红定制「选题 & 爆款逻辑」（选品前不给具体脚本）；"
+                           "选品（分支C）保存后用下方「视频脚本推荐」出脚本框架；生成后可复制 / 下载 Word 发给网红，"
+                           "再回到上方卡片标记已发送")
+                req = st.text_area("附加要求（选填，「按要求生成」时生效）· 추가 요청 (선택)",
+                                   key="guide_req", height=70,
+                                   placeholder="例：这次想强推厨房小物，视频控制在30秒内，"
+                                               "重点强调折扣码；网红擅长开箱风格…")
+                g1, g2 = st.columns(2)
+                if g1.button("⚡ 一键生成 Guide", key="gg1", type="primary",
+                             use_container_width=True):
+                    _gen_guide(cid, c, "")
+                if g2.button("📝 按要求生成", key="gg2", use_container_width=True):
+                    if not req.strip():
+                        st.error("请先填写要求，再点「按要求生成」· "
+                                 "요구사항을 입력한 후 생성하세요")
+                    else:
+                        _gen_guide(cid, c, req.strip())
+                guide_md = st.session_state.get(f"guide_{cid}")
+                if guide_md:
+                    st.markdown(guide_md)
+                    with st.expander("📋 复制全文（点右上角复制按钮）· 전체 복사"):
+                        st.code(guide_md, language=None, height=320)
+                    st.download_button(
+                        "⬇ 下载 Word 版 · Word 다운로드",
+                        data=G.md_to_docx(guide_md),
+                        file_name=f"YTS_가이드_{c['name']}.docx",
+                        mime="application/vnd.openxmlformats-officedocument"
+                             ".wordprocessingml.document",
+                        key="gdocx")
+
+                # ---- 视频脚本推荐（选品后解锁）：AI 结合选品出 3 个爆款脚本框架 ----
+                st.markdown(T.sub("视频脚本推荐 · 영상 스크립트 추천"),
+                            unsafe_allow_html=True)
+                has_prods = bool(c.get("product_list"))
+                if has_prods:
+                    st.caption("选品已保存，已解锁：AI 结合商品 + 该网红内容风格，出 3 个爆款脚本框架"
+                               "（只给主题角度 / 时间轴结构 / 转化点框架，不写全台词）")
+                else:
+                    st.caption("在下方「分支C · 选品清单」保存商品链接后，这里解锁脚本框架生成"
+                               "（选品前 Guide 只提供选题 & 爆款逻辑）")
+                if st.button("🎬 生成视频脚本推荐", key="sg1", type="primary",
+                             use_container_width=True, disabled=not has_prods):
+                    _gen_scripts(cid, c)
+                scr_md = st.session_state.get(f"scripts_{cid}")
+                if scr_md:
+                    st.markdown(scr_md)
+                    with st.expander("📋 复制全文（点右上角复制按钮）· 전체 복사"):
+                        st.code(scr_md, language=None, height=320)
+                    st.download_button(
+                        "⬇ 下载 Word 版 · Word 다운로드",
+                        data=G.md_to_docx(scr_md),
+                        file_name=f"YTS_스크립트_{c['name']}.docx",
+                        mime="application/vnd.openxmlformats-officedocument"
+                             ".wordprocessingml.document",
+                        key="sdocx")
+
+            with st.expander(f"📄 分支B · 合同生成 · {_st_b}",
+                             expanded=(_default_open == "b")
+                             or bool(st.session_state.get(f"ct_doc_{cid}"))):
+                st.caption("已自动带出系统里的信息（网红名 / 报价 / 频道 / 交稿截止），"
+                           "核对无误后生成正式合同 Word，发给网红签字")
+                with st.container(border=True):
+                    with st.form(f"ct_form_{cid}"):
+                        f1, f2, f3 = st.columns(3)
+                        ct_name = f1.text_input("网红名 · 크리에이터명",
+                                                value=c["name"], key="ct_name")
+                        ct_amount = f2.number_input(
+                            "合同金额（韩币） · 계약금액", min_value=0, step=10000,
+                            value=int(c.get("price") or 0), key="ct_amount")
+                        ct_url = f3.text_input("频道链接 · 채널 URL",
+                                               value=c.get("channel_url") or "",
+                                               key="ct_url")
+                        f4, f5, _f6 = st.columns(3)
+                        ct_dl = f4.text_input("交付日期 · 납품일（YYYY-MM-DD）",
+                                              value=c.get("submit_deadline") or "",
+                                              key="ct_dl")
+                        ct_sign = f5.text_input("签署日期 · 서명일（默认当天）",
+                                                value=datetime.now().strftime("%Y-%m-%d"),
+                                                key="ct_sign")
+                        st.caption("平台默认填写 YouTube 영상；网红个人信息"
+                                   "（生日 / 地址 / 收款账户 / 税类型）在合同中留空，"
+                                   "由网红本人填写")
+                        if st.form_submit_button("📄 核对完毕，生成合同",
+                                                 type="primary",
+                                                 use_container_width=True):
+                            if not ct_name.strip():
+                                st.error("网红名不能为空")
+                            elif not ct_amount:
+                                st.error("合同金额为 0，请先填写金额（或在上方编辑信息里补报价）")
+                            else:
+                                try:
+                                    doc_bytes = C.generate_contract({
+                                        "name": ct_name.strip(),
+                                        "amount": ct_amount,
+                                        "channel_url": ct_url.strip(),
+                                        "delivery_date": ct_dl.strip(),
+                                        "sign_date": ct_sign.strip(),
+                                    })
+                                    st.session_state[f"ct_doc_{cid}"] = (
+                                        doc_bytes, C.contract_filename(ct_name.strip()))
+                                    st.toast("合同已生成，点下方按钮下载")
+                                except FileNotFoundError:
+                                    st.error("未找到合同模板文件，请联系管理员")
+                                except Exception as e:
+                                    st.error(f"合同生成失败：{e}")
                 ct_saved = st.session_state.get(f"ct_doc_{cid}")
                 if ct_saved:
                     st.download_button(
@@ -1027,64 +1086,24 @@ def _render_actions(cid, c, step):
                         mime="application/vnd.openxmlformats-officedocument"
                              ".wordprocessingml.document",
                         key="ct_dl_btn", use_container_width=True)
-                    st.caption("网红签回后，回到上方「分支B」点「标记已签署」")
+                    st.caption("网红签回后，回到上方卡片点「标记已签署」")
 
-            # ---- 生成 Guide（分支A 配套）：原版韩文 guide + AI 定制选题&爆款逻辑 ----
-            st.markdown(T.sub("生成 Guide · 가이드 생성"), unsafe_allow_html=True)
-            st.caption("基于原版韩文 가이드，由 AI 为该网红定制「选题 & 爆款逻辑」（选品前不给具体脚本）；"
-                       "选品保存后用下方「视频脚本推荐」出脚本框架；生成后可复制 / 下载 Word 发给网红，"
-                       "再回到分支A 标记已发送")
-            req = st.text_area("附加要求（选填，「按要求生成」时生效）· 추가 요청 (선택)",
-                               key="guide_req", height=70,
-                               placeholder="例：这次想强推厨房小物，视频控制在30秒内，"
-                                           "重点强调折扣码；网红擅长开箱风格…")
-            g1, g2 = st.columns(2)
-            if g1.button("⚡ 一键生成 Guide", key="gg1", type="primary",
-                         use_container_width=True):
-                _gen_guide(cid, c, "")
-            if g2.button("📝 按要求生成", key="gg2", use_container_width=True):
-                if not req.strip():
-                    st.error("请先填写要求，再点「按要求生成」· "
-                             "요구사항을 입력한 후 생성하세요")
-                else:
-                    _gen_guide(cid, c, req.strip())
-            guide_md = st.session_state.get(f"guide_{cid}")
-            if guide_md:
-                st.markdown(guide_md)
-                with st.expander("📋 复制全文（点右上角复制按钮）· 전체 복사"):
-                    st.code(guide_md, language=None, height=320)
-                st.download_button(
-                    "⬇ 下载 Word 版 · Word 다운로드",
-                    data=G.md_to_docx(guide_md),
-                    file_name=f"YTS_가이드_{c['name']}.docx",
-                    mime="application/vnd.openxmlformats-officedocument"
-                         ".wordprocessingml.document",
-                    key="gdocx")
-
-            # ---- 视频脚本推荐（选品后解锁）：AI 结合选品出 3 个爆款脚本框架 ----
-            st.markdown(T.sub("视频脚本推荐 · 영상 스크립트 추천"), unsafe_allow_html=True)
-            has_prods = bool(c.get("product_list"))
-            if has_prods:
-                st.caption("选品已保存，已解锁：AI 结合商品 + 该网红内容风格，出 3 个爆款脚本框架"
-                           "（只给主题角度 / 时间轴结构 / 转化点框架，不写全台词）")
-            else:
-                st.caption("在上方「选品清单」保存商品链接后，这里解锁脚本框架生成"
-                           "（选品前 Guide 只提供选题 & 爆款逻辑）")
-            if st.button("🎬 生成视频脚本推荐", key="sg1", type="primary",
-                         use_container_width=True, disabled=not has_prods):
-                _gen_scripts(cid, c)
-            scr_md = st.session_state.get(f"scripts_{cid}")
-            if scr_md:
-                st.markdown(scr_md)
-                with st.expander("📋 复制全文（点右上角复制按钮）· 전체 복사"):
-                    st.code(scr_md, language=None, height=320)
-                st.download_button(
-                    "⬇ 下载 Word 版 · Word 다운로드",
-                    data=G.md_to_docx(scr_md),
-                    file_name=f"YTS_스크립트_{c['name']}.docx",
-                    mime="application/vnd.openxmlformats-officedocument"
-                         ".wordprocessingml.document",
-                    key="sdocx")
+            with st.expander(f"🛍 分支C · 选品 + GMC 校验 · {_st_c}",
+                             expanded=(_default_open == "c")):
+                prods = st.text_area("选品清单（每行一个链接）",
+                                     value="\n".join(c["product_list"]), key="prods",
+                                     height=80)
+                sc1, sc2 = st.columns(2)
+                if sc1.button("💾 保存选品清单", key="sp", use_container_width=True):
+                    store.set_products(cid, [p.strip() for p in prods.splitlines()
+                                             if p.strip()])
+                    st.toast("清单已保存，可增减后重新校验")
+                    st.rerun()
+                if sc2.button("🤖 自动校验选品是否在池", key="gc_auto",
+                              use_container_width=True,
+                              help="从选品清单提取商品ID，逐个查 GMC 池（KR-YOUTUBE），"
+                                   "在池=通过，不在=不通过"):
+                    _auto_gmc_check(cid, c)
 
     elif step == 2:
         with st.container():
