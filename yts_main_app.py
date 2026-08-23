@@ -516,6 +516,139 @@ def _current_node(c):
     return "待提交"
 
 
+def _export_all_data():
+    """导出全量数据：网红汇总 + 视频明细两个 Sheet"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    with st.spinner("正在导出全量数据..."):
+        all_recs = store.list_all()
+
+        wb = Workbook()
+
+        # Sheet 1: 网红汇总
+        ws1 = wb.active
+        ws1.title = "网红汇总"
+        headers1 = [
+            "频道ID", "频道名称", "负责人", "归属月份", "垂类", "报价",
+            "频道链接", "联系邮箱", "粉丝数",
+            "Guideline", "合同", "GMC校验",
+            "下单", "收货", "拍摄状态", "审核状态", "闭环",
+            "选品清单", "视频链接", "复审链接",
+            "播放", "点赞", "评论", "点击", "CTR", "成交", "GMV",
+            "备注",
+        ]
+        ws1.append(headers1)
+        for r in all_recs:
+            branches = r.get("branches", {})
+            ws1.append([
+                r.get("collab_id", ""),
+                r.get("name", ""),
+                r.get("recruiter", ""),
+                r.get("plan_month", ""),
+                r.get("category", ""),
+                r.get("price", 0),
+                r.get("channel_url", ""),
+                r.get("email", ""),
+                r.get("followers", 0),
+                "已发送" if branches.get("guideline") else "",
+                "已签" if branches.get("contract") else "",
+                "校验通过" if branches.get("gmc") else "",
+                "已下单" if r.get("order_done") else "",
+                "已收货" if r.get("received") else "",
+                r.get("shoot_status", ""),
+                r.get("review_status", ""),
+                "已闭环" if r.get("is_closed") else "",
+                "\n".join(r.get("product_list") or []),
+                r.get("video_url", ""),
+                r.get("recheck_video_url", ""),
+                r.get("video_views", 0),
+                r.get("video_likes", 0),
+                r.get("video_comments", 0),
+                r.get("product_views", 0),
+                r.get("ctr", 0),
+                r.get("orders", 0),
+                r.get("gmv", 0),
+                r.get("notes", ""),
+            ])
+
+        # Sheet 2: 视频明细
+        ws2 = wb.create_sheet("视频明细")
+        headers2 = [
+            "频道ID", "频道名称", "负责人", "归属月份",
+            "视频链接", "视频类型", "挂载商品ID", "挂载商品数",
+            "播放", "点赞", "评论", "点击", "CTR", "成交", "GMV",
+        ]
+        ws2.append(headers2)
+        for r in all_recs:
+            videos = r.get("videos") or []
+            if videos:
+                for v in videos:
+                    ws2.append([
+                        r.get("collab_id", ""),
+                        r.get("name", ""),
+                        r.get("recruiter", ""),
+                        r.get("plan_month", ""),
+                        v.get("video_url", ""),
+                        v.get("video_type", ""),
+                        v.get("product_ids", ""),
+                        len([p for p in str(v.get("product_ids") or "").split(",") if p.strip()]),
+                        v.get("views", 0),
+                        v.get("likes", 0),
+                        v.get("comments", 0),
+                        v.get("clicks", 0),
+                        v.get("ctr", 0),
+                        v.get("orders", 0),
+                        v.get("gmv", 0),
+                    ])
+            else:
+                # 无视频子表的记录：用主链接占一行
+                ws2.append([
+                    r.get("collab_id", ""),
+                    r.get("name", ""),
+                    r.get("recruiter", ""),
+                    r.get("plan_month", ""),
+                    r.get("video_url", ""),
+                    "",
+                    "",
+                    0,
+                    r.get("video_views", 0),
+                    r.get("video_likes", 0),
+                    r.get("video_comments", 0),
+                    r.get("product_views", 0),
+                    r.get("ctr", 0),
+                    r.get("orders", 0),
+                    r.get("gmv", 0),
+                ])
+
+        # 样式
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        for ws in [ws1, ws2]:
+            for col_idx, _ in enumerate(ws[1], 1):
+                cell = ws.cell(row=1, column=col_idx)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center")
+            ws.freeze_panes = "A2"
+
+        # 保存
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        st.download_button(
+            "⬇ 下载 YTS 全量数据",
+            data=buf.getvalue(),
+            file_name=f"YTS全量数据_{timestamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_export_all",
+            use_container_width=True,
+        )
+        st.toast(f"已导出 {len(all_recs)} 条网红记录")
+
+
 def page_activity():
     home_btn()
     # 审核状态快速同步（写入就反馈）：审核站与主站是两个进程、缓存不通，
@@ -537,10 +670,13 @@ def page_activity():
     with h2:
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
         _fi_open = st.session_state.get("flow_import_open", False)
-        if st.button("✕ 收起导入面板" if _fi_open else "📥 流程导入",
+        if st.button("✕ 收起导入面板" if _fi_open else " 流程导入",
                      key="btn_flow_import", use_container_width=True):
             st.session_state["flow_import_open"] = not _fi_open
             st.rerun()
+        if st.button(" 导出全量数据", key="btn_export_all",
+                     use_container_width=True):
+            _export_all_data()
     if st.session_state.get("flow_import_open"):
         flow_import_panel()
 
