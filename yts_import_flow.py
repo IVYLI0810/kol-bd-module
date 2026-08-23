@@ -386,9 +386,23 @@ def derive_record(raw: dict, channel_id: str) -> dict:
         n = _num(raw.get(key))
         if n is not None:
             rec[key] = n
+    # 归属月份兜底（2026-08-23 实际案例）：有真实履约进度（分支/下单收货/
+    # 拍摄/视频/审核任一）却没填归属月份的，自动补上——否则这些网红会变成
+    # 「孤儿」：审核站看得到、主站活动模块却不显示。优先用视频上传时间的月份，
+    # 没有就用当月；标记 _plan_auto 由导入预览提示核对。已闭环的不补（分析
+    # 模块不需要月份）。
+    if not rec.get("plan_month") and not yn(raw.get("closed")) and any(
+            rec.get(k) for k in ("guideline_status", "contract_status",
+                                 "gmc_status", "order_status", "shoot_status",
+                                 "video_link", "audit_status",
+                                 "recheck_video_url")):
+        auto = dl[:7] if dl and re.match(r"^\d{4}-\d{2}", dl) \
+            else f"{NOW_YEAR}-{datetime.now().month:02d}"
+        rec["plan_month"] = auto
+        rec["_plan_auto"] = auto
     if yn(raw.get("closed")):
         rec["stage"] = "已完成"
-    elif plan:
+    elif rec.get("plan_month"):
         rec["stage"] = "已确认"
     if raw.get("notes"):
         rec["notes"] = str(raw["notes"]).strip()

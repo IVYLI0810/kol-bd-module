@@ -129,18 +129,54 @@ tab_rev, tab_ad = st.tabs(["🎬 검토 모듈 (审核模块)", "📣 광고 모
 
 # ============================ 审核模块 ============================
 with tab_rev:
+    # ---- 范围筛选：未审核/已审核分开看，表格和 Excel 下载都按当前范围 ----
+    n_wait = sum(1 for r in review_rows if not r["passed"])
+    _scope = st.radio(
+        "范围", ["wait", "done", "all"], horizontal=True, key="rev_scope",
+        label_visibility="collapsed",
+        format_func=lambda k: {
+            "wait": f"⏳ 미검토 未审核 ({n_wait})",
+            "done": f"✅ 검토 완료 已审核 ({len(review_rows) - n_wait})",
+            "all": f"🗂 전체 全部 ({len(review_rows)})"}[k])
+    if _scope == "wait":
+        view_rows = [r for r in review_rows if not r["passed"]]
+    elif _scope == "done":
+        view_rows = [r for r in review_rows if r["passed"]]
+    else:
+        view_rows = list(review_rows)
+
+    def _status_cell(r):
+        s = _STATUS_EMOJI.get(r["status"], r["status"])
+        # ⚠️ = 没有归属月份、未流入主站活动模块履约的「孤儿」记录
+        if not r["plan_month"] and not r["is_closed"]:
+            s += " ⚠️"
+        return s
+
     st.caption("통과=Y / 반려=N / 대기 중=空白 · 통과 시에는 사유 비워둬도 되지만, "
                "반려 시에는 반드시 사유를 입력하세요")
     st.caption("通过填 Y、驳回填 N、还没出结果留空。驳回必须填写原因。"
-               "可以直接在表格里填，也可以下载 Excel 拿给审核侧离线填写后上传回来。")
+               "可以直接在表格里填，也可以下载 Excel（只下载当前范围）"
+               "拿给审核侧离线填写后上传回来。")
+    if any(not r["plan_month"] and not r["is_closed"] for r in view_rows):
+        st.caption("⚠️ = 该网红还没有归属月份，不在主站活动模块的履约里，"
+                   "请到主站确认合作并补上月份")
 
     orig_df = pd.DataFrame([{
-        C_STATUS: _STATUS_EMOJI.get(r["status"], r["status"]),
+        C_STATUS: _status_cell(r),
         C_NAME: r["name"], C_HOME: r["channel_url"], C_VIDEO: r["review_url"],
         C_SUBMIT: r["submit_actual"], C_AUDIT: r["audit_time"],
         C_PASS: r["passed"], C_REASON: r["reason"],
         "collab_id": r["collab_id"],
-    } for r in review_rows])
+    } for r in view_rows])
+    if not view_rows:
+        st.markdown(T.empty_hint(bih(
+            {"wait": "미검토 항목이 없습니다. 모두 처리 완료",
+             "done": "아직 검토 완료 항목이 없습니다",
+             "all": "검토 기록이 없습니다"}[_scope],
+            {"wait": "没有待审核项，全部处理完了",
+             "done": "还没有已审核的记录",
+             "all": "暂无审核记录"}[_scope])),
+            unsafe_allow_html=True)
     # 主页链接 -> collab_id（Excel 上传辅助匹配用；网格保存直接用行内 collab_id）
     id_by_url = {r["channel_url"]: r["collab_id"] for r in review_rows
                  if r["channel_url"]}
@@ -149,23 +185,26 @@ with tab_rev:
     for r in review_rows:
         name_ids.setdefault(r["name"], []).append(r["collab_id"])
 
-    edited = st.data_editor(
-        orig_df, key="rev_grid", hide_index=True, use_container_width=True,
-        height=min(560, 80 + 38 * (len(orig_df) + 1)),
-        # 主键列不显示：column_order 未列出的列自动隐藏（新版 streamlit 已删 hidden 参数，
-        # 旧版也支持 column_order），保存时仍按行内 collab_id 回写宜搭，不依赖行号反查
-        column_order=[C_STATUS, C_NAME, C_HOME, C_VIDEO,
-                      C_SUBMIT, C_AUDIT, C_PASS, C_REASON],
-        column_config={
-            C_STATUS: st.column_config.TextColumn("상태 状态", disabled=True, width="small"),
-            C_NAME: st.column_config.TextColumn("크리에이터 网红", disabled=True, width="medium"),
-            C_HOME: st.column_config.LinkColumn("홈페이지 主页", disabled=True, width="medium"),
-            C_VIDEO: st.column_config.LinkColumn("검토 영상 审核视频", disabled=True, width="medium"),
-            C_SUBMIT: st.column_config.TextColumn("제출 시각 提交时间", disabled=True, width="medium"),
-            C_AUDIT: st.column_config.TextColumn("심사 시각 审核时间", disabled=True, width="medium"),
-            C_PASS: st.column_config.TextColumn("통과? 通过? (Y/N)", width="small"),
-            C_REASON: st.column_config.TextColumn("반려 사유 驳回原因", width="large"),
-        })
+    if view_rows:
+        edited = st.data_editor(
+            orig_df, key="rev_grid", hide_index=True, use_container_width=True,
+            height=min(560, 80 + 38 * (len(orig_df) + 1)),
+            # 主键列不显示：column_order 未列出的列自动隐藏（新版 streamlit 已删 hidden 参数，
+            # 旧版也支持 column_order），保存时仍按行内 collab_id 回写宜搭，不依赖行号反查
+            column_order=[C_STATUS, C_NAME, C_HOME, C_VIDEO,
+                          C_SUBMIT, C_AUDIT, C_PASS, C_REASON],
+            column_config={
+                C_STATUS: st.column_config.TextColumn("상태 状态", disabled=True, width="small"),
+                C_NAME: st.column_config.TextColumn("크리에이터 网红", disabled=True, width="medium"),
+                C_HOME: st.column_config.LinkColumn("홈페이지 主页", disabled=True, width="medium"),
+                C_VIDEO: st.column_config.LinkColumn("검토 영상 审核视频", disabled=True, width="medium"),
+                C_SUBMIT: st.column_config.TextColumn("제출 시각 提交时间", disabled=True, width="medium"),
+                C_AUDIT: st.column_config.TextColumn("심사 시각 审核时间", disabled=True, width="medium"),
+                C_PASS: st.column_config.TextColumn("통과? 通过? (Y/N)", width="small"),
+                C_REASON: st.column_config.TextColumn("반려 사유 驳回原因", width="large"),
+            })
+    else:
+        edited = orig_df  # 当前范围没有数据时表格不渲染，保存按钮也禁用
 
     b1, b2, b3 = st.columns(3)
     if b1.button("💾 변경 사항 저장 · 保存修改", type="primary",
@@ -208,12 +247,17 @@ with tab_rev:
             elif not no_id:
                 st.info("변경 사항이 없습니다 · 没有检测到修改")
 
-    if b2.download_button("⬇ Excel 다운로드 · 下载Excel",
-                          data=_df_to_bytes(orig_df.drop(columns=["collab_id"],
-                                                         errors="ignore")),
-                          file_name=f"검토현황_{datetime.now():%Y%m%d}.xlsx",
-                          use_container_width=True):
-        pass
+    # 下载只导出当前范围（未审核/已审核/全部），文件名带上范围
+    _scope_nm = {"wait": "未审核", "done": "已审核", "all": "全部"}[_scope]
+    if view_rows:
+        b2.download_button(f"⬇ Excel 다운로드 · 下载Excel（{_scope_nm}）",
+                           data=_df_to_bytes(orig_df.drop(columns=["collab_id"],
+                                                          errors="ignore")),
+                           file_name=f"검토현황_{_scope_nm}_{datetime.now():%Y%m%d}.xlsx",
+                           use_container_width=True)
+    else:
+        b2.button("⬇ Excel 다운로드 · 下载Excel", disabled=True,
+                  use_container_width=True)
 
     up = b3.file_uploader("⬆ Excel 업로드 · 上传Excel", type=["xlsx", "xls"],
                           key="rev_upload",

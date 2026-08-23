@@ -801,6 +801,10 @@ class YTSStore:
                 "status": rs,                       # 待审核/已通过/已驳回/复审中/复审通过
                 "submit_actual": c.get("submit_actual") or "",  # 提交时间（精确到分钟）
                 "audit_time": c.get("audit_time") or "",        # 审核时间（精确到分钟）
+                # 是否已流入主站活动模块：没有归属月份且未闭环的属于「孤儿」记录，
+                # 审核站可见但活动模块不显示，页面需标出来提醒运营补月份
+                "plan_month": c.get("plan_month") or "",
+                "is_closed": bool(c.get("is_closed")),
             })
         rows.sort(key=lambda x: (order.get(
             {"Y": "已通过", "N": "未通过"}.get(x["passed"], "待审核"), 3), x["name"]))

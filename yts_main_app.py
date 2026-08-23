@@ -235,6 +235,11 @@ def flow_import_panel():
                 st.warning(f"「{rec['channel_name']}」的拍摄状态「{raw_ss}」不是系统写法，"
                            f"已按「{rec.get('shoot_status') or '-'}」导入，"
                            "导入后请到详情页拍摄节点核对")
+            # 有进度但没填归属月份 → 已自动补月（否则进不了活动模块履约）
+            auto_m = rec.pop("_plan_auto", "")
+            if auto_m:
+                st.warning(f"「{rec['channel_name']}」没填归属月份，已按进度自动补为"
+                           f"「{auto_m}」以便流入履约；月份不对可到履约详情里改")
             is_new = not is_existing
             if rec.get("stage") == "已完成":
                 prog = "已闭环 → 分析模块"
