@@ -1543,9 +1543,144 @@ def _refresh_videos_granular(closed_recs, force=False):
     return updated, failed
 
 
+def _aggregate_kols(recs, vrows_data):
+    """按网红聚合：播放/点赞/成交/GMV 求和，ROI=GMV/报价。
+    返回 [{cid, name, views, likes, orders, gmv, price, roi}]"""
+    agg = {}
+    for r, v in vrows_data:
+        a = agg.setdefault(r["collab_id"], {
+            "cid": r["collab_id"], "name": r["name"], "views": 0, "likes": 0,
+            "orders": 0, "gmv": 0.0, "price": float(r.get("price") or 0)})
+        if v is not None:
+            a["views"] += int(v.get("views") or 0)
+            a["likes"] += int(v.get("likes") or 0)
+            a["orders"] += int(v.get("orders") or 0)
+            a["gmv"] += float(v.get("gmv") or 0)
+        else:
+            a["views"] += int(r.get("video_views") or 0)
+            a["likes"] += int(r.get("video_likes") or 0)
+            a["orders"] += int(r.get("orders") or 0)
+            a["gmv"] += float(r.get("gmv") or 0)
+    for a in agg.values():
+        a["roi"] = round(a["gmv"] / a["price"], 2) if a["price"] else 0
+    return list(agg.values())
+
+
+def _render_kpi(kols, vrows_data):
+    """KPI 大数字卡：声量侧 + GMV 侧"""
+    tot_views = sum(a["views"] for a in kols)
+    tot_likes = sum(a["likes"] for a in kols)
+    eng = (tot_likes / tot_views * 100) if tot_views else 0
+    tot_gmv = sum(a["gmv"] for a in kols)
+    tot_orders = sum(a["orders"] for a in kols)
+    tot_cost = sum(a["price"] for a in kols)
+    roi = (tot_gmv / tot_cost) if tot_cost else 0
+    st.markdown(T.stats_row([
+        ("🔊 总声量（播放）", f"{tot_views:,}", "c-pink"),
+        ("❤️ 总点赞", f"{tot_likes:,}", "c-purple"),
+        ("💰 总GMV", f"{tot_gmv:,.0f}", "c-green"),
+        ("🛒 总成交", f"{tot_orders:,}", "c-amber"),
+    ]), unsafe_allow_html=True)
+    st.markdown(T.stats_row([
+        ("✨ 平均互动率", f"{eng:.1f}%", "c-pink"),
+        ("📈 整体ROI", f"{roi:.2f}", "c-green"),
+        ("👥 闭环网红数", str(len(kols)), "c-purple"),
+        ("🎬 视频总数", str(len(vrows_data)), "c-amber"),
+    ], narrow=True), unsafe_allow_html=True)
+
+
+def _render_quadrant(kols):
+    """四象限散点图：横轴GMV、纵轴播放量，象限=运营动作"""
+    pts = [a for a in kols if a["views"] > 0]
+    if not pts:
+        st.markdown(T.empty_hint("暂无有播放量的数据，无法绘制四象限图"),
+                    unsafe_allow_html=True)
+        return
+    # 分界线：GMV 用中位数（无成交时退化为0.1），播放用中位数
+    gmvs = sorted(a["gmv"] for a in pts)
+    views_s = sorted(a["views"] for a in pts)
+    x_mid = gmvs[len(gmvs) // 2] if gmvs[-1] > 0 else 0
+    y_mid = views_s[len(views_s) // 2]
+    x_max = max(a["gmv"] for a in pts) * 1.15 if gmvs[-1] > 0 else 1
+    y_max = max(a["views"] for a in pts) * 1.15
+
+    def quad(a):
+        if a["views"] >= y_mid and a["gmv"] >= x_mid and a["gmv"] > 0:
+            return "⭐优质·继续合作"
+        if a["views"] >= y_mid and a["gmv"] < x_mid:
+            return "⚠️高播低转化·查链接/话术"
+        if a["views"] < y_mid and a["gmv"] >= x_mid and a["gmv"] > 0:
+            return "💎低播高转化·值得放量"
+        return "❌双低·考虑淘汰"
+
+    colors = {"⭐优质·继续合作": "#1a7f4b",
+              "⚠️高播低转化·查链接/话术": "#b26a09",
+              "💎低播高转化·值得放量": "#7a5fd0",
+              "❌双低·考虑淘汰": "#c2507a"}
+    # 画布
+    W, H, pad = 760, 420, 50
+    def sx(v): return pad + (v / x_max) * (W - 2 * pad) if x_max else W / 2
+    def sy(v): return H - pad - (v / y_max) * (H - 2 * pad)
+    dots = ""
+    for a in pts:
+        c = colors[quad(a)]
+        dots += (f'<circle cx="{sx(a["gmv"]):.1f}" cy="{sy(a["views"]):.1f}" r="7" '
+                 f'fill="{c}" fill-opacity="0.75" stroke="#fff" stroke-width="1.5">'
+                 f'<title>{a["name"]}｜播放 {a["views"]:,}｜GMV {a["gmv"]:,.0f}'
+                 f'｜{quad(a)}</title></circle>')
+    legend = "".join(
+        f'<span style="display:inline-block;margin-right:14px;font-size:12px;'
+        f'color:#555"><span style="display:inline-block;width:10px;height:10px;'
+        f'border-radius:50%;background:{c};margin-right:4px"></span>{q}</span>'
+        for q, c in colors.items())
+    svg = f'''<svg viewBox="0 0 {W} {H}" style="width:100%;background:#fff;
+border:1px solid #f1e4e8;border-radius:14px">
+<line x1="{pad}" y1="{sy(y_mid):.1f}" x2="{W-pad}" y2="{sy(y_mid):.1f}"
+ stroke="#eee" stroke-dasharray="5,4"/>
+<line x1="{sx(x_mid):.1f}" y1="{pad}" x2="{sx(x_mid):.1f}" y2="{H-pad}"
+ stroke="#eee" stroke-dasharray="5,4"/>
+<line x1="{pad}" y1="{H-pad}" x2="{W-pad}" y2="{H-pad}" stroke="#ddd"/>
+<line x1="{pad}" y1="{pad}" x2="{pad}" y2="{H-pad}" stroke="#ddd"/>
+{dots}
+<text x="{W-pad}" y="{H-pad+30}" text-anchor="end" font-size="12"
+ fill="#86868b">GMV →（右越好）</text>
+<text x="{pad-38}" y="{pad}" font-size="12" fill="#86868b"
+ transform="rotate(-90 {pad-38} {pad+40})">声量↑（上越好）</text>
+</svg>'''
+    st.markdown(f'<div style="text-align:center;margin-bottom:6px">{legend}</div>',
+                unsafe_allow_html=True)
+    st.markdown(svg, unsafe_allow_html=True)
+    st.caption("分界线 = 当前数据的中位数；鼠标悬停圆点看详情。"
+               "GMV 数据接通前，多数点会集中在左侧（有声量未转化）。")
+
+
+def _render_issue_list(kols):
+    """问题清单：自动列出需要处理的网红 + 建议动作"""
+    issues = []
+    for a in kols:
+        if a["views"] == 0:
+            issues.append(("🔴", a, "视频播放量为 0：检查视频是否公开/链接是否正确"))
+        elif a["views"] >= 50000 and a["gmv"] == 0:
+            issues.append(("🟠", a, "高播放但零 GMV：检查商品链接、折扣码口播、挂车是否正确"))
+        elif a["price"] and a["roi"] < 1:
+            issues.append(("🟡", a, f"ROI 仅 {a['roi']}（花 {a['price']:,.0f} 赚 {a['gmv']:,.0f}）："
+                                    "考虑降报价或换选品"))
+    if not issues:
+        st.markdown(T.empty_hint("✅ 暂无异常：所有闭环网红数据正常"),
+                    unsafe_allow_html=True)
+        return
+    rows = [[lv, f'<b>{esc(a["name"])}</b>',
+             f'<span class="num">{a["views"]:,}</span>',
+             f'<span class="num">{a["gmv"]:,.0f}</span>',
+             esc(msg)] for lv, a, msg in issues]
+    T.component_html(T.table(["级别", "网红", "播放", "GMV", "问题与建议"],
+                             rows, wrap=False),
+                     height=52 + len(rows) * 36)
+
+
 def page_analysis():
     home_btn()
-    st.markdown(T.header("分析模块", "视频级数据看板：一条视频一行（网红可重复出现）"),
+    st.markdown(T.header("分析模块", "数据看板（声量×GMV 四象限）+ 全量数据明细"),
                 unsafe_allow_html=True)
     recs = [r for r in store.list_all() if r.get("plan_month") or r.get("is_closed")]
     # 自动抓取范围仅闭环记录（履约中链接多为未公开审核链接，抓了也是"待回填"）
@@ -1602,140 +1737,179 @@ def page_analysis():
         else:
             vrows_data.append((r, None))  # 老数据兜底
 
-    tot_gmv = sum((v.get("gmv") or 0) if v else (r.get("gmv") or 0)
-                  for r, v in vrows_data)
-    tot_orders = sum((v.get("orders") or 0) if v else (r.get("orders") or 0)
-                     for r, v in vrows_data)
-    tot_views = sum((v.get("views") or 0) if v else (r.get("video_views") or 0)
-                    for r, v in vrows_data)
-    ctrs = [((v.get("ctr") or 0) if v else (r.get("ctr") or 0))
-            for r, v in vrows_data]
-    ctrs = [x for x in ctrs if x]
-    avg_ctr = sum(ctrs) / len(ctrs) if ctrs else 0
-    st.markdown(T.stats_row([
-        ("GMV 合计", f"{tot_gmv:,.0f}", "c-green"),
-        ("成交量合计", f"{tot_orders:,.0f}", "c-purple"),
-        ("播放量合计", f"{tot_views:,.0f}", "c-pink"),
-        ("平均 CTR", f"{avg_ctr:.1f}%", "c-amber"),
-    ]), unsafe_allow_html=True)
+    # ================= 双 Tab：数据看板（四象限）/ 全量数据 =================
+    tab_dash, tab_data = st.tabs(["📊 数据看板", "📋 全量数据"])
 
-    rows = sorted(vrows_data,
-                  key=lambda rv: (rv[1] or {}).get("gmv") if rv[1]
-                  else (rv[0].get("gmv") or 0), reverse=True)
-    trows = []
-    for r, v in rows:
-        tag = ' <span class="closed-tag">已闭环</span>' if r.get("is_closed") else ""
-        if v is not None:
-            # 视频级行（子表数据）
-            vt = v.get("video_type") or "-"
-            vt_badge = T.badge("Shorts" if vt == "Shorts" else "长视频")
-            url = v.get("video_url") or ""
-            pids = [p for p in str(v.get("product_ids") or "").split(",")
-                    if p.strip()]
-            views, likes = int(v.get("views") or 0), int(v.get("likes") or 0)
-            ctr, orders, gmv = (float(v.get("ctr") or 0),
-                                int(v.get("orders") or 0),
-                                float(v.get("gmv") or 0))
-            link_cell = (f'<a class="yts-link" href="{esc(url)}" target="_blank">'
-                         f'视频↗</a>' if url else "-")
-            trows.append([
-                f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
-                f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
-                f'{esc(r["name"])}</a>{tag}',
-                vt_badge, link_cell,
-                esc("、".join(pids[:2]) + ("…" if len(pids) > 2 else "")
-                    or "-"),
-                f'<span class="num">{views:,}</span>',
-                f'<span class="num">{likes:,}</span>',
-                f'<span class="num">{ctr:.1f}%</span>' if pids else
-                '<span class="num">—</span>',
-                f'<span class="num">{orders:,}</span>' if pids else
-                '<span class="num">—</span>',
-                f'<span class="num"><b>{gmv:,.0f}</b></span>' if pids else
-                '<span class="num">—</span>',
-            ])
+    # ---- 看板 tab：仅统计已闭环网红（声量 × GMV 四象限） ----
+    with tab_dash:
+        dash_recs = [r for r in recs if r.get("is_closed")]
+        if not dash_recs:
+            st.markdown(T.empty_hint("暂无已闭环的网红：完成合作流程并闭环后，"
+                                     "自动进入分析看板追踪声量与 GMV"),
+                        unsafe_allow_html=True)
         else:
-            # 老数据兜底行（无子表）
-            trows.append([
-                f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+            dash_rows = []  # [(记录, 视频dict或None)]
+            for r in dash_recs:
+                vids = r.get("videos") or []
+                if vids:
+                    for v in vids:
+                        dash_rows.append((r, v))
+                else:
+                    dash_rows.append((r, None))
+            kols = _aggregate_kols(dash_recs, dash_rows)
+            _render_kpi(kols, dash_rows)
+            st.markdown(T.sub("🎯 四象限：声量 × GMV"), unsafe_allow_html=True)
+            _render_quadrant(kols)
+            st.markdown(T.sub("🚨 问题清单（需要处理）"), unsafe_allow_html=True)
+            _render_issue_list(kols)
+            top = [a for a in sorted(kols, key=lambda x: x["gmv"],
+                                     reverse=True)[:10] if a["gmv"] > 0]
+            if top:
+                df = pd.DataFrame({"GMV": [a["gmv"] for a in top]},
+                                  index=[a["name"] for a in top])
+                st.markdown(T.sub("💰 GMV Top10"), unsafe_allow_html=True)
+                st.bar_chart(df, horizontal=True, height=300,
+                             color=["#dd8fa8"])
+            st.markdown(T.foot("仅统计已闭环网红 · 四象限分界线 = 全体播放/GMV 中位数"),
+                        unsafe_allow_html=True)
+
+    # ---- 全量数据 tab：视频级明细（含履约中记录）+ 网红总览 ----
+    with tab_data:
+        st.caption("全量明细：一条视频一行（网红可重复出现），含履约中记录")
+        tot_gmv = sum((v.get("gmv") or 0) if v else (r.get("gmv") or 0)
+                      for r, v in vrows_data)
+        tot_orders = sum((v.get("orders") or 0) if v else (r.get("orders") or 0)
+                         for r, v in vrows_data)
+        tot_views = sum((v.get("views") or 0) if v else (r.get("video_views") or 0)
+                        for r, v in vrows_data)
+        ctrs = [((v.get("ctr") or 0) if v else (r.get("ctr") or 0))
+                for r, v in vrows_data]
+        ctrs = [x for x in ctrs if x]
+        avg_ctr = sum(ctrs) / len(ctrs) if ctrs else 0
+        st.markdown(T.stats_row([
+            ("GMV 合计", f"{tot_gmv:,.0f}", "c-green"),
+            ("成交量合计", f"{tot_orders:,.0f}", "c-purple"),
+            ("播放量合计", f"{tot_views:,.0f}", "c-pink"),
+            ("平均 CTR", f"{avg_ctr:.1f}%", "c-amber"),
+        ]), unsafe_allow_html=True)
+
+        rows = sorted(vrows_data,
+                      key=lambda rv: (rv[1] or {}).get("gmv") if rv[1]
+                      else (rv[0].get("gmv") or 0), reverse=True)
+        trows = []
+        for r, v in rows:
+            tag = ' <span class="closed-tag">已闭环</span>' if r.get("is_closed") else ""
+            if v is not None:
+                # 视频级行（子表数据）
+                vt = v.get("video_type") or "-"
+                vt_badge = T.badge("Shorts" if vt == "Shorts" else "长视频")
+                url = v.get("video_url") or ""
+                pids = [p for p in str(v.get("product_ids") or "").split(",")
+                        if p.strip()]
+                views, likes = int(v.get("views") or 0), int(v.get("likes") or 0)
+                ctr, orders, gmv = (float(v.get("ctr") or 0),
+                                    int(v.get("orders") or 0),
+                                    float(v.get("gmv") or 0))
+                link_cell = (f'<a class="yts-link" href="{esc(url)}" target="_blank">'
+                             f'视频↗</a>' if url else "-")
+                trows.append([
+                    f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+                    f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
+                    f'{esc(r["name"])}</a>{tag}',
+                    vt_badge, link_cell,
+                    esc("、".join(pids[:2]) + ("…" if len(pids) > 2 else "")
+                        or "-"),
+                    f'<span class="num">{views:,}</span>',
+                    f'<span class="num">{likes:,}</span>',
+                    f'<span class="num">{ctr:.1f}%</span>' if pids else
+                    '<span class="num">—</span>',
+                    f'<span class="num">{orders:,}</span>' if pids else
+                    '<span class="num">—</span>',
+                    f'<span class="num"><b>{gmv:,.0f}</b></span>' if pids else
+                    '<span class="num">—</span>',
+                ])
+            else:
+                # 老数据兜底行（无子表）
+                trows.append([
+                    f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+                    f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
+                    f'{esc(r["name"])}</a>{tag}',
+                    T.badge("历史"),
+                    (f'<a class="yts-link" href="{esc(r.get("video_url") or "")}" '
+                     f'target="_blank">视频↗</a>') if r.get("video_url") else "-",
+                    esc("-"),
+                    f'<span class="num">{int(r.get("video_views") or 0):,}</span>',
+                    f'<span class="num">{int(r.get("video_likes") or 0):,}</span>',
+                    f'<span class="num">{r.get("ctr", 0):.1f}%</span>',
+                    f'<span class="num">{int(r.get("orders") or 0):,}</span>',
+                    f'<span class="num"><b>{r.get("gmv", 0):,.0f}</b></span>',
+                ])
+        # 行内名字带 data-nav 跳转，必须用 iframe 组件渲染（st.markdown 会吞掉点击）
+        T.component_html(
+            T.table(["网红", "类型", "视频", "挂商品", "播放", "点赞",
+                     "CTR", "成交", "GMV"], trows, wrap=False),
+            height=52 + len(trows) * 36)
+        st.caption("数据口径：播放/点赞/评论按视频自动抓取（缓存24h）；"
+                   "CTR/成交/GMV 按该视频关联的商品从 GMC 拉取（近30天）。"
+                   "同一商品挂在多条视频时，GMV 按商品归属，无法细分到单条视频。")
+
+        # ---- 网红总览：按网红聚合其全部视频（一位网红一行） ----
+        agg = {}
+        for r, v in vrows_data:
+            a = agg.setdefault(r["collab_id"], {
+                "name": r["name"], "n": 0, "views": 0, "likes": 0,
+                "orders": 0, "gmv": 0.0, "ctrs": []})
+            a["n"] += 1
+            if v is not None:
+                a["views"] += int(v.get("views") or 0)
+                a["likes"] += int(v.get("likes") or 0)
+                a["orders"] += int(v.get("orders") or 0)
+                a["gmv"] += float(v.get("gmv") or 0)
+                if float(v.get("ctr") or 0):
+                    a["ctrs"].append(float(v["ctr"]))
+            else:
+                a["views"] += int(r.get("video_views") or 0)
+                a["likes"] += int(r.get("video_likes") or 0)
+                a["orders"] += int(r.get("orders") or 0)
+                a["gmv"] += float(r.get("gmv") or 0)
+                if float(r.get("ctr") or 0):
+                    a["ctrs"].append(float(r["ctr"]))
+        arows = []
+        for cid, a in sorted(agg.items(), key=lambda kv: kv[1]["gmv"],
+                             reverse=True):
+            avg_ctr = sum(a["ctrs"]) / len(a["ctrs"]) if a["ctrs"] else 0
+            arows.append([
+                f'<a data-nav="?detail={cid}&from=analysis" '
                 f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
-                f'{esc(r["name"])}</a>{tag}',
-                T.badge("历史"),
-                (f'<a class="yts-link" href="{esc(r.get("video_url") or "")}" '
-                 f'target="_blank">视频↗</a>') if r.get("video_url") else "-",
-                esc("-"),
-                f'<span class="num">{int(r.get("video_views") or 0):,}</span>',
-                f'<span class="num">{int(r.get("video_likes") or 0):,}</span>',
-                f'<span class="num">{r.get("ctr", 0):.1f}%</span>',
-                f'<span class="num">{int(r.get("orders") or 0):,}</span>',
-                f'<span class="num"><b>{r.get("gmv", 0):,.0f}</b></span>',
+                f'{esc(a["name"])}</a>',
+                f'<span class="num">{a["n"]}</span>',
+                f'<span class="num">{a["views"]:,}</span>',
+                f'<span class="num">{a["likes"]:,}</span>',
+                f'<span class="num">{avg_ctr:.1f}%</span>' if a["ctrs"]
+                else '<span class="num">—</span>',
+                f'<span class="num">{a["orders"]:,}</span>',
+                f'<span class="num"><b>{a["gmv"]:,.0f}</b></span>',
             ])
-    # 行内名字带 data-nav 跳转，必须用 iframe 组件渲染（st.markdown 会吞掉点击）
-    T.component_html(
-        T.table(["网红", "类型", "视频", "挂商品", "播放", "点赞",
-                 "CTR", "成交", "GMV"], trows, wrap=False),
-        height=52 + len(trows) * 36)
-    st.caption("数据口径：播放/点赞/评论按视频自动抓取（缓存24h）；"
-               "CTR/成交/GMV 按该视频关联的商品从 GMC 拉取（近30天）。"
-               "同一商品挂在多条视频时，GMV 按商品归属，无法细分到单条视频。")
+        st.markdown(T.sub("👥 网红总览（聚合该网红全部视频）"),
+                    unsafe_allow_html=True)
+        T.component_html(
+            T.table(["网红", "视频数", "总播放", "总点赞", "平均CTR",
+                     "总成交", "总GMV"], arows, wrap=False),
+            height=52 + len(arows) * 36)
 
-    # ---- 网红总览：按网红聚合其全部视频（一位网红一行） ----
-    agg = {}
-    for r, v in vrows_data:
-        a = agg.setdefault(r["collab_id"], {
-            "name": r["name"], "n": 0, "views": 0, "likes": 0,
-            "orders": 0, "gmv": 0.0, "ctrs": []})
-        a["n"] += 1
-        if v is not None:
-            a["views"] += int(v.get("views") or 0)
-            a["likes"] += int(v.get("likes") or 0)
-            a["orders"] += int(v.get("orders") or 0)
-            a["gmv"] += float(v.get("gmv") or 0)
-            if float(v.get("ctr") or 0):
-                a["ctrs"].append(float(v["ctr"]))
-        else:
-            a["views"] += int(r.get("video_views") or 0)
-            a["likes"] += int(r.get("video_likes") or 0)
-            a["orders"] += int(r.get("orders") or 0)
-            a["gmv"] += float(r.get("gmv") or 0)
-            if float(r.get("ctr") or 0):
-                a["ctrs"].append(float(r["ctr"]))
-    arows = []
-    for cid, a in sorted(agg.items(), key=lambda kv: kv[1]["gmv"],
-                         reverse=True):
-        avg_ctr = sum(a["ctrs"]) / len(a["ctrs"]) if a["ctrs"] else 0
-        arows.append([
-            f'<a data-nav="?detail={cid}&from=analysis" '
-            f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
-            f'{esc(a["name"])}</a>',
-            f'<span class="num">{a["n"]}</span>',
-            f'<span class="num">{a["views"]:,}</span>',
-            f'<span class="num">{a["likes"]:,}</span>',
-            f'<span class="num">{avg_ctr:.1f}%</span>' if a["ctrs"]
-            else '<span class="num">—</span>',
-            f'<span class="num">{a["orders"]:,}</span>',
-            f'<span class="num"><b>{a["gmv"]:,.0f}</b></span>',
-        ])
-    st.markdown(T.sub("👥 网红总览（聚合该网红全部视频）"),
-                unsafe_allow_html=True)
-    T.component_html(
-        T.table(["网红", "视频数", "总播放", "总点赞", "平均CTR",
-                 "总成交", "总GMV"], arows, wrap=False),
-        height=52 + len(arows) * 36)
+        top_v = [(r, v) for r, v in rows
+                 if (v.get("gmv") if v else r.get("gmv"))][:10]
+        if top_v:
+            df = pd.DataFrame(
+                {"GMV": [((v.get("gmv") or 0) if v else (r.get("gmv") or 0))
+                         for r, v in top_v]},
+                index=[r["name"] + ("（Shorts）" if v and v.get("video_type") == "Shorts"
+                                    else "") for r, v in top_v])
+            st.markdown(T.sub("GMV Top（视频级）"), unsafe_allow_html=True)
+            st.bar_chart(df, horizontal=True, height=320, color=["#dd8fa8"])
 
-    top = [(r, v) for r, v in rows
-           if (v.get("gmv") if v else r.get("gmv"))][:10]
-    if top:
-        df = pd.DataFrame(
-            {"GMV": [((v.get("gmv") or 0) if v else (r.get("gmv") or 0))
-                     for r, v in top]},
-            index=[r["name"] + ("（Shorts）" if v and v.get("video_type") == "Shorts"
-                                else "") for r, v in top])
-        st.markdown(T.sub("GMV Top"), unsafe_allow_html=True)
-        st.bar_chart(df, horizontal=True, height=320, color=["#dd8fa8"])
-
-    st.markdown(T.foot("视频级数据由闭环节点登记、一键刷新自动写入"),
-                unsafe_allow_html=True)
+        st.markdown(T.foot("视频级数据由闭环节点登记、一键刷新自动写入"),
+                    unsafe_allow_html=True)
 
 
 # ============================ 路由 ============================
