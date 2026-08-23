@@ -107,26 +107,38 @@ def match_to_import_file(mapping_xlsx: str, big_csv: str, out_xlsx: str) -> dict
             "gmv", "net_sales", "commission", "video_views", "impressions",
             "clicks", "orders", "cvr", "ctr")}})
 
-    # ---- sheet2 视频分摊：均摊销售额/订单 + CPM ----
-    video_rows = []
+    # ---- sheet2 视频分摊：按网红分组整体均摊（共挂商品按视频数平分）+ CPM
+    # 注意必须整组传入：逐条单视频调用会让 holder_count 恒为1，
+    # 两个视频挂同一商品时 GMV 会被重复归属两份。
+    def _s(row, col):
+        v = row.get(col)
+        return "" if v is None or pd.isna(v) else str(v)
+
+    vids_by_cid = {}
     for _, row in vid_df.iterrows():
         cid = str(row["channel_id"])
+        views = row.get("播放量")
+        vids_by_cid.setdefault(cid, []).append({
+            "video_type": _s(row, "视频类型"),
+            "video_url": _s(row, "视频链接"),
+            "product_ids": _s(row, "挂的商品"),
+            "views": int(views) if views is not None and pd.notna(views) else 0,
+        })
+    video_rows = []
+    for cid, vlist in vids_by_cid.items():
         g = kol_groups.get(cid)
         if not g or not g["rows"]:
             continue
-        v = {"video_type": row.get("视频类型", ""),
-             "video_url": row.get("视频链接", ""),
-             "product_ids": row.get("挂的商品", ""),
-             "views": int(row.get("播放量") or 0)}
-        alloc = PC.allocate_to_videos([v], g["rows"], g["price"])[0]
-        video_rows.append({
-            "channel_id": cid, "网红": row.get("网红", ""),
-            "视频链接": v["video_url"], "视频类型": v["video_type"],
-            "播放量": v["views"],
-            "分摊销售额": float(alloc.get("gmv") or 0),
-            "分摊订单": float(alloc.get("orders") or 0),
-            "CPM": float(alloc.get("cpm") or 0),
-        })
+        allocs = PC.allocate_to_videos(vlist, g["rows"], g["price"])
+        for v, alloc in zip(vlist, allocs):
+            video_rows.append({
+                "channel_id": cid, "网红": g["name"],
+                "视频链接": v["video_url"], "视频类型": v["video_type"],
+                "播放量": v["views"],
+                "分摊销售额": float(alloc.get("gmv") or 0),
+                "分摊订单": float(alloc.get("orders") or 0),
+                "CPM": float(alloc.get("cpm") or 0),
+            })
 
     df_prod = pd.DataFrame(prod_rows or [{}])
     df_vid = pd.DataFrame(video_rows or [{}])
