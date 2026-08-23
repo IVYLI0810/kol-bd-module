@@ -687,8 +687,8 @@ def _auto_gmc_check(cid, c):
 
 
 def _gen_guide(cid, c, req):
-    """调千问生成「内容方向&强带货脚本建议」，组装完整 guide 存 session"""
-    with st.spinner("AI 正在生成脚本建议（约10-20秒）· 생성 중..."):
+    """调 AI 生成「内容方向&强带货脚本建议」，组装完整 guide 存 session"""
+    with st.spinner("AI 正在生成脚本建议（约1-3分钟，期间请勿操作页面）· 생성 중..."):
         try:
             script = G.call_dashscope(G.build_prompt(c, req))
         except RuntimeError as e:
@@ -1019,7 +1019,7 @@ def _render_actions(cid, c, step):
 
             # ---- 生成 Guide（分支A 配套）：原版韩文 guide + 千问强带货脚本建议 ----
             st.markdown(T.sub("生成 Guide · 가이드 생성"), unsafe_allow_html=True)
-            st.caption("基于原版韩文 가이드，由千问为该网红追加「内容方向 & 强带货脚本建议」；"
+            st.caption("基于原版韩文 가이드，由 AI 为该网红追加「内容方向 & 强带货脚本建议」；"
                        "生成后可复制 / 下载 Word 发给网红，再回到分支A 标记已发送")
             req = st.text_area("附加要求（选填，「按要求生成」时生效）· 추가 요청 (선택)",
                                key="guide_req", height=70,

@@ -130,21 +130,29 @@ def build_prompt(collab: dict, requirements: str = "") -> list:
     ]
 
 
-def call_dashscope(messages: list, timeout: int = 120) -> str:
-    """调用 AI（OpenAI 兼容接口），返回生成文本；无 key / 出错时抛 RuntimeError(友好文案)"""
+def call_dashscope(messages: list, timeout: int = 300) -> str:
+    """调用 AI（OpenAI 兼容接口），返回生成文本；无 key / 出错时抛 RuntimeError(友好文案)。
+    大模型（如 glm-5.3）思考+生成可能耗时几分钟，timeout 放宽到 300 秒。"""
     key = get_api_key()
     if not key:
         raise RuntimeError(
             "未配置 DASHSCOPE_API_KEY · DASHSCOPE_API_KEY가 설정되지 않았습니다. "
             "请在主站 Cloud Secrets 添加 DASHSCOPE_API_KEY（百炼/智谱等控制台获取）")
-    resp = requests.post(
-        DASHSCOPE_URL,
-        headers={"Authorization": f"Bearer {key}",
-                 "Content-Type": "application/json"},
-        json={"model": get_model(), "messages": messages, "temperature": 0.8,
-              "max_tokens": 8192},
-        timeout=timeout,
-    )
+    try:
+        resp = requests.post(
+            DASHSCOPE_URL,
+            headers={"Authorization": f"Bearer {key}",
+                     "Content-Type": "application/json"},
+            json={"model": get_model(), "messages": messages, "temperature": 0.8,
+                  "max_tokens": 8192},
+            timeout=timeout,
+        )
+    except requests.exceptions.Timeout:
+        raise RuntimeError(
+            f"AI 接口 {timeout} 秒内没返回结果（大模型思考较慢，属正常现象）。"
+            "请稍后重试点一次；若经常超时，可在 Secrets 把 DASHSCOPE_MODEL 换成更快的模型")
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"AI 接口连接失败（{type(e).__name__}），请稍后重试")
     if resp.status_code != 200:
         raise RuntimeError(f"AI 接口返回 {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
