@@ -288,6 +288,8 @@ class YTSStore:
             "audit_log": audit_log,
             # ---- 视频明细子表（一行一条视频，闭环时登记） ----
             "videos": r.get("videos") or [],
+            # ---- 商品明细子表（一行一个商品，CSV导入时写入） ----
+            "products": r.get("products") or [],
             # ---- 投放标记（复用宜搭遗留空字段：ad_auth=是否需要投放，status=是否投放） ----
             "ad_needed": (r.get("ad_auth") or "") == "Y",
             "ad_done": (r.get("status") or "") == "Y",
@@ -658,6 +660,34 @@ class YTSStore:
             self._patch(collab_id, {"videos": merged})  # 仅对齐本地缓存
             return
         self._upd(collab_id, {"videos": merged})
+
+    # ---- 商品明细子表（CSV 导入用，与视频子表同样的防并发覆写模式）----
+    def _fresh_products(self, collab_id):
+        """写前直读宜搭，拿该记录商品子表此刻的最新值（绕过本地缓存）"""
+        try:
+            rec = self.db.get_by_channel_id(collab_id)
+        except Exception:
+            return []
+        return list((rec or {}).get("products") or [])
+
+    def save_products(self, collab_id, products: list) -> None:
+        """覆写商品明细子表。products 每项：
+        {"pid","name","gmv","net_sales","commission","video_views",
+         "impressions","clicks","orders","cvr","ctr"}
+        以商品ID为行内唯一键并集合并（fresh 独有行保留），
+        完全一致时跳过写库"""
+        try:
+            fresh = self._fresh_products(collab_id)
+        except Exception:
+            fresh = []
+        edited_ids = {str(p.get("pid") or "").strip() for p in products}
+        merged = [dict(p) for p in products]
+        merged.extend(dict(p) for p in fresh
+                      if str(p.get("pid") or "").strip() not in edited_ids)
+        if merged == fresh:
+            self._patch(collab_id, {"products": merged})
+            return
+        self._upd(collab_id, {"products": merged})
 
     def update_video_row(self, collab: dict, index: int, patch: dict) -> None:
         """更新视频明细第 index 行的指标字段（分析模块一键刷新用）。

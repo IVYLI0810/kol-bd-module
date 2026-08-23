@@ -71,6 +71,8 @@ FIELD_IDS = {
     "email": "textField_mswndfpt",             # 联系邮箱
     # ---- 视频明细子表（2026-08-20 第四批） ----
     "videos": "tableField_mt0hcgfr",           # 子表容器：视频明细
+    # ---- 商品明细子表（2026-08-24 第五批） ----
+    "products": "tableField_mt60r3at",         # 子表容器：商品明细
 }
 
 # 子表（审核记录）内部字段映射
@@ -92,10 +94,29 @@ VIDEO_SUB_FIELD_IDS = {
     "ctr": "numberField_mt0hcgg2",             # CTR
     "orders": "numberField_mt0hcgg4",          # 成交量
     "gmv": "numberField_mt0hcgg6",             # GMV
+    "cpm": "numberField_mt61cif4",             # CPM（报价÷播放量×1000，导入时计算）
 }
 
 # 视频明细子表内的浮点字段（写入时保留小数）
-VIDEO_FLOAT_FIELDS = {"ctr", "gmv"}
+VIDEO_FLOAT_FIELDS = {"ctr", "gmv", "cpm"}
+
+# 子表（商品明细）内部字段映射：代码名 -> fieldId
+PRODUCT_SUB_FIELD_IDS = {
+    "pid": "textField_mt60r3av",               # 商品ID（纯数字）
+    "name": "textField_mt60r3ax",              # 商品名称
+    "gmv": "numberField_mt60r3az",             # 销售总额
+    "net_sales": "numberField_mt60r3b1",       # 净销售额
+    "commission": "numberField_mt60r3b3",      # 佣金
+    "video_views": "numberField_mt60r3b5",     # 观看次数
+    "impressions": "numberField_mt60r3b7",     # 展示次数
+    "clicks": "numberField_mt60r3b9",          # 点击次数
+    "orders": "numberField_mt60r3bb",          # 订单数
+    "cvr": "numberField_mt60r3bd",             # 转化率
+    "ctr": "numberField_mt60r3bf",             # 点击率（点击÷展示，导入时计算）
+}
+
+# 商品明细子表内的浮点字段（写入时保留小数）
+PRODUCT_FLOAT_FIELDS = {"gmv", "net_sales", "commission", "cvr", "ctr"}
 
 NUMBER_FIELDS = {
     "subscribers", "total_views", "video_views", "video_likes", "video_comments",
@@ -215,6 +236,9 @@ class YidaBDDB:
             elif code == "videos":
                 # 子表：视频明细，每项字段见 VIDEO_SUB_FIELD_IDS
                 value = [self._to_video_row(row) for row in (value or [])]
+            elif code == "products":
+                # 子表：商品明细，每项字段见 PRODUCT_SUB_FIELD_IDS
+                value = [self._to_product_row(row) for row in (value or [])]
             else:
                 value = str(value)
             out[fid] = value
@@ -229,7 +253,7 @@ class YidaBDDB:
             VIDEO_SUB_FIELD_IDS["product_ids"]: str(row.get("product_ids", "")),
         }
         for code in ("views", "likes", "comments", "clicks", "ctr",
-                     "orders", "gmv"):
+                     "orders", "gmv", "cpm"):
             try:
                 v = float(row.get(code) or 0)
             except (TypeError, ValueError):
@@ -244,6 +268,36 @@ class YidaBDDB:
     def _from_video_row(row: dict) -> dict:
         """宜搭子表行 → 视频明细行（代码名: value）"""
         rev = {v: k for k, v in VIDEO_SUB_FIELD_IDS.items()}
+        out = {}
+        for fid, value in row.items():
+            code = rev.get(fid, "")
+            if code:
+                out[code] = value
+        return out
+
+    @staticmethod
+    def _to_product_row(row: dict) -> dict:
+        """商品明细行 → 宜搭子表行（fieldId: value）"""
+        out = {
+            PRODUCT_SUB_FIELD_IDS["pid"]: str(row.get("pid", "")),
+            PRODUCT_SUB_FIELD_IDS["name"]: str(row.get("name", ""))[:400],
+        }
+        for code in ("gmv", "net_sales", "commission", "video_views",
+                     "impressions", "clicks", "orders", "cvr", "ctr"):
+            try:
+                v = float(row.get(code) or 0)
+            except (TypeError, ValueError):
+                continue
+            if code in PRODUCT_FLOAT_FIELDS:
+                out[PRODUCT_SUB_FIELD_IDS[code]] = round(v, 4)
+            else:
+                out[PRODUCT_SUB_FIELD_IDS[code]] = int(v)
+        return out
+
+    @staticmethod
+    def _from_product_row(row: dict) -> dict:
+        """宜搭子表行 → 商品明细行（代码名: value）"""
+        rev = {v: k for k, v in PRODUCT_SUB_FIELD_IDS.items()}
         out = {}
         for fid, value in row.items():
             code = rev.get(fid, "")
@@ -288,6 +342,9 @@ class YidaBDDB:
             elif code == "videos":
                 rows = value if isinstance(value, list) else []
                 rec["videos"] = [self._from_video_row(r) for r in rows]
+            elif code == "products":
+                rows = value if isinstance(value, list) else []
+                rec["products"] = [self._from_product_row(r) for r in rows]
             else:
                 if code == "submit_actual":
                     # 实际提交时间保留到分钟；其他日期字段仍按天显示
@@ -297,6 +354,7 @@ class YidaBDDB:
                 rec[code] = value
         rec.setdefault("audit_log", [])
         rec.setdefault("videos", [])
+        rec.setdefault("products", [])
         for ts_key, ts_code in (("CreatedTimeGMT", "created_at"),
                                 ("ModifiedTimeGMT", "updated_at"),
                                 ("createdTimeGMT", "created_at"),

@@ -3,6 +3,7 @@
 """YTS 网红管理系统 - 主管理后台（裸粉 · Apple 极简版）"""
 import html
 import io
+import os
 import re
 import threading
 import time
@@ -278,6 +279,69 @@ def flow_import_panel():
             st.session_state["flow_import_open"] = False
             st.toast(f"导入完成：{len(pend)} 位网红已入库"
                      f"（已闭环的在 📊 分析模块查看）")
+            st.rerun()
+
+
+def product_import_panel():
+    """选品清单批量导入：上传「网红×商品」Excel → 匹配系统网红 → 预览 → 写入"""
+    import yts_product_import as PI
+    with st.container(border=True):
+        st.markdown("**🛒 选品清单批量导入** · 上传「网红×商品」表（如 7月/8月YTS网红x商品），"
+                    "自动按频道匹配系统里的网红，把商品链接填进各自的选品清单。"
+                    "上传后先预览匹配结果，确认后再写入。")
+        up = st.file_uploader("上传「网红×商品」Excel", type=["xlsx", "xls"],
+                              key="pi_up")
+        if up is None:
+            return
+        groups, issues = PI.parse_product_workbook(up.read())
+        for msg in issues[:8]:
+            st.warning(msg)
+        if not groups:
+            st.error("没有解析到有效的网红×商品数据，请确认表格格式")
+            return
+
+        matched = PI.match_groups(groups, store.list_all())
+        mode = st.radio("写入方式", ["合并（保留已有选品，追加新的）",
+                                     "覆盖（清空旧选品，只留本次）"],
+                        horizontal=True, key="pi_mode")
+        preview = []
+        for m in matched:
+            g, rec = m["group"], m["matched"]
+            preview.append({
+                "月份": g["month"] or "-",
+                "频道名称": g["name"],
+                "负责人": g["recruiter"] or "-",
+                "匹配结果": (f"✅ {rec['name']}" if rec else "❌ 未匹配"),
+                "匹配方式": m["match_by"] or "-",
+                "商品数": len(g["products"]),
+            })
+        st.dataframe(preview, use_container_width=True, hide_index=True)
+        n_ok = sum(1 for m in matched if m["matched"])
+        n_prod = sum(len(m["group"]["products"]) for m in matched if m["matched"])
+        st.caption(f"共 {len(matched)} 位网红：匹配成功 {n_ok}（商品 {n_prod} 个）、"
+                   f"未匹配 {len(matched) - n_ok}")
+        if n_ok < len(matched):
+            st.warning("未匹配的网红不会写入。请确认这些网红已在系统里"
+                       "（可先到挖掘/活动模块导入），或核对表中频道名称")
+
+        if st.button(f"✅ 确认写入 {n_ok} 位网红的选品清单", type="primary",
+                     use_container_width=True, key="pi_go",
+                     disabled=n_ok == 0):
+            ok_n = 0
+            for m in matched:
+                rec = m["matched"]
+                if not rec:
+                    continue
+                new_urls = [p["url"] for p in m["group"]["products"]]
+                if mode.startswith("合并"):
+                    final = PI.merge_product_lists(rec.get("product_list") or [],
+                                                   new_urls)
+                else:
+                    final = new_urls
+                store.set_products(rec["collab_id"], final)
+                ok_n += 1
+            st.session_state["product_import_open"] = False
+            st.toast(f"已写入 {ok_n} 位网红的选品清单")
             st.rerun()
 
 
@@ -670,15 +734,24 @@ def page_activity():
     with h2:
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
         _fi_open = st.session_state.get("flow_import_open", False)
+        _pi_open = st.session_state.get("product_import_open", False)
         if st.button("✕ 收起导入面板" if _fi_open else " 流程导入",
                      key="btn_flow_import", use_container_width=True):
             st.session_state["flow_import_open"] = not _fi_open
+            st.session_state["product_import_open"] = False
+            st.rerun()
+        if st.button("✕ 收起选品导入" if _pi_open else "🛒 选品清单导入",
+                     key="btn_product_import", use_container_width=True):
+            st.session_state["product_import_open"] = not _pi_open
+            st.session_state["flow_import_open"] = False
             st.rerun()
         if st.button(" 导出全量数据", key="btn_export_all",
                      use_container_width=True):
             _export_all_data()
     if st.session_state.get("flow_import_open"):
         flow_import_panel()
+    if st.session_state.get("product_import_open"):
+        product_import_panel()
 
     roster = R.get_members()
     # 静默对账（5分钟一次）：履约中的网红回流挖掘站标「已引入」
@@ -1606,6 +1679,29 @@ def _pull_product_metrics(closed_recs):
         st.warning("未拉到数据：请检查 GMC 凭证是否有效、选品是否已入池")
 
 
+# ---------------------------------------------------------------------------
+# 汇率与货币换算（2026-08-24 审查修复）
+# 背景：商品报表的销售额/佣金是美金(≈)，网红报价存的是韩币。
+# 此前 ROI=GMV/报价、CPM=报价/播放×1000 直接混用两种货币，差约1538倍。
+# 现统一换算成美金口径。汇率可在 Secrets 配 USD_RATE（默认1538韩币/美金）。
+# 宜搭无需新增美金列（汇率波动，存快照会过时），网站按汇率实时换算。
+# ---------------------------------------------------------------------------
+def _usd_rate() -> float:
+    try:
+        v = float(os.environ.get("USD_RATE", "") or 1538)
+        return v if v > 0 else 1538
+    except ValueError:
+        return 1538
+
+
+def _krw_to_usd(krw) -> float:
+    """韩币 → 美金"""
+    try:
+        return float(krw) / _usd_rate()
+    except (TypeError, ValueError):
+        return 0.0
+
+
 # 数据更新权限：视频数据（YouTube）与商品数据（GMC）的刷新/拉取
 # 仅限负责人操作；其他成员可查看已同步的数据，但不能触发刷新。
 # 网红基础信息（编辑表单）不受此限制，全员可编辑。
@@ -1714,8 +1810,8 @@ def _refresh_videos_granular(closed_recs, force=False):
 
 
 def _aggregate_kols(recs, vrows_data):
-    """按网红聚合：播放/点赞/成交/GMV 求和，ROI=GMV/报价。
-    返回 [{cid, name, views, likes, orders, gmv, price, roi}]"""
+    """按网红聚合：播放/点赞/成交/GMV 求和，报价换算美金，ROI=GMV/报价(美金)。
+    返回 [{cid, name, views, likes, orders, gmv, price(韩币), price_usd, roi}]"""
     agg = {}
     for r, v in vrows_data:
         a = agg.setdefault(r["collab_id"], {
@@ -1732,7 +1828,8 @@ def _aggregate_kols(recs, vrows_data):
             a["orders"] += int(r.get("orders") or 0)
             a["gmv"] += float(r.get("gmv") or 0)
     for a in agg.values():
-        a["roi"] = round(a["gmv"] / a["price"], 2) if a["price"] else 0
+        a["price_usd"] = round(_krw_to_usd(a["price"]), 2)
+        a["roi"] = round(a["gmv"] / a["price_usd"], 2) if a["price_usd"] else 0
     return list(agg.values())
 
 
@@ -1743,7 +1840,7 @@ def _render_kpi(kols, vrows_data):
     eng = (tot_likes / tot_views * 100) if tot_views else 0
     tot_gmv = sum(a["gmv"] for a in kols)
     tot_orders = sum(a["orders"] for a in kols)
-    tot_cost = sum(a["price"] for a in kols)
+    tot_cost = sum(a["price_usd"] for a in kols)  # 美金口径（韩币已换算）
     roi = (tot_gmv / tot_cost) if tot_cost else 0
     st.markdown(T.stats_row([
         ("🔊 总声量（播放）", f"{tot_views:,}", "c-pink"),
@@ -1833,7 +1930,7 @@ def _render_issue_list(kols):
         elif a["views"] >= 50000 and a["gmv"] == 0:
             issues.append(("🟠", a, "高播放但零 GMV：检查商品链接、折扣码口播、挂车是否正确"))
         elif a["price"] and a["roi"] < 1:
-            issues.append(("🟡", a, f"ROI 仅 {a['roi']}（花 {a['price']:,.0f} 赚 {a['gmv']:,.0f}）："
+            issues.append(("🟡", a, f"ROI 仅 {a['roi']}（花 ${a['price_usd']:,.0f} 赚 ${a['gmv']:,.0f}）："
                                     "考虑降报价或换选品"))
     if not issues:
         st.markdown(T.empty_hint("✅ 暂无异常：所有闭环网红数据正常"),
@@ -1987,9 +2084,60 @@ def _render_health(all_recs):
             height=52 + len(trows) * 36)
 
 
+def _export_mapping_bytes():
+    """导出「网红×视频×商品」映射表（2个sheet），供离线匹配 CSV 用"""
+    import yts_product_match as PM
+    sel, vids = PM.build_mapping_records(store.list_all())
+    return PM.mapping_to_excel_bytes(sel, vids)
+
+
+def _import_matched_xlsx(xlsx_file):
+    """上传离线匹配后的「导入表」：按 channel_id 直接写宜搭。
+    每个网红合并为 1 次写入（商品子表+视频子表+主记录指标），带进度条"""
+    import yts_product_match as PM
+    try:
+        data = PM.parse_import_excel(xlsx_file.read())
+    except ValueError as e:
+        st.error(str(e))
+        return
+    if not data:
+        st.error("导入表里没有有效数据行，请确认文件正确")
+        return
+    rec_by_cid = {r["collab_id"]: r for r in store.list_all()}
+    prog = st.progress(0.0, text="正在写入宜搭…")
+    hit, n_prod = 0, 0
+    for i, (cid, g) in enumerate(data.items()):
+        prog.progress(i / len(data), text=f"正在写入（{i + 1}/{len(data)}）")
+        rec = rec_by_cid.get(cid)
+        if not rec:
+            continue
+        patch = {"products": g["products"]}
+        if g["videos_patch"] and rec.get("videos"):
+            patch["videos"] = PM.apply_video_patch(rec["videos"],
+                                                   g["videos_patch"])
+        clicks, orders, gmv = g["summary"]
+        patch.update({
+            "product_views": int(clicks), "ctr": 0.0,
+            "orders": int(orders),
+            "conversion_rate": round(orders / clicks * 100, 2) if clicks else 0.0,
+            "gmv": float(gmv),
+        })
+        ctrs = [p.get("ctr") or 0 for p in g["products"]]
+        if ctrs:
+            patch["ctr"] = round(sum(ctrs) / len(ctrs), 2)
+        store._upd(cid, patch)  # 单次 HTTP 写入
+        hit += 1
+        n_prod += len(g["products"])
+    prog.progress(1.0, text="完成")
+    if hit == 0:
+        st.warning("没有写入任何数据：导入表里的网红在系统中不存在")
+        return
+    st.toast(f"✅ 已更新 {hit} 位网红、{n_prod} 个商品的效果数据")
+
+
 def page_analysis():
     home_btn()
-    st.markdown(T.header("分析模块", "数据看板（声量×GMV 四象限）+ 全量数据明细 + 数据健康"),
+    st.markdown(T.header("分析模块", "数据看板（声量×GMV 四象限）+ 全量数据 + 商品维度 + 数据健康"),
                 unsafe_allow_html=True)
     recs = [r for r in store.list_all() if r.get("plan_month") or r.get("is_closed")]
     # 自动抓取范围仅闭环记录（履约中链接多为未公开审核链接，抓了也是"待回填"）
@@ -2020,6 +2168,24 @@ def page_analysis():
                       help="从 GMC 报表按合作选品拉取点击/CTR/成交/GMV（近30天），"
                            "写入主记录指标（兼容老数据）"):
             _pull_product_metrics(closed_recs)
+        # ---- 商品数据两步导入：①导出映射表 → 离线匹配 → ②上传导入表 ----
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            st.download_button(
+                "① 📤 导出网红×视频×商品映射表",
+                data=_export_mapping_bytes(),
+                file_name=f"YTS映射表_{datetime.now():%Y%m%d}.xlsx",
+                key="ana_map_export", use_container_width=True,
+                help="导出系统里的选品和视频挂品清单，发给助手离线匹配 "
+                     "YouTube Shopping 全量数据")
+        with mc2:
+            xlsx_up = st.file_uploader(
+                "② 上传匹配后的导入表（xlsx）",
+                type=["xlsx"], key="ana_matched_up",
+                help="上传助手匹配生成的「YTS商品导入表」，快速写入宜搭")
+            if xlsx_up is not None:
+                _import_matched_xlsx(xlsx_up)
+                st.rerun()
     elif closed_recs:
         st.caption("📊 视频与商品数据由负责人统一更新；如需刷新请联系艾薇李。"
                    "下方为最新已同步的数据。")
@@ -2046,8 +2212,9 @@ def page_analysis():
         else:
             vrows_data.append((r, None))  # 老数据兜底
 
-    # ================= 双 Tab：数据看板（四象限）/ 全量数据 =================
-    tab_dash, tab_data, tab_health = st.tabs(["📊 数据看板", "📋 全量数据", "🩺 数据健康"])
+    # ===== 四 Tab：数据看板（四象限）/ 全量数据 / 商品维度 / 数据健康 =====
+    tab_dash, tab_data, tab_prod, tab_health = st.tabs(
+        ["📊 数据看板", "📋 全量数据", "🛍 商品维度", "🩺 数据健康"])
 
     # ---- 看板 tab：仅统计已闭环网红（声量 × GMV 四象限） ----
     with tab_dash:
@@ -2119,6 +2286,7 @@ def page_analysis():
                 ctr, orders, gmv = (float(v.get("ctr") or 0),
                                     int(v.get("orders") or 0),
                                     float(v.get("gmv") or 0))
+                cpm = float(v.get("cpm") or 0)
                 link_cell = (f'<a class="yts-link" href="{esc(url)}" target="_blank">'
                              f'视频↗</a>' if url else "-")
                 trows.append([
@@ -2136,6 +2304,8 @@ def page_analysis():
                     '<span class="num">—</span>',
                     f'<span class="num"><b>{gmv:,.0f}</b></span>' if pids else
                     '<span class="num">—</span>',
+                    f'<span class="num">{cpm:,.0f}</span>' if cpm else
+                    '<span class="num">—</span>',
                 ])
             else:
                 # 老数据兜底行（无子表）
@@ -2152,22 +2322,24 @@ def page_analysis():
                     f'<span class="num">{r.get("ctr", 0):.1f}%</span>',
                     f'<span class="num">{int(r.get("orders") or 0):,}</span>',
                     f'<span class="num"><b>{r.get("gmv", 0):,.0f}</b></span>',
+                    '<span class="num">—</span>',
                 ])
         # 行内名字带 data-nav 跳转，必须用 iframe 组件渲染（st.markdown 会吞掉点击）
         T.component_html(
             T.table(["网红", "类型", "视频", "挂商品", "播放", "点赞",
-                     "CTR", "成交", "GMV"], trows, wrap=False),
+                     "CTR", "成交", "GMV", "CPM"], trows, wrap=False),
             height=52 + len(trows) * 36)
         st.caption("数据口径：播放/点赞/评论按视频自动抓取（缓存24h）；"
-                   "CTR/成交/GMV 按该视频关联的商品从 GMC 拉取（近30天）。"
-                   "同一商品挂在多条视频时，GMV 按商品归属，无法细分到单条视频。")
+                   "CTR/成交/GMV 按该视频关联的商品从商品报表均摊（同一商品挂多条视频时平分）；"
+                   "CPM = 网红报价($) ÷ 播放量 × 1000，报价由韩币÷汇率换算（成本口径统一为美金）。")
 
         # ---- 网红总览：按网红聚合其全部视频（一位网红一行） ----
         agg = {}
         for r, v in vrows_data:
             a = agg.setdefault(r["collab_id"], {
                 "name": r["name"], "n": 0, "views": 0, "likes": 0,
-                "orders": 0, "gmv": 0.0, "ctrs": []})
+                "orders": 0, "gmv": 0.0, "ctrs": [],
+                "price_usd": _krw_to_usd(r.get("price"))})
             a["n"] += 1
             if v is not None:
                 a["views"] += int(v.get("views") or 0)
@@ -2187,6 +2359,7 @@ def page_analysis():
         for cid, a in sorted(agg.items(), key=lambda kv: kv[1]["gmv"],
                              reverse=True):
             avg_ctr = sum(a["ctrs"]) / len(a["ctrs"]) if a["ctrs"] else 0
+            roi = round(a["gmv"] / a["price_usd"], 2) if a["price_usd"] else 0
             arows.append([
                 f'<a data-nav="?detail={cid}&from=analysis" '
                 f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
@@ -2198,13 +2371,19 @@ def page_analysis():
                 else '<span class="num">—</span>',
                 f'<span class="num">{a["orders"]:,}</span>',
                 f'<span class="num"><b>{a["gmv"]:,.0f}</b></span>',
+                f'<span class="num">${a["price_usd"]:,.0f}</span>'
+                if a["price_usd"] else '<span class="num">—</span>',
+                f'<span class="num"><b>{roi:.2f}</b></span>'
+                if a["price_usd"] else '<span class="num">—</span>',
             ])
         st.markdown(T.sub("👥 网红总览（聚合该网红全部视频）"),
                     unsafe_allow_html=True)
         T.component_html(
             T.table(["网红", "视频数", "总播放", "总点赞", "平均CTR",
-                     "总成交", "总GMV"], arows, wrap=False),
+                     "总成交", "总GMV", "报价($)", "ROI"], arows, wrap=False),
             height=52 + len(arows) * 36)
+        st.caption(f"报价($) = 韩币报价 ÷ 汇率{_usd_rate():,.0f}（汇率可在 Secrets 配 USD_RATE）；"
+                   "ROI = GMV($) ÷ 报价($)")
 
         top_v = [(r, v) for r, v in rows
                  if (v.get("gmv") if v else r.get("gmv"))][:10]
@@ -2219,6 +2398,57 @@ def page_analysis():
 
         st.markdown(T.foot("视频级数据由闭环节点登记、一键刷新自动写入"),
                     unsafe_allow_html=True)
+
+    # ---- 商品维度 tab：一个商品一行（从商品明细子表读取） ----
+    with tab_prod:
+        st.caption("商品维度：一个商品一行，数据来自 YouTube Shopping 商品报表"
+                   "（分析模块顶部上传 CSV 后自动写入）")
+        prod_rows = []  # (记录, 商品dict)
+        for r in recs:
+            for p in r.get("products") or []:
+                prod_rows.append((r, p))
+        if not prod_rows:
+            st.markdown(T.empty_hint(
+                "暂无商品数据：请先在分析模块顶部上传「表现最好的链接商品」CSV，"
+                "系统会按各网红选品清单自动匹配并写入"),
+                unsafe_allow_html=True)
+        else:
+            tot_g = sum(float(p.get("gmv") or 0) for _, p in prod_rows)
+            tot_o = sum(float(p.get("orders") or 0) for _, p in prod_rows)
+            tot_c = sum(float(p.get("clicks") or 0) for _, p in prod_rows)
+            tot_i = sum(float(p.get("impressions") or 0) for _, p in prod_rows)
+            st.markdown(T.stats_row([
+                ("商品数", f"{len(prod_rows):,}", "c-pink"),
+                ("销售总额", f"{tot_g:,.0f}", "c-green"),
+                ("订单合计", f"{tot_o:,.0f}", "c-purple"),
+                ("点击合计", f"{tot_c:,.0f}", "c-amber"),
+            ]), unsafe_allow_html=True)
+            prod_rows.sort(key=lambda rp: float(rp[1].get("gmv") or 0),
+                           reverse=True)
+            prows = []
+            for r, p in prod_rows:
+                ctr, cvr = float(p.get("ctr") or 0), float(p.get("cvr") or 0)
+                pname = esc(str(p.get("name") or "-")[:40])
+                prows.append([
+                    f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+                    f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
+                    f'{esc(r["name"])}</a>',
+                    pname,
+                    f'<span class="num">{int(float(p.get("video_views") or 0)):,}</span>',
+                    f'<span class="num">{int(float(p.get("impressions") or 0)):,}</span>',
+                    f'<span class="num">{int(float(p.get("clicks") or 0)):,}</span>',
+                    f'<span class="num">{ctr:.2f}%</span>',
+                    f'<span class="num">{int(float(p.get("orders") or 0)):,}</span>',
+                    f'<span class="num">{cvr:.2f}</span>',
+                    f'<span class="num"><b>{float(p.get("gmv") or 0):,.0f}</b></span>',
+                ])
+            T.component_html(
+                T.table(["网红", "商品", "观看", "展示", "点击", "点击率",
+                         "订单", "转化率", "销售额"], prows, wrap=False),
+                height=52 + len(prows) * 36)
+            st.markdown(T.foot("点击率 = 点击÷展示（自动计算）；"
+                               "转化率来自商品报表原值"),
+                        unsafe_allow_html=True)
 
     # ---- 数据健康 tab：全量数据质量检查（不受月份筛选影响） ----
     with tab_health:
