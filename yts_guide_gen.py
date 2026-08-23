@@ -131,26 +131,27 @@ def build_prompt(collab: dict, requirements: str = "") -> list:
 
 
 def call_dashscope(messages: list, timeout: int = 120) -> str:
-    """调用千问，返回生成文本；无 key / 出错时抛 RuntimeError(友好文案)"""
+    """调用 AI（OpenAI 兼容接口），返回生成文本；无 key / 出错时抛 RuntimeError(友好文案)"""
     key = get_api_key()
     if not key:
         raise RuntimeError(
             "未配置 DASHSCOPE_API_KEY · DASHSCOPE_API_KEY가 설정되지 않았습니다. "
-            "请在主站 Cloud Secrets 添加 DASHSCOPE_API_KEY（百炼控制台获取）")
+            "请在主站 Cloud Secrets 添加 DASHSCOPE_API_KEY（百炼/智谱等控制台获取）")
     resp = requests.post(
         DASHSCOPE_URL,
         headers={"Authorization": f"Bearer {key}",
                  "Content-Type": "application/json"},
-        json={"model": get_model(), "messages": messages, "temperature": 0.8},
+        json={"model": get_model(), "messages": messages, "temperature": 0.8,
+              "max_tokens": 8192},
         timeout=timeout,
     )
     if resp.status_code != 200:
-        raise RuntimeError(f"千问接口返回 {resp.status_code}: {resp.text[:300]}")
+        raise RuntimeError(f"AI 接口返回 {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
     try:
         return data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError) as e:
-        raise RuntimeError(f"千问返回结构异常: {str(data)[:300]}") from e
+        raise RuntimeError(f"AI 返回结构异常: {str(data)[:300]}") from e
 
 
 def assemble_full_guide(script_md: str) -> str:
