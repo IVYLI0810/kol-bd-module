@@ -778,15 +778,23 @@ class YTSStore:
     def list_review_table(self):
         """审核模块表格行：所有已提交视频的网红。
         是否通过：已通过/复审通过=Y，已驳回=N，待审核/复审中=空白
-        附带：提交时间(submit_actual)、审核时间(audit_time)、状态(review_status) 用于展示区分"""
+        附带：提交时间(submit_actual)、审核时间(audit_time)、状态(review_status) 用于展示区分
+
+        审核站以主站为准（2026-08-23）：主站取消合作/流回挖掘库/淘汰的网红
+        （无归属月份且未闭环）不再显示，避免审核侧审到已作废的合作；
+        被隐藏条数记在 _review_hidden，页面提示用。重新确认合作后自动恢复显示。"""
         order = {"待审核": 0, "未通过": 1, "已通过": 2}
         rows = []
+        hidden = 0
         for c in (self._to_collab(r) for r in self._all()):
             if not c["video_url"] and not c["recheck_video_url"]:
                 continue
             rs = c["review_status"]
             if not rs:
                 continue  # 从没提交过审核的（如直接闭环）不进审核表
+            if not (c["plan_month"] or c["is_closed"]):
+                hidden += 1  # 主站已取消/流回/淘汰 → 审核站同步不显示
+                continue
             passed = "Y" if rs in ("已通过", "复审通过") else ("N" if rs == "已驳回" else "")
             reason = c["review_comment"] if rs == "已驳回" else ""
             rows.append({
@@ -801,11 +809,11 @@ class YTSStore:
                 "status": rs,                       # 待审核/已通过/已驳回/复审中/复审通过
                 "submit_actual": c.get("submit_actual") or "",  # 提交时间（精确到分钟）
                 "audit_time": c.get("audit_time") or "",        # 审核时间（精确到分钟）
-                # 是否已流入主站活动模块：没有归属月份且未闭环的属于「孤儿」记录，
-                # 审核站可见但活动模块不显示，页面需标出来提醒运营补月份
+                # 主站状态参考字段（无月份且未闭环的行已在上面被过滤，不会进表）
                 "plan_month": c.get("plan_month") or "",
                 "is_closed": bool(c.get("is_closed")),
             })
+        self._review_hidden = hidden
         rows.sort(key=lambda x: (order.get(
             {"Y": "已通过", "N": "未通过"}.get(x["passed"], "待审核"), 3), x["name"]))
         return rows
@@ -871,7 +879,8 @@ class YTSStore:
 
     def list_ad_table(self):
         """投放模块表格行：标记了「需要投放」或「已投放」的网红。
-        是否需要投放由主站闭环时选择；是否投放在本表格回填"""
+        是否需要投放由主站闭环时选择；是否投放在本表格回填。
+        审核站以主站为准：主站取消合作/流回/淘汰的（无归属月份且未闭环）不显示。"""
         rows = [{
             "collab_id": c["collab_id"],
             "name": c["name"],
@@ -879,7 +888,8 @@ class YTSStore:
             "ad_needed": "Y" if c["ad_needed"] else "",
             "ad_done": "Y" if c["ad_done"] else "",
         } for c in (self._to_collab(r) for r in self._all())
-            if c["ad_needed"] or c["ad_done"]]
+            if (c["ad_needed"] or c["ad_done"])
+            and (c["plan_month"] or c["is_closed"])]
         # 待投放（需投但未投）排最前
         rows.sort(key=lambda x: (0 if x["ad_needed"] and not x["ad_done"] else 1,
                                  x["name"]))

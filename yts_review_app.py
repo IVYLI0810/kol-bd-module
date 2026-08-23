@@ -145,25 +145,20 @@ with tab_rev:
     else:
         view_rows = list(review_rows)
 
-    def _status_cell(r):
-        s = _STATUS_EMOJI.get(r["status"], r["status"])
-        # ⚠️ = 没有归属月份、未流入主站活动模块履约的「孤儿」记录
-        # （.get 兜底：云端进程若缓存了旧版 store 模块也不至于 KeyError）
-        if not r.get("plan_month") and not r.get("is_closed"):
-            s += " ⚠️"
-        return s
-
     st.caption("통과=Y / 반려=N / 대기 중=空白 · 통과 시에는 사유 비워둬도 되지만, "
                "반려 시에는 반드시 사유를 입력하세요")
     st.caption("通过填 Y、驳回填 N、还没出结果留空。驳回必须填写原因。"
                "可以直接在表格里填，也可以下载 Excel（只下载当前范围）"
                "拿给审核侧离线填写后上传回来。")
-    if any(not r.get("plan_month") and not r.get("is_closed") for r in view_rows):
-        st.caption("⚠️ = 该网红还没有归属月份，不在主站活动模块的履约里，"
-                   "请到主站确认合作并补上月份")
+    # 审核站以主站为准：主站取消合作/流回/淘汰的网红不显示，这里说明条数
+    n_hidden = getattr(store, "_review_hidden", 0)
+    if n_hidden:
+        st.caption(f"메인 사이트에서 협력 취소/제외된 {n_hidden}건은 표시하지 않습니다")
+        st.caption(f"另有 {n_hidden} 条因主站取消合作/流回挖掘库/淘汰不显示，"
+                   "重新确认合作后自动恢复")
 
     orig_df = pd.DataFrame([{
-        C_STATUS: _status_cell(r),
+        C_STATUS: _STATUS_EMOJI.get(r["status"], r["status"]),
         C_NAME: r["name"], C_HOME: r["channel_url"], C_VIDEO: r["review_url"],
         C_SUBMIT: r["submit_actual"], C_AUDIT: r["audit_time"],
         C_PASS: r["passed"], C_REASON: r["reason"],
