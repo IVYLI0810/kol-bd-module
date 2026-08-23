@@ -225,6 +225,9 @@ def flow_import_panel():
         with st.spinner("正在反查频道ID（云端约几秒）…"):
             existing = getattr(store, "url_index", lambda: {})()
             ids = FI.resolve_ids(rows, existing)
+        # 身份集合：(频道ID, 月份) → 判断每行是新增行还是更新已有行
+        _, _ex_cid_m = getattr(store, "existing_url_months",
+                               lambda: (set(), set()))()
         preview, pend = [], []
         for raw in rows:
             url = str(raw["channel_url"]).strip()
@@ -251,7 +254,10 @@ def flow_import_panel():
                 st.warning(f"「{rec['channel_name']}」标了已闭环但没填视频链接："
                            "闭环必须以视频链接为准，本行先按未闭环导入，"
                            "请到详情页登记发布视频后再闭环")
-            is_new = not is_existing
+            # 新增 or 更新：按「频道ID+月份」身份判断
+            # （老网红新月份 = 新增一条月份行；同月重传 = 更新原行）
+            _m = str(rec.get("plan_month") or "").strip()
+            is_new = ((cid, _m) not in _ex_cid_m) if _ex_cid_m else not is_existing
             if rec.get("stage") == "已完成":
                 prog = "已闭环 → 分析模块"
             elif rec.get("shoot_status") == "已完成":
@@ -606,7 +612,7 @@ def _export_all_data():
         for r in all_recs:
             branches = r.get("branches", {})
             ws1.append([
-                r.get("collab_id", ""),
+                r.get("channel_id", ""),
                 r.get("name", ""),
                 r.get("recruiter", ""),
                 r.get("plan_month", ""),
@@ -649,7 +655,7 @@ def _export_all_data():
             if videos:
                 for v in videos:
                     ws2.append([
-                        r.get("collab_id", ""),
+                        r.get("channel_id", ""),
                         r.get("name", ""),
                         r.get("recruiter", ""),
                         r.get("plan_month", ""),
@@ -668,7 +674,7 @@ def _export_all_data():
             else:
                 # 无视频子表的记录：用主链接占一行
                 ws2.append([
-                    r.get("collab_id", ""),
+                    r.get("channel_id", ""),
                     r.get("name", ""),
                     r.get("recruiter", ""),
                     r.get("plan_month", ""),
@@ -966,6 +972,13 @@ def _edit_info_form(cid, c):
                     "group_link": grp_v, "submit_deadline": dl_s,
                     "notes": notes_v,
                 })
+                # 月份变了 → 身份串跟着变（频道ID#月份），会话ID就地更新，
+                # 否则 rerun 后按旧身份找不到记录
+                _cid_part = cid.split("#", 1)[0]
+                _old_m = cid.split("#", 1)[1] if "#" in cid else ""
+                if month_s != _old_m:
+                    st.session_state["collab_id"] = (
+                        f"{_cid_part}#{month_s}" if month_s else _cid_part)
                 st.toast("基本信息已保存")
                 st.session_state[f"edit_open_{cid}"] = False
                 st.rerun()
@@ -990,6 +1003,11 @@ def page_detail(collab_id):
     if not c:
         st.error("未找到该合作记录")
         return
+    # 改过月份后身份串会变（频道ID#月份）：会话里的旧ID就地跟上，
+    # 否则后续按钮操作会写空
+    if c["collab_id"] != collab_id:
+        collab_id = c["collab_id"]
+        st.session_state["collab_id"] = collab_id
     _render_flash()  # 显示上一步操作的提示（如待办发送结果）
     st.markdown(T.header(f"履约详情 · {c['name']}",
                          f'挖掘人 {c.get("recruiter") or "-"}'),
@@ -1007,10 +1025,11 @@ def page_detail(collab_id):
          if c.get("email") else "未填",
          "c-green" if c.get("email") else "c-amber"),
     ]), unsafe_allow_html=True)
-    yt = YT.cached(c["collab_id"])
-    if yt is None and YT.get_key() and c["collab_id"].startswith("UC"):
+    _yt_cid = c.get("channel_id") or c["collab_id"]
+    yt = YT.cached(_yt_cid)
+    if yt is None and YT.get_key() and _yt_cid.startswith("UC"):
         with st.spinner("正在同步频道播放数据…"):
-            yt = YT.fetch_stats(c["collab_id"])
+            yt = YT.fetch_stats(_yt_cid)
     fol = c.get("followers") or (yt or {}).get("subscribers") or 0
     st.markdown(T.stats_row([
         ("粉丝量", f"{fol:,}", "c-pink"),
@@ -1983,7 +2002,7 @@ def _data_health(all_recs):
     for r in all_recs:
         if not has_url(r):
             continue  # 已在规则1计过
-        name_missing = (not r.get("name")) or r.get("name") == r.get("collab_id")
+        name_missing = (not r.get("name")) or r.get("name") == r.get("channel_id")
         if name_missing or not r.get("followers"):
             r2.append(r)
     # 规则3~6：仅已闭环
@@ -2004,7 +2023,7 @@ def _data_health(all_recs):
 
     def st2(r):  # 规则2明细
         miss = []
-        if (not r.get("name")) or r.get("name") == r.get("collab_id"):
+        if (not r.get("name")) or r.get("name") == r.get("channel_id"):
             miss.append("频道名")
         if not r.get("followers"):
             miss.append("粉丝数")
@@ -2039,7 +2058,7 @@ def _data_health(all_recs):
 
 
 def _health_name_link(r):
-    return (f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+    return (f'<a data-nav="?detail={quote(str(r["collab_id"]), safe="")}&from=analysis" '
             f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
             f'{esc(r["name"])}</a>'
             + (' <span class="closed-tag">已闭环</span>' if r.get("is_closed") else ""))
@@ -2104,13 +2123,35 @@ def _import_matched_xlsx(xlsx_file):
         st.error("导入表里没有有效数据行，请确认文件正确")
         return
     rec_by_cid = {r["collab_id"]: r for r in store.list_all()}
+    # 旧映射表里是裸频道ID（无#月份）：同频道多条时按商品重合度挑目标行
+    bare_map = {}
+    for r in rec_by_cid.values():
+        bare_map.setdefault(r.get("channel_id") or "", []).append(r)
+
+    def _pick_rec(cid, g):
+        rec = rec_by_cid.get(cid)
+        if rec or "#" in cid:
+            return rec
+        cands = bare_map.get(cid) or []
+        if not cands:
+            return None
+        if len(cands) == 1:
+            return cands[0]
+        gpids = {str(p.get("pid") or "") for p in g["products"]}
+
+        def _score(r):
+            rpids = {PM.norm_pid(u) for u in r.get("product_list") or []}
+            return (len(gpids & rpids), r.get("plan_month") or "")
+        return max(cands, key=_score)
+
     prog = st.progress(0.0, text="正在写入宜搭…")
     hit, n_prod = 0, 0
     for i, (cid, g) in enumerate(data.items()):
         prog.progress(i / len(data), text=f"正在写入（{i + 1}/{len(data)}）")
-        rec = rec_by_cid.get(cid)
+        rec = _pick_rec(cid, g)
         if not rec:
             continue
+        cid = rec["collab_id"]  # 后续写入统一走复合身份
         patch = {"products": g["products"]}
         if g["videos_patch"] and rec.get("videos"):
             patch["videos"] = PM.apply_video_patch(rec["videos"],
@@ -2290,7 +2331,7 @@ def page_analysis():
                 link_cell = (f'<a class="yts-link" href="{esc(url)}" target="_blank">'
                              f'视频↗</a>' if url else "-")
                 trows.append([
-                    f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+                    f'<a data-nav="?detail={quote(str(r["collab_id"]), safe="")}&from=analysis" '
                     f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
                     f'{esc(r["name"])}</a>{tag}',
                     vt_badge, link_cell,
@@ -2310,7 +2351,7 @@ def page_analysis():
             else:
                 # 老数据兜底行（无子表）
                 trows.append([
-                    f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+                    f'<a data-nav="?detail={quote(str(r["collab_id"]), safe="")}&from=analysis" '
                     f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
                     f'{esc(r["name"])}</a>{tag}',
                     T.badge("历史"),
@@ -2361,7 +2402,7 @@ def page_analysis():
             avg_ctr = sum(a["ctrs"]) / len(a["ctrs"]) if a["ctrs"] else 0
             roi = round(a["gmv"] / a["price_usd"], 2) if a["price_usd"] else 0
             arows.append([
-                f'<a data-nav="?detail={cid}&from=analysis" '
+                f'<a data-nav="?detail={quote(str(cid), safe="")}&from=analysis" '
                 f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
                 f'{esc(a["name"])}</a>',
                 f'<span class="num">{a["n"]}</span>',
@@ -2430,7 +2471,7 @@ def page_analysis():
                 ctr, cvr = float(p.get("ctr") or 0), float(p.get("cvr") or 0)
                 pname = esc(str(p.get("name") or "-")[:40])
                 prows.append([
-                    f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+                    f'<a data-nav="?detail={quote(str(r["collab_id"]), safe="")}&from=analysis" '
                     f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
                     f'{esc(r["name"])}</a>',
                     pname,

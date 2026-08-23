@@ -379,18 +379,32 @@ class YidaBDDB:
             request, self._headers("SearchFormDatas"), self._runtime)
         return resp.body.to_map()
 
-    def _find_instance(self, channel_id: str) -> Optional[dict]:
-        data = self._search_page({FIELD_IDS["channel_id"]: str(channel_id)}, size=1)
+    def _find_instance(self, channel_id: str, plan_month=None) -> Optional[dict]:
+        """按频道ID查实例；同一频道可能有多条记录（每月合作一条）。
+        plan_month=None：返回第一条（宽松读，兼容旧调用）
+        plan_month=""：只匹配「无月份」的记录（挖掘期导入用，不误伤月份记录）
+        plan_month="YYYY-MM"：精确匹配该月记录"""
+        data = self._search_page({FIELD_IDS["channel_id"]: str(channel_id)}, size=20)
         rows = data.get("Data") or data.get("data") or []
-        return rows[0] if rows else None
+        if not rows:
+            return None
+        if plan_month is None:
+            return rows[0]
+        for inst in rows:
+            rec = self._from_instance(inst)
+            if (rec.get("plan_month") or "") == plan_month:
+                return inst
+        return None
 
     # ------------------------- 业务接口（与 LocalBDDB 对齐） -------------------------
 
     def add(self, record: dict) -> dict:
-        """新增或更新（以 channel_id 为主键的 upsert）"""
+        """新增或更新（以 channel_id + plan_month 为主键的 upsert：
+        同一网红每月合作一条记录，同月重复导入则更新该月记录）"""
         if not record.get("channel_id"):
             raise ValueError("channel_id 为必填字段")
-        existing = self._find_instance(record["channel_id"])
+        month = str(record.get("plan_month") or "").strip()
+        existing = self._find_instance(record["channel_id"], month)
         form_data = self._to_form_data(record)
         if existing:
             instance_id = existing.get("FormInstanceId") or existing.get("formInstanceId")
@@ -414,10 +428,12 @@ class YidaBDDB:
             )
             self._client.save_form_data_with_options(
                 request, self._headers("SaveFormData"), self._runtime)
-        return self.get_by_channel_id(record["channel_id"]) or record
+        return self.get_by_channel_id(record["channel_id"], month) or record
 
-    def get_by_channel_id(self, channel_id: str) -> Optional[dict]:
-        inst = self._find_instance(channel_id)
+    def get_by_channel_id(self, channel_id: str, plan_month=None) -> Optional[dict]:
+        """读取记录。plan_month 语义同 _find_instance：
+        None=宽松第一条；""=只匹配无月份记录；"YYYY-MM"=精确该月"""
+        inst = self._find_instance(channel_id, plan_month)
         return self._from_instance(inst) if inst else None
 
     def get_all(self, filters: Optional[dict] = None) -> list:
@@ -451,9 +467,11 @@ class YidaBDDB:
         return results
 
     def update(self, channel_id: str, updates: dict,
-               clear_fields: Optional[list] = None) -> Optional[dict]:
-        """更新字段；clear_fields 里的字段显式清空为空串（编辑能力用）"""
-        inst = self._find_instance(channel_id)
+               clear_fields: Optional[list] = None,
+               plan_month=None) -> Optional[dict]:
+        """更新字段；clear_fields 里的字段显式清空为空串（编辑能力用）。
+        plan_month 语义同 _find_instance：多条月份记录时精确定位用"""
+        inst = self._find_instance(channel_id, plan_month)
         if not inst:
             return None
         instance_id = inst.get("FormInstanceId") or inst.get("formInstanceId")
@@ -562,7 +580,8 @@ class YidaBDDB:
                 str(row.get("audit_opinion") or ""))
 
     def add_audit(self, channel_id: str, result: str, opinion: str,
-                  audit_date: str = "", extra_fields: dict = None) -> bool:
+                  audit_date: str = "", extra_fields: dict = None,
+                  plan_month=None) -> bool:
         """追加一条审核记录到子表，并同步更新「审核状态」主字段
 
         result: 「已通过」或「未通过」
@@ -575,7 +594,7 @@ class YidaBDDB:
         再整体写回 —— 两个会话同时审核不会互相覆盖丢记录
         """
         from datetime import datetime as _dt
-        rec = self.get_by_channel_id(channel_id)
+        rec = self.get_by_channel_id(channel_id, plan_month)
         if not rec:
             return False
         new_entry = {
@@ -584,7 +603,7 @@ class YidaBDDB:
             "audit_opinion": opinion,
         }
         # 写前 fresh 重读：拿宜搭侧此刻最新的子表（而非早些时候的快照）
-        fresh = self.get_audit_log(channel_id)
+        fresh = self.get_audit_log(channel_id, plan_month)
         known = {self._audit_key(x) for x in fresh}
         merged = list(fresh) + [e for e in (new_entry,)
                                 if self._audit_key(e) not in known]
@@ -592,12 +611,12 @@ class YidaBDDB:
         updates = {"audit_log": merged, "audit_status": result}
         if extra_fields:
             updates.update(extra_fields)
-        self.update(channel_id, updates)
+        self.update(channel_id, updates, plan_month=plan_month)
         return True
 
-    def get_audit_log(self, channel_id: str) -> list:
+    def get_audit_log(self, channel_id: str, plan_month=None) -> list:
         """读取某网红的审核历史（按写入顺序）"""
-        rec = self.get_by_channel_id(channel_id)
+        rec = self.get_by_channel_id(channel_id, plan_month)
         if not rec:
             return []
         return rec.get("audit_log") or []

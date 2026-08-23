@@ -54,6 +54,42 @@ def _now_min():
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
+# ---------------- 记录身份：一个网红 × 一个归属月份 = 一条合作记录 ----------------
+# 同一网红可以有多月的合作（7月/8月各一条），各自独立跟踪报价/视频/商品/GMV。
+# collab_id 身份串：有月份的记录为「频道ID#YYYY-MM」，无月份（挖掘期）为裸频道ID。
+def _ident(r) -> str:
+    """宜搭原始记录 → 唯一身份串"""
+    cid = r.get("channel_id") or ""
+    m = str(r.get("plan_month") or "").strip()
+    return f"{cid}#{m}" if m else cid
+
+
+def _split(collab_id) -> tuple:
+    """身份串 → (频道ID, 月份)。无月份返回 ("UCxxx", "")"""
+    s = str(collab_id or "")
+    if "#" in s:
+        cid, m = s.split("#", 1)
+        return cid, m.strip()
+    return s, ""
+
+
+def _best_row(rows, collab_id):
+    """从缓存行里取与身份串最匹配的一行。
+    优先级：身份精确命中 > 裸ID优先命中该频道的无月份行 > 裸ID宽松命中第一条。
+    带月份的身份串只认精确匹配（绝不串到别的月份）"""
+    cid, m = _split(collab_id)
+    first_cid = None
+    for r in rows:
+        if _ident(r) == collab_id:
+            return r
+        if r.get("channel_id") == cid:
+            if not m and not str(r.get("plan_month") or "").strip():
+                return r
+            if first_cid is None:
+                first_cid = r
+    return first_cid if not m else None
+
+
 # 防缓存击穿：进程级单例被10个会话共享，缓存过期瞬间只让1个会话
 # 真正回源宜搭，其他会话等待结果，避免并发全表拉取风暴
 _FETCH_LOCK = threading.Lock()
@@ -130,18 +166,19 @@ class YTSStore:
     def _all(self):
         return self._fetch_with_lock("all", self.db.get_all)
 
-    def _get(self, channel_id):
-        key = "one:" + channel_id
+    def _get(self, collab_id):
+        key = "one:" + collab_id
         hit = self._cache.get(key)
         if hit is not None and time.time() - hit[0] <= self.CACHE_TTL:
             return hit[1]
         # 优先从全量缓存取（避免为单条记录再发一次搜索请求）
-        for r in self._cache.get("all", (0, []))[1]:
-            if r.get("channel_id") == channel_id:
-                self._cache[key] = (time.time(), r)
-                return r
+        r = _best_row(self._cache.get("all", (0, []))[1], collab_id)
+        if r is not None:
+            self._cache[key] = (time.time(), r)
+            return r
+        cid, month = _split(collab_id)
         return self._fetch_with_lock(
-            key, lambda: self.db.get_by_channel_id(channel_id))
+            key, lambda: self.db.get_by_channel_id(cid, month or None))
 
     def _invalidate(self):
         self._cache.clear()
@@ -169,19 +206,20 @@ class YTSStore:
         self._upsert_cached(r or rec)
         return r
 
-    def _patch(self, channel_id, patch):
-        """写成功后就地更新缓存，避免每次操作都全量重拉（4-5 秒）"""
+    def _patch(self, collab_id, patch):
+        """写成功后就地更新缓存，避免每次操作都全量重拉（4-5 秒）。
+        按身份串精确命中（同频道其他月份的记录不受影响）"""
         p = dict(patch)
         p.setdefault("updated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
-        for r in self._cache.get("all", (0, []))[1]:
-            if r.get("channel_id") == channel_id:
-                r.update(p)
-        one = self._cache.get("one:" + channel_id)
+        r = _best_row(self._cache.get("all", (0, []))[1], collab_id)
+        if r is not None:
+            r.update(p)
+        one = self._cache.get("one:" + collab_id)
         if one and isinstance(one[1], dict):
             one[1].update(p)
 
     def _upsert_cached(self, rec):
-        """新增记录就地追加进全量缓存（按 channel_id 替换或追加）。
+        """新增记录就地追加进全量缓存（按身份串替换或追加）。
 
         10人共用关键点：新增/导入后不再整表失效缓存——否则一人导入，
         其他所有人下次操作都被迫重拉全表（4-5秒卡顿）。"""
@@ -190,31 +228,31 @@ class YTSStore:
         hit = self._cache.get("all")
         if hit is None:
             return  # 无缓存时无需维护，下次全量拉取自然带上
-        cid = rec["channel_id"]
+        ident = _ident(rec)
         rec = dict(rec)
         rec.setdefault("updated_at",
                        datetime.now().strftime("%Y-%m-%d %H:%M"))
         rows = hit[1]
         for i, r in enumerate(rows):
-            if r.get("channel_id") == cid:
+            if _ident(r) == ident:
                 rows[i] = rec
                 break
         else:
             rows.append(rec)
 
-    def _audit_patch(self, channel_id, result, opinion):
+    def _audit_patch(self, collab_id, result, opinion):
         """与 db.add_audit 同步：向缓存里的 audit_log 追加同一条记录（精确到分钟）"""
         entry = {"audit_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                  "audit_result": result, "audit_opinion": opinion}
         rows = list(self._cache.get("all", (0, []))[1])
-        one = self._cache.get("one:" + channel_id)
+        one = self._cache.get("one:" + collab_id)
         if one and isinstance(one[1], dict):
             rows.append(one[1])
-        for r in rows:
-            if r.get("channel_id") == channel_id:
-                log = list(r.get("audit_log") or [])
-                log.append(entry)
-                r["audit_log"] = log
+        r = _best_row(rows, collab_id)
+        if r is not None:
+            log = list(r.get("audit_log") or [])
+            log.append(entry)
+            r["audit_log"] = log
 
     # ---------------- 宜搭记录 -> UI collab 字典 ----------------
     def _to_collab(self, r):
@@ -237,7 +275,9 @@ class YTSStore:
         # 洽谈中闸门：挖掘页标记「洽谈中」后才流入活动模块（仅已发邮件不够）
         status = "履约中" if plan_month else ("洽谈中" if stage == "洽谈中" else "未回流")
         return {
-            "collab_id": r.get("channel_id"),
+            "collab_id": _ident(r),
+            # 真实频道ID（身份串 collab_id 可能带 #月份 后缀，抓频道数据/导出用它）
+            "channel_id": r.get("channel_id"),
             "form_instance_id": r.get("form_instance_id") or "",
             "influencer_id": r.get("channel_id"),
             "name": r.get("channel_name") or r.get("channel_id"),
@@ -295,16 +335,16 @@ class YTSStore:
             "ad_done": (r.get("status") or "") == "Y",
         }
 
-    def _upd(self, channel_id, patch, clear_fields=None):
+    def _upd(self, collab_id, patch, clear_fields=None):
         # 快路径：从缓存拿 form_instance_id 直更（1次HTTP，省掉查找+回读）。
         # 缓存里取不到或直更失败时回退 db.update（搜索→更新，2次HTTP）。
+        cid, month = _split(collab_id)
         inst = ""
-        for r in self._cache.get("all", (0, []))[1]:
-            if r.get("channel_id") == channel_id:
-                inst = r.get("form_instance_id") or ""
-                break
+        row = _best_row(self._cache.get("all", (0, []))[1], collab_id)
+        if row is not None:
+            inst = row.get("form_instance_id") or ""
         if not inst:
-            one = self._cache.get("one:" + channel_id)
+            one = self._cache.get("one:" + collab_id)
             if one and isinstance(one[1], dict):
                 inst = one[1].get("form_instance_id") or ""
         if inst:
@@ -312,16 +352,18 @@ class YTSStore:
                 self.db.update_instance(inst, patch,
                                          clear_fields=clear_fields)
             except Exception:
-                self.db.update(channel_id, patch, clear_fields=clear_fields)
+                self.db.update(cid, patch, clear_fields=clear_fields,
+                               plan_month=month or None)
         else:
-            self.db.update(channel_id, patch, clear_fields=clear_fields)
-        self._patch(channel_id, patch)
+            self.db.update(cid, patch, clear_fields=clear_fields,
+                           plan_month=month or None)
+        self._patch(collab_id, patch)
         # 被清空的字段缓存里也同步清掉
         for code in clear_fields or ():
-            for r0 in self._cache.get("all", (0, []))[1]:
-                if r0.get("channel_id") == channel_id:
-                    r0[code] = ""
-            one = self._cache.get("one:" + channel_id)
+            r0 = _best_row(self._cache.get("all", (0, []))[1], collab_id)
+            if r0 is not None:
+                r0[code] = ""
+            one = self._cache.get("one:" + collab_id)
             if one and isinstance(one[1], dict):
                 one[1][code] = ""
 
@@ -354,13 +396,22 @@ class YTSStore:
 
     # ---------------- 挖掘模块 ----------------
     def list_pool(self):
-        """挖掘池 = 所有网红；已回流(已发邮件)的做标记"""
-        out = []
+        """挖掘池 = 所有网红；已回流(已发邮件)的做标记。
+        同一频道有多条月份合作记录时只显示一张卡（按频道去重）"""
+        out, seen = [], {}
         for r in self._all():
+            cid = r.get("channel_id")
             emailed = r.get("email_status") == "已发送"
-            out.append({
-                "id": r.get("channel_id"),
-                "name": r.get("channel_name") or r.get("channel_id"),
+            stage = r.get("stage") or ""
+            if cid in seen:
+                card = seen[cid]
+                card["emailed"] = card["emailed"] or emailed
+                if not card["stage"] and stage:
+                    card["stage"] = stage
+                continue
+            card = {
+                "id": cid,
+                "name": r.get("channel_name") or cid,
                 "url": r.get("channel_url") or "",
                 "platform": "YouTube",
                 "followers": r.get("subscribers") or 0,
@@ -369,8 +420,10 @@ class YTSStore:
                 "email": r.get("email") or "",
                 "recruiter": r.get("recruiter") or "",
                 "emailed": emailed,
-                "stage": r.get("stage") or "",
-            })
+                "stage": stage,
+            }
+            seen[cid] = card
+            out.append(card)
         return out
 
     def add_influencer(self, rec):
@@ -401,21 +454,31 @@ class YTSStore:
 
     def sync_yt_subscribers(self, ids: list) -> int:
         """补频道粉丝数：对给定记录逐个抓 YouTube 主页数据（缓存7天），
-        粉丝数>0 时写回宜搭。返回成功条数。未配 key/抓取失败跳过。"""
+        粉丝数>0 时写回宜搭。返回成功条数。未配 key/抓取失败跳过。
+        粉丝数是频道级数据：同一频道多个月份行一起更新。"""
         import yts_yt_stats as YT
         if not YT.get_key():
             return 0
         n = 0
-        for cid in ids:
-            if not str(cid).startswith("UC"):
+        seen = set()
+        for ident in ids:
+            cid = _split(ident)[0]
+            if not str(cid).startswith("UC") or cid in seen:
                 continue
+            seen.add(cid)
             stats = YT.fetch_stats(cid)
             if not stats:
                 continue
             sub = int(stats.get("subscribers") or 0)
-            if sub > 0:
-                self._upd(cid, {"subscribers": sub})
-                n += 1
+            if sub <= 0:
+                continue
+            # 该频道的所有月份行都更新
+            for r in self._all():
+                if r.get("channel_id") == cid:
+                    self._patch(_ident(r), {"subscribers": sub})
+                    self.db.update(cid, {"subscribers": sub},
+                                   plan_month=(r.get("plan_month") or "") or None)
+            n += 1
         return n
 
     # ---------------- 活动模块 ----------------
@@ -443,6 +506,28 @@ class YTSStore:
             count += 1
         return count
 
+    def existing_url_months(self):
+        """现有记录的身份集合，导入预览判断每行「新增/更新」用
+        （同网红不同月算不同行）：
+        返回 (url_month_pairs, cid_month_pairs)：
+          url_month_pairs: {(归一化频道链接, 月份)}
+          cid_month_pairs: {(频道ID, 月份)}"""
+        import re
+
+        def norm_u(u):
+            return re.sub(r"^https?://(www\.)?", "",
+                          str(u or "").strip().rstrip("/"))
+        url_pairs, cid_pairs = set(), set()
+        for r in self._all():
+            m = str(r.get("plan_month") or "").strip()
+            u = norm_u(r.get("channel_url"))
+            if u:
+                url_pairs.add((u, m))
+            cid = r.get("channel_id")
+            if cid:
+                cid_pairs.add((str(cid), m))
+        return url_pairs, cid_pairs
+
     def sync_from_discovery(self, force: bool = False) -> dict:
         """挖掘站「已发邮件」自动同步进挖掘池。
 
@@ -451,13 +536,15 @@ class YTSStore:
         已有进度一律不动。
         """
         rows = R.fetch_emailed_channels(force=force)
-        existing = {r.get("channel_id"): r for r in self._all()}
+        by_cid = {}
+        for r in self._all():
+            by_cid.setdefault(r.get("channel_id"), []).append(r)
         added = patched = 0
         for x in rows:
             cid = (x.get("channel_id") or "").strip()
             if not cid:
                 continue
-            if cid not in existing:
+            if cid not in by_cid:
                 r = self.db.add({
                     "channel_id": cid,
                     "channel_name": x.get("channel_name") or "",
@@ -469,28 +556,42 @@ class YTSStore:
                     "email_status": "已发送", "stage": "已发邮件",
                 })
                 self._upsert_cached(r)
+                by_cid[cid] = [r]
                 added += 1
             else:
-                cur = existing[cid]
-                patch = {}
-                if not cur.get("email_status"):
-                    patch["email_status"] = "已发送"
-                    if not cur.get("stage"):
-                        patch["stage"] = "已发邮件"
-                # 旧记录基础信息：粉丝量以挖掘站最新值覆盖，垂类/邮箱仅空缺时补
-                cur_sub = int(cur.get("subscribers") or 0)
-                new_sub = int(x.get("subscribers") or 0)
-                if new_sub > 0 and new_sub != cur_sub:
-                    patch["subscribers"] = new_sub
-                if not (cur.get("category") or "").strip() \
-                        and (x.get("category") or "").strip():
-                    patch["category"] = x.get("category")
-                if not (cur.get("email") or "").strip() \
-                        and (x.get("emails") or "").strip():
-                    patch["email"] = x["emails"].strip()
-                if patch:
-                    self._upd(cid, patch)
-                    patched += 1
+                did = False
+                # 基础信息补丁打到该频道的全部月份记录（粉丝量等属频道级数据）
+                for cur in by_cid[cid]:
+                    patch = {}
+                    if not cur.get("email_status"):
+                        patch["email_status"] = "已发送"
+                        if not cur.get("stage"):
+                            patch["stage"] = "已发邮件"
+                    # 旧记录基础信息：粉丝量以挖掘站最新值覆盖，垂类/邮箱仅空缺时补
+                    cur_sub = int(cur.get("subscribers") or 0)
+                    new_sub = int(x.get("subscribers") or 0)
+                    if new_sub > 0 and new_sub != cur_sub:
+                        patch["subscribers"] = new_sub
+                    if not (cur.get("category") or "").strip() \
+                            and (x.get("category") or "").strip():
+                        patch["category"] = x.get("category")
+                    if not (cur.get("email") or "").strip() \
+                            and (x.get("emails") or "").strip():
+                        patch["email"] = x["emails"].strip()
+                    if not patch:
+                        continue
+                    inst = cur.get("form_instance_id") or ""
+                    try:
+                        if inst:
+                            self.db.update_instance(inst, patch)
+                        else:
+                            self.db.update(cid, patch,
+                                           plan_month=(cur.get("plan_month") or "") or None)
+                        self._patch(_ident(cur), patch)
+                        did = True
+                    except Exception:
+                        continue
+                patched += 1 if did else 0
         # 新增/补丁均已就地维护缓存，无需整表失效（避免触发全员重拉）
         return {"added": added, "patched": patched, "total": len(rows)}
 
@@ -559,7 +660,7 @@ class YTSStore:
         self._upd(collab_id, {"plan_month": plan_month, "stage": "已确认",
                               "price": int(price or 0)})
         try:  # 即时回流挖掘站标「已引入」；失败则由对账兜底
-            R.mark_introduced(collab_id)
+            R.mark_introduced(_split(collab_id)[0])
         except Exception:
             pass
 
@@ -584,14 +685,21 @@ class YTSStore:
     def get_collab(self, collab_id, fresh: bool = False):
         """读取单条合作记录。fresh=True 时绕过缓存直查宜搭（约1-2秒），
         用于详情页打开时拿最新审核状态，避免双站缓存不同步"""
+        cid, month = _split(collab_id)
         if fresh:
             try:
-                r = self.db.get_by_channel_id(collab_id)
+                r = self.db.get_by_channel_id(cid, month or None)
+                # 带月份的旧链接没命中、且该频道只有一条记录 → 宽松兜底
+                if not r and month:
+                    hits = [x for x in self._cache.get("all", (0, []))[1]
+                            if x.get("channel_id") == cid]
+                    if len(hits) == 1:
+                        r = hits[0]
                 if r:
-                    self._cache["one:" + collab_id] = (time.time(), r)
+                    self._cache["one:" + _ident(r)] = (time.time(), r)
                     # 全量缓存里同一行也就地补丁，否则列表/看板仍显示旧状态
                     for row in self._cache.get("all", (0, []))[1]:
-                        if row.get("channel_id") == collab_id:
+                        if _ident(row) == _ident(r):
                             row.clear()
                             row.update(r)
                             break
@@ -599,6 +707,12 @@ class YTSStore:
             except Exception:
                 pass  # 直查失败降级走缓存
         r = self._get(collab_id)
+        if not r and month:
+            # 缓存降级兜底：身份串失效（改过月份）但频道仅一条记录时仍可定位
+            hits = [x for x in self._cache.get("all", (0, []))[1]
+                    if x.get("channel_id") == cid]
+            if len(hits) == 1:
+                r = hits[0]
         return self._to_collab(r) if r else None
 
     # ---------------- 履约：三分支 ----------------
@@ -627,7 +741,8 @@ class YTSStore:
         """写前直读宜搭，拿该记录视频子表此刻的最新值（绕过本地缓存，
         并发合并用；读失败降级为空列表，按传入列表照常写）"""
         try:
-            rec = self.db.get_by_channel_id(collab_id)
+            cid, month = _split(collab_id)
+            rec = self.db.get_by_channel_id(cid, month or None)
         except Exception:
             return []
         return list((rec or {}).get("videos") or [])
@@ -665,7 +780,8 @@ class YTSStore:
     def _fresh_products(self, collab_id):
         """写前直读宜搭，拿该记录商品子表此刻的最新值（绕过本地缓存）"""
         try:
-            rec = self.db.get_by_channel_id(collab_id)
+            cid, month = _split(collab_id)
+            rec = self.db.get_by_channel_id(cid, month or None)
         except Exception:
             return []
         return list((rec or {}).get("products") or [])
@@ -770,13 +886,17 @@ class YTSStore:
                 if c["review_status"] in ("已通过", "已驳回", "复审通过")]
 
     def review_pass(self, collab_id, note=""):
-        self.db.add_audit(collab_id, result="已通过", opinion=note or "审核通过")
+        cid, month = _split(collab_id)
+        self.db.add_audit(cid, result="已通过", opinion=note or "审核通过",
+                          plan_month=month or None)
         self._audit_patch(collab_id, "已通过", note or "审核通过")
         self._upd(collab_id, {"audit_status": "已通过"})
         return self._notify_result(collab_id, "已通过", note or "审核通过")
 
     def review_reject(self, collab_id, reason):
-        self.db.add_audit(collab_id, result="未通过", opinion=reason)
+        cid, month = _split(collab_id)
+        self.db.add_audit(cid, result="未通过", opinion=reason,
+                          plan_month=month or None)
         self._audit_patch(collab_id, "未通过", reason)
         self._upd(collab_id, {"audit_status": "未通过", "stage": "修改中"})
         return self._notify_result(collab_id, "未通过", reason)
@@ -793,13 +913,17 @@ class YTSStore:
         self._upd(collab_id, {"recheck_video_url": new_video_url})
 
     def recheck_pass(self, collab_id):
-        self.db.add_audit(collab_id, result="已通过", opinion="复审通过")
+        cid, month = _split(collab_id)
+        self.db.add_audit(cid, result="已通过", opinion="复审通过",
+                          plan_month=month or None)
         self._audit_patch(collab_id, "已通过", "复审通过")
         self._upd(collab_id, {"audit_status": "已通过"})
         return self._notify_result(collab_id, "已通过", "复审通过")
 
     def recheck_reject(self, collab_id, reason):
-        self.db.add_audit(collab_id, result="未通过", opinion=f"复审驳回：{reason}")
+        cid, month = _split(collab_id)
+        self.db.add_audit(cid, result="未通过", opinion=f"复审驳回：{reason}",
+                          plan_month=month or None)
         self._audit_patch(collab_id, "未通过", f"复审驳回：{reason}")
         self._upd(collab_id, {"audit_status": "未通过", "recheck_video_url": ""})
         return self._notify_result(collab_id, "未通过", f"复审驳回：{reason}")
@@ -869,15 +993,17 @@ class YTSStore:
             if not cid or passed not in ("Y", "N") or cid not in cur:
                 continue
             c = cur[cid]
+            ch_id, month = _split(cid)  # 宜搭写入用频道ID+月份定位
             reason = str(ch.get("reason") or "").strip()
             already = ("Y" if c["review_status"] in ("已通过", "复审通过")
                        else "N" if c["review_status"] == "已驳回" else "")
             if passed == already and (passed == "Y" or reason == (c["review_comment"] or "").strip()):
                 continue  # 没变化就不重复写
             if passed == "Y":
-                ok = self.db.add_audit(cid, result="已通过",
+                ok = self.db.add_audit(ch_id, result="已通过",
                                        opinion=reason or "审核通过",
-                                       audit_date=now_min)
+                                       audit_date=now_min,
+                                       plan_month=month or None)
                 if ok:
                     self._audit_patch(cid, "已通过", reason or "审核通过")
                     self._patch(cid, {"audit_status": "已通过"})
@@ -886,10 +1012,11 @@ class YTSStore:
                     failed.append(c["name"])
             else:
                 # 驳回：stage=修改中 通过 extra_fields 一并写入，省一次 HTTP
-                ok = self.db.add_audit(cid, result="未通过",
+                ok = self.db.add_audit(ch_id, result="未通过",
                                        opinion=reason or "审核未通过",
                                        audit_date=now_min,
-                                       extra_fields={"stage": "修改中"})
+                                       extra_fields={"stage": "修改中"},
+                                       plan_month=month or None)
                 if ok:
                     self._audit_patch(cid, "未通过", reason or "审核未通过")
                     self._patch(cid, {"audit_status": "未通过", "stage": "修改中"})
@@ -960,7 +1087,9 @@ class YTSStore:
             if (r.get("audit_status") or "") not in ("待审核", "未通过"):
                 continue
             try:
-                fresh = self.db.get_by_channel_id(cid)
+                # 按「频道+月份」精确定位，避免同频道其他月份行串数据
+                fresh = self.db.get_by_channel_id(
+                    cid, str(r.get("plan_month") or "").strip() or "")
             except Exception:
                 continue
             if not fresh:
@@ -972,7 +1101,7 @@ class YTSStore:
                 continue
             r.clear()
             r.update(fresh)  # 就地补丁，列表里其他引用同步生效
-            one = self._cache.get("one:" + cid)
+            one = self._cache.get("one:" + _ident(r))
             if one and isinstance(one[1], dict):
                 one[1].clear()
                 one[1].update(fresh)

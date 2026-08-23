@@ -313,10 +313,12 @@ def steps_bar(steps: list, selected: int = None, nav_id: str = None) -> str:
 def name_card(c: dict, node: str, nav_extra: str = "") -> str:
     """履约右栏卡片：整卡可点 → ?detail=；固定高度，文本超长省略，
     徽章与进度点始终可见"""
+    from urllib.parse import quote
     closed = c.get("is_closed")
     cls = "ycard closed" if closed else "ycard"
     tag = ' <span class="closed-tag">已闭环</span>' if closed else ""
-    return (f'<a class="{cls}" data-nav="?detail={c["collab_id"]}{nav_extra}">'
+    return (f'<a class="{cls}" '
+            f'data-nav="?detail={quote(str(c["collab_id"]), safe="")}{nav_extra}">'
             f'<span class="nm">{c["name"]}{tag}</span>'
             f'<span class="mt"><span class="mt-txt">{c.get("category") or "-"} · '
             f'{c.get("followers", 0):,} 粉丝</span>{badge(node)} '

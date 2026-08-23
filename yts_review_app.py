@@ -173,9 +173,12 @@ with tab_rev:
              "done": "还没有已审核的记录",
              "all": "暂无审核记录"}[_scope])),
             unsafe_allow_html=True)
-    # 主页链接 -> collab_id（Excel 上传辅助匹配用；网格保存直接用行内 collab_id）
-    id_by_url = {r["channel_url"]: r["collab_id"] for r in review_rows
-                 if r["channel_url"]}
+    # 主页链接 -> collab_id 列表（同一网红多月份合作会有多条；
+    # Excel 上传辅助匹配用；网格保存直接用行内 collab_id）
+    id_by_url = {}
+    for r in review_rows:
+        if r["channel_url"]:
+            id_by_url.setdefault(r["channel_url"], []).append(r["collab_id"])
     # 名字 -> collab_id 列表：同名多条记录时按名字匹配有歧义，须跳过并提示
     name_ids = {}
     for r in review_rows:
@@ -204,7 +207,8 @@ with tab_rev:
 
     b1, b2, b3 = st.columns(3)
     if b1.button("💾 변경 사항 저장 · 保存修改", type="primary",
-                 use_container_width=True, disabled=orig_df.empty):
+                 use_container_width=True, disabled=orig_df.empty,
+                 key="rev_save"):
         changes, missing_reason, no_id = [], [], []
         for i in range(len(edited)):
             row = edited.iloc[i]
@@ -250,10 +254,10 @@ with tab_rev:
                            data=_df_to_bytes(orig_df.drop(columns=["collab_id"],
                                                           errors="ignore")),
                            file_name=f"검토현황_{_scope_nm}_{datetime.now():%Y%m%d}.xlsx",
-                           use_container_width=True)
+                           use_container_width=True, key="rev_dl")
     else:
         b2.button("⬇ Excel 다운로드 · 下载Excel", disabled=True,
-                  use_container_width=True)
+                  use_container_width=True, key="rev_dl_disabled")
 
     up = b3.file_uploader("⬆ Excel 업로드 · 上传Excel", type=["xlsx", "xls"],
                           key="rev_upload",
@@ -274,8 +278,12 @@ with tab_rev:
         changes, skipped, bad, dup = [], 0, [], []
         for _, row in up_df.iterrows():
             nm, home = _norm(row[col_name]), (_norm(row[col_home]) if col_home else "")
-            cid = id_by_url.get(home, "")
+            url_ids = id_by_url.get(home, [])
+            cid = url_ids[0] if len(url_ids) == 1 else ""
             if not cid:
+                if len(url_ids) > 1:
+                    dup.append(f"{nm}（多个月份合作）")  # 同链接多条：分不清哪个月
+                    continue
                 ids = name_ids.get(nm, [])
                 if len(ids) == 1:
                     cid = ids[0]
@@ -297,14 +305,14 @@ with tab_rev:
         if bad:
             st.error("반려 시 사유 필수 · 以下驳回行未填原因，未写入：" + "、".join(bad[:10]))
         if dup:
-            st.warning("以下网红同名匹配到多条记录，无法确定回写哪一条，已跳过："
+            st.warning("以下网红匹配到多条记录（同名或多月份合作），无法确定回写哪一条，已跳过："
                        + "、".join(dup[:10]))
         if not changes:
             st.info("쓸 내용이 없습니다 · 没有可写入的结果（空白/未变化的行会自动跳过）")
         else:
             n, nok, nmsg = store.apply_review_results(changes)
             extra = (f"（{skipped} 行未匹配到网红被跳过）" if skipped else "") \
-                + (f"（{len(dup)} 行同名多记录被跳过）" if dup else "")
+                + (f"（{len(dup)} 行多记录歧义被跳过）" if dup else "")
             st.session_state["rev_flash"] = (
                 "ok" if nok else "warn",
                 f"✅ Excel 업로드 완료 · 上传成功，回传 {n} 条审核结果{extra} · {nmsg}")
@@ -322,9 +330,12 @@ with tab_ad:
         C_AD_NEED: r["ad_needed"], C_AD_DONE: r["ad_done"],
         "collab_id": r["collab_id"],
     } for r in ad_rows])
-    # 主页链接 -> collab_id（Excel 上传辅助匹配用；网格保存直接用行内 collab_id）
-    ad_id_by_url = {r["channel_url"]: r["collab_id"] for r in ad_rows
-                    if r["channel_url"]}
+    # 主页链接 -> collab_id 列表（同一网红多月份合作会有多条；
+    # Excel 上传辅助匹配用；网格保存直接用行内 collab_id）
+    ad_id_by_url = {}
+    for r in ad_rows:
+        if r["channel_url"]:
+            ad_id_by_url.setdefault(r["channel_url"], []).append(r["collab_id"])
     # 名字 -> collab_id 列表：同名多条记录时按名字匹配有歧义，须跳过并提示
     ad_name_ids = {}
     for r in ad_rows:
@@ -349,7 +360,7 @@ with tab_ad:
             })
         c1, c2, c3 = st.columns(3)
         if c1.button("💾 변경 사항 저장 · 保存修改", type="primary",
-                     use_container_width=True):
+                     use_container_width=True, key="ad_save"):
             changes, no_id = [], []
             for i in range(len(ad_edited)):
                 row = ad_edited.iloc[i]
@@ -378,7 +389,7 @@ with tab_ad:
                               data=_df_to_bytes(ad_df.drop(columns=["collab_id"],
                                                            errors="ignore")),
                               file_name=f"광고현황_{datetime.now():%Y%m%d}.xlsx",
-                              use_container_width=True):
+                              use_container_width=True, key="ad_dl"):
             pass
 
         ad_up = c3.file_uploader("⬆ Excel 업로드 · 上传Excel", type=["xlsx", "xls"],
@@ -398,8 +409,12 @@ with tab_ad:
             changes, skipped, dup = [], 0, []
             for _, row in up_df.iterrows():
                 nm, home = _norm(row[col_name]), (_norm(row[col_home]) if col_home else "")
-                cid = ad_id_by_url.get(home, "")
+                url_ids = ad_id_by_url.get(home, [])
+                cid = url_ids[0] if len(url_ids) == 1 else ""
                 if not cid:
+                    if len(url_ids) > 1:
+                        dup.append(f"{nm}（多个月份合作）")  # 同链接多条：分不清哪个月
+                        continue
                     ids = ad_name_ids.get(nm, [])
                     if len(ids) == 1:
                         cid = ids[0]
@@ -413,11 +428,11 @@ with tab_ad:
                 changes.append({"collab_id": cid,
                                 "ad_done": "Y" if _norm(row[col_done]).upper() == "Y" else ""})
             if dup:
-                st.warning("以下网红同名匹配到多条记录，无法确定回写哪一条，已跳过："
+                st.warning("以下网红匹配到多条记录（同名或多月份合作），无法确定回写哪一条，已跳过："
                            + "、".join(dup[:10]))
             n = store.apply_ad_results(changes)
             extra = (f"（{skipped} 行未匹配到网红被跳过）" if skipped else "") \
-                + (f"（{len(dup)} 行同名多记录被跳过）" if dup else "")
+                + (f"（{len(dup)} 行多记录歧义被跳过）" if dup else "")
             st.session_state["rev_flash"] = (
                 "ok", f"✅ Excel 업로드 완료 · 上传成功，更新 {n} 条投放状态{extra}")
             st.rerun()

@@ -97,10 +97,43 @@ def parse_product_workbook(data: bytes) -> tuple:
     return [g for g in groups if g["products"]], issues
 
 
+def _month_num(v) -> int:
+    """月份归一：'2026-07' / '7月' / '07' / 7 → 7；认不出 → 0"""
+    s = str(v or "").strip()
+    if not s or s.lower() == "nan":
+        return 0
+    m = re.search(r"(\d{1,2})\s*월|(\d{1,2})\s*月", s)
+    if m:
+        return int(m.group(1) or m.group(2))
+    m = re.search(r"[-./](\d{1,2})\s*$", s)
+    if m:
+        return int(m.group(1))
+    try:
+        n = int(float(s))
+        return n if 1 <= n <= 12 else 0
+    except (ValueError, TypeError):
+        return 0
+
+
+def _pick_month(cands: list, month) -> tuple:
+    """同一频道多个月份行里挑目标行：优先月份数字相同的
+    （同月多年取年份最新），都不匹配退回月份最新的一条。
+    返回 (记录, 是否月份匹配上)"""
+    if len(cands) == 1:
+        return cands[0], True
+    mn = _month_num(month)
+    if mn:
+        hit = [r for r in cands if _month_num(r.get("plan_month")) == mn]
+        if hit:
+            return max(hit, key=lambda r: str(r.get("plan_month") or "")), True
+    return max(cands, key=lambda r: str(r.get("plan_month") or "")), False
+
+
 def match_groups(groups, records) -> list:
     """把解析出的网红组匹配到系统记录。
     records: store.list_all() 的结果（含 name/channel_url/collab_id/product_list）
     匹配优先级：频道链接（规范化后精确）→ 频道名精确 → 频道名模糊。
+    同一频道有多个月份行时，按表里 MONTH 列挑对应月份的那条。
     返回 [{group, matched: collab字典或None, match_by}]
     """
     import difflib
@@ -112,20 +145,28 @@ def match_groups(groups, records) -> list:
     for r in records:
         u = norm_u(r.get("channel_url"))
         if u:
-            url_map.setdefault(u, r)
+            url_map.setdefault(u, []).append(r)
         nm = str(r.get("name") or "").strip()
         if nm:
-            name_map.setdefault(nm, r)
+            name_map.setdefault(nm, []).append(r)
     names = list(name_map.keys())
+
+    def month_tag(rec, ok):
+        pm = str(rec.get("plan_month") or "").strip()
+        if not pm:
+            return ""
+        return f"→{pm}" if ok else f"⚠未对上月份，写入{pm}"
 
     out = []
     for g in groups:
         matched, by = None, ""
         u = norm_u(g["channel_url"])
         if u and u in url_map:
-            matched, by = url_map[u], "链接"
+            matched, ok = _pick_month(url_map[u], g.get("month"))
+            by = "链接" + month_tag(matched, ok)
         elif g["name"] in name_map:
-            matched, by = name_map[g["name"]], "名称"
+            matched, ok = _pick_month(name_map[g["name"]], g.get("month"))
+            by = "名称" + month_tag(matched, ok)
         else:
             best, best_ratio = None, 0.0
             for nm in names:
@@ -133,7 +174,8 @@ def match_groups(groups, records) -> list:
                 if ratio > best_ratio:
                     best, best_ratio = name_map[nm], ratio
             if best_ratio >= 0.75:
-                matched, by = best, f"模糊({best_ratio:.0%})"
+                matched, ok = _pick_month(best, g.get("month"))
+                by = f"模糊({best_ratio:.0%})" + month_tag(matched, ok)
         out.append({"group": g, "matched": matched, "match_by": by})
     return out
 
