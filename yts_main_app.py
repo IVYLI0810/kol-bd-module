@@ -281,6 +281,69 @@ def flow_import_panel():
             st.rerun()
 
 
+def product_import_panel():
+    """选品清单批量导入：上传「网红×商品」Excel → 匹配系统网红 → 预览 → 写入"""
+    import yts_product_import as PI
+    with st.container(border=True):
+        st.markdown("**🛒 选品清单批量导入** · 上传「网红×商品」表（如 7月/8月YTS网红x商品），"
+                    "自动按频道匹配系统里的网红，把商品链接填进各自的选品清单。"
+                    "上传后先预览匹配结果，确认后再写入。")
+        up = st.file_uploader("上传「网红×商品」Excel", type=["xlsx", "xls"],
+                              key="pi_up")
+        if up is None:
+            return
+        groups, issues = PI.parse_product_workbook(up.read())
+        for msg in issues[:8]:
+            st.warning(msg)
+        if not groups:
+            st.error("没有解析到有效的网红×商品数据，请确认表格格式")
+            return
+
+        matched = PI.match_groups(groups, store.list_all())
+        mode = st.radio("写入方式", ["合并（保留已有选品，追加新的）",
+                                     "覆盖（清空旧选品，只留本次）"],
+                        horizontal=True, key="pi_mode")
+        preview = []
+        for m in matched:
+            g, rec = m["group"], m["matched"]
+            preview.append({
+                "月份": g["month"] or "-",
+                "频道名称": g["name"],
+                "负责人": g["recruiter"] or "-",
+                "匹配结果": (f"✅ {rec['name']}" if rec else "❌ 未匹配"),
+                "匹配方式": m["match_by"] or "-",
+                "商品数": len(g["products"]),
+            })
+        st.dataframe(preview, use_container_width=True, hide_index=True)
+        n_ok = sum(1 for m in matched if m["matched"])
+        n_prod = sum(len(m["group"]["products"]) for m in matched if m["matched"])
+        st.caption(f"共 {len(matched)} 位网红：匹配成功 {n_ok}（商品 {n_prod} 个）、"
+                   f"未匹配 {len(matched) - n_ok}")
+        if n_ok < len(matched):
+            st.warning("未匹配的网红不会写入。请确认这些网红已在系统里"
+                       "（可先到挖掘/活动模块导入），或核对表中频道名称")
+
+        if st.button(f"✅ 确认写入 {n_ok} 位网红的选品清单", type="primary",
+                     use_container_width=True, key="pi_go",
+                     disabled=n_ok == 0):
+            ok_n = 0
+            for m in matched:
+                rec = m["matched"]
+                if not rec:
+                    continue
+                new_urls = [p["url"] for p in m["group"]["products"]]
+                if mode.startswith("合并"):
+                    final = PI.merge_product_lists(rec.get("product_list") or [],
+                                                   new_urls)
+                else:
+                    final = new_urls
+                store.set_products(rec["collab_id"], final)
+                ok_n += 1
+            st.session_state["product_import_open"] = False
+            st.toast(f"已写入 {ok_n} 位网红的选品清单")
+            st.rerun()
+
+
 def _fix_zero_subscribers():
     """补频道粉丝数：找出粉丝为0的记录，从 YouTube 主页抓取真实粉丝数写回"""
     zero = [p["id"] for p in store.list_pool()
@@ -670,15 +733,24 @@ def page_activity():
     with h2:
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
         _fi_open = st.session_state.get("flow_import_open", False)
+        _pi_open = st.session_state.get("product_import_open", False)
         if st.button("✕ 收起导入面板" if _fi_open else " 流程导入",
                      key="btn_flow_import", use_container_width=True):
             st.session_state["flow_import_open"] = not _fi_open
+            st.session_state["product_import_open"] = False
+            st.rerun()
+        if st.button("✕ 收起选品导入" if _pi_open else "🛒 选品清单导入",
+                     key="btn_product_import", use_container_width=True):
+            st.session_state["product_import_open"] = not _pi_open
+            st.session_state["flow_import_open"] = False
             st.rerun()
         if st.button(" 导出全量数据", key="btn_export_all",
                      use_container_width=True):
             _export_all_data()
     if st.session_state.get("flow_import_open"):
         flow_import_panel()
+    if st.session_state.get("product_import_open"):
+        product_import_panel()
 
     roster = R.get_members()
     # 静默对账（5分钟一次）：履约中的网红回流挖掘站标「已引入」
