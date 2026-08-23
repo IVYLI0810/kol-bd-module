@@ -1113,8 +1113,8 @@ def _confirm_btn(key, label, confirm_label, fn, danger=False):
 
 
 def _render_danger_zone(cid, c, sel, steps):
-    """更多操作：步骤回退 / 取消合作 / 流回挖掘库 / 淘汰（均二次确认）"""
-    with st.expander("⚙️ 更多操作（回退 / 取消 / 流回 / 淘汰）"):
+    """更多操作：步骤回退 / 取消合作 / 流回挖掘库 / 淘汰 / 彻底删除（均二次确认）"""
+    with st.expander("⚙️ 更多操作（回退 / 取消 / 流回 / 淘汰 / 删除）"):
         st.caption("以下操作会改变流程状态，均需要二次确认，请谨慎操作")
         # 1) 回退当前步骤
         label, state = steps[sel]
@@ -1151,6 +1151,16 @@ def _render_danger_zone(cid, c, sel, steps):
                 "remove", "🗑 淘汰网红", "确认淘汰？从挖掘库彻底移除",
                 lambda: (store.remove_influencer(cid), st.toast("已淘汰该网红"),
                          go("dig")), danger=True)
+        st.divider()
+        # 3) 彻底删除记录（真删除，不可恢复，单独一行强调风险）
+        month = c.get("plan_month") or ""
+        tip = f"确认彻底删除「{c['name']}」" + (f"（{month}）" if month else "") + \
+              " 这条记录？数据将从宜搭永久删除，无法恢复！"
+        _confirm_btn(
+            "harddelete", "💥 彻底删除此记录（不可恢复）", tip,
+            lambda: (store.remove_record(cid),
+                     st.toast(f"已删除「{c['name']}」" + (f"（{month}）" if month else "")),
+                     go("activity")), danger=True)
 
 
 def _render_actions(cid, c, step):

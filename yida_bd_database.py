@@ -529,6 +529,21 @@ class YidaBDDB:
             request, self._headers("DeleteFormData"), self._runtime)
         return True
 
+    def delete_instance(self, instance_id: str) -> bool:
+        """按实例ID精确删除一条记录（多月份模型安全：不依赖频道ID查找，
+        绝不会误删同频道其他月份的记录）。返回是否删除成功"""
+        if not instance_id:
+            return False
+        request = aliding_models.DeleteFormDataRequest(
+            app_type=self.app_type,
+            system_token=self.system_token,
+            form_instance_id=instance_id,
+            language="zh_CN",
+        )
+        self._client.delete_form_data_with_options(
+            request, self._headers("DeleteFormData"), self._runtime)
+        return True
+
     def bulk_update_metrics(self, records: list) -> int:
         """批量更新视频/商品指标"""
         metric_fields = {

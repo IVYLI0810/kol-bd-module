@@ -1137,6 +1137,28 @@ class YTSStore:
         self._upd(collab_id, {"email_status": "", "stage": "", "plan_month": ""},
                   clear_fields=["email_status", "stage", "plan_month"])
 
+    def remove_record(self, collab_id) -> bool:
+        """彻底删除一条记录（真删除，不可恢复）。
+
+        与 remove_influencer（只清状态）的区别：本方法直接删掉宜搭里那条记录。
+        多月份模型安全：按身份串(频道#月份)精确取到目标行的 form_instance_id，
+        再按实例ID删除，绝不串删同频道其他月份的记录。
+        返回是否删除成功"""
+        r = _best_row(self._cache.get("all", (0, []))[1], collab_id)
+        if r is None:
+            r = self._get(collab_id)
+        inst = (r or {}).get("form_instance_id") or ""
+        if not inst:
+            return False
+        ok = self.db.delete_instance(inst)
+        if ok:
+            # 同步缓存：从全量缓存移除该行，清掉单条缓存
+            hit = self._cache.get("all")
+            if hit is not None:
+                hit[1][:] = [x for x in hit[1] if _ident(x) != collab_id]
+            self._cache.pop("one:" + collab_id, None)
+        return ok
+
     # 步骤回退：把对应字段写回"未完成"值（均为宜搭表单已有选项或清空）
     STEP_UNDO = {
         0: lambda: ({"plan_month": ""}, ["plan_month"]),          # 确认合作
