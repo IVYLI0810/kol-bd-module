@@ -1920,6 +1920,55 @@ def _render_issue_list(kols):
                      height=52 + len(rows) * 36)
 
 
+def _import_product_csv(csv_file):
+    """上传 YouTube Shopping 全量商品 CSV：
+    按各网红选品清单匹配商品 → 写入商品明细子表（点击率自动算）→
+    销售额/订单均摊到视频（方案B）+ 计算视频CPM → 汇总回写主记录。
+    返回处理结果文案"""
+    import yts_product_csv as PC
+    csv_data = PC.parse_product_csv(csv_file.read())
+    if not csv_data:
+        st.error("CSV 解析失败：未识别到商品数据，请确认是"
+                 "「表现最好的链接商品」导出的文件（含 名称 / SKU ID 列）")
+        return
+    hit_kols, hit_prods, miss_prods = 0, 0, []
+    for r in store.list_all():
+        plist = r.get("product_list") or []
+        if not plist:
+            continue
+        rows = PC.build_product_rows(csv_data, plist)
+        if not rows:
+            miss_prods.extend(plist[:3])
+            continue
+        cid = r["collab_id"]
+        # 1) 商品明细子表
+        store.save_products(cid, rows)
+        hit_kols += 1
+        hit_prods += len(rows)
+        # 2) 视频维度：销售额/订单均摊 + CPM
+        vids = r.get("videos") or []
+        if vids:
+            price = float(r.get("price") or 0)
+            updated = PC.allocate_to_videos(vids, rows, price)
+            store.save_videos(cid, updated)
+        # 3) 主记录汇总（点击/成交/销售额 + 平均点击率）
+        clicks, orders, gmv = PC.summarize_kol(rows)
+        avg_ctr = round(sum(x["ctr"] for x in rows) / len(rows), 2)
+        try:
+            store.update_product_metrics(r, clicks, avg_ctr, orders, gmv)
+        except Exception:
+            pass
+    if hit_kols == 0:
+        st.warning("没有匹配到任何网红的商品：请确认选品清单已导入"
+                   "（活动模块 → 🛒 选品清单导入），且 CSV 时间段覆盖合作期")
+        return
+    msg = f"✅ 已更新 {hit_kols} 位网红、{hit_prods} 个商品的效果数据"
+    if miss_prods:
+        msg += f"（另有部分选品在 CSV 中无数据）"
+    st.toast(msg)
+    st.session_state["force_refresh"] = False
+
+
 def page_analysis():
     home_btn()
     st.markdown(T.header("分析模块", "数据看板（声量×GMV 四象限）+ 全量数据明细"),
@@ -1953,6 +2002,15 @@ def page_analysis():
                       help="从 GMC 报表按合作选品拉取点击/CTR/成交/GMV（近30天），"
                            "写入主记录指标（兼容老数据）"):
             _pull_product_metrics(closed_recs)
+        # ---- 上传 YouTube Shopping 全量商品 CSV（商品维度数据源） ----
+        csv_up = st.file_uploader(
+            "上传商品效果数据 CSV（YouTube Shopping「表现最好的链接商品」导出）",
+            type=["csv"], key="ana_csv_up",
+            help="上传后自动按各网红选品清单匹配：写入商品明细子表 + "
+                 "销售额/订单均摊到视频 + 计算视频CPM（报价÷播放×1000）")
+        if csv_up is not None:
+            _import_product_csv(csv_up)
+            st.rerun()
     elif closed_recs:
         st.caption("📊 视频与商品数据由负责人统一更新；如需刷新请联系艾薇李。"
                    "下方为最新已同步的数据。")
@@ -1979,8 +2037,9 @@ def page_analysis():
         else:
             vrows_data.append((r, None))  # 老数据兜底
 
-    # ================= 双 Tab：数据看板（四象限）/ 全量数据 =================
-    tab_dash, tab_data = st.tabs(["📊 数据看板", "📋 全量数据"])
+    # ============ 三 Tab：数据看板（四象限）/ 全量数据 / 商品维度 ============
+    tab_dash, tab_data, tab_prod = st.tabs(["📊 数据看板", "📋 全量数据",
+                                            "🛍 商品维度"])
 
     # ---- 看板 tab：仅统计已闭环网红（声量 × GMV 四象限） ----
     with tab_dash:
@@ -2052,6 +2111,7 @@ def page_analysis():
                 ctr, orders, gmv = (float(v.get("ctr") or 0),
                                     int(v.get("orders") or 0),
                                     float(v.get("gmv") or 0))
+                cpm = float(v.get("cpm") or 0)
                 link_cell = (f'<a class="yts-link" href="{esc(url)}" target="_blank">'
                              f'视频↗</a>' if url else "-")
                 trows.append([
@@ -2069,6 +2129,8 @@ def page_analysis():
                     '<span class="num">—</span>',
                     f'<span class="num"><b>{gmv:,.0f}</b></span>' if pids else
                     '<span class="num">—</span>',
+                    f'<span class="num">{cpm:,.0f}</span>' if cpm else
+                    '<span class="num">—</span>',
                 ])
             else:
                 # 老数据兜底行（无子表）
@@ -2085,15 +2147,16 @@ def page_analysis():
                     f'<span class="num">{r.get("ctr", 0):.1f}%</span>',
                     f'<span class="num">{int(r.get("orders") or 0):,}</span>',
                     f'<span class="num"><b>{r.get("gmv", 0):,.0f}</b></span>',
+                    '<span class="num">—</span>',
                 ])
         # 行内名字带 data-nav 跳转，必须用 iframe 组件渲染（st.markdown 会吞掉点击）
         T.component_html(
             T.table(["网红", "类型", "视频", "挂商品", "播放", "点赞",
-                     "CTR", "成交", "GMV"], trows, wrap=False),
+                     "CTR", "成交", "GMV", "CPM"], trows, wrap=False),
             height=52 + len(trows) * 36)
         st.caption("数据口径：播放/点赞/评论按视频自动抓取（缓存24h）；"
-                   "CTR/成交/GMV 按该视频关联的商品从 GMC 拉取（近30天）。"
-                   "同一商品挂在多条视频时，GMV 按商品归属，无法细分到单条视频。")
+                   "CTR/成交/GMV 按该视频关联的商品从商品报表均摊（同一商品挂多条视频时平分）；"
+                   "CPM = 网红报价 ÷ 播放量 × 1000（每千次播放成本）。")
 
         # ---- 网红总览：按网红聚合其全部视频（一位网红一行） ----
         agg = {}
@@ -2152,6 +2215,57 @@ def page_analysis():
 
         st.markdown(T.foot("视频级数据由闭环节点登记、一键刷新自动写入"),
                     unsafe_allow_html=True)
+
+    # ---- 商品维度 tab：一个商品一行（从商品明细子表读取） ----
+    with tab_prod:
+        st.caption("商品维度：一个商品一行，数据来自 YouTube Shopping 商品报表"
+                   "（分析模块顶部上传 CSV 后自动写入）")
+        prod_rows = []  # (记录, 商品dict)
+        for r in recs:
+            for p in r.get("products") or []:
+                prod_rows.append((r, p))
+        if not prod_rows:
+            st.markdown(T.empty_hint(
+                "暂无商品数据：请先在分析模块顶部上传「表现最好的链接商品」CSV，"
+                "系统会按各网红选品清单自动匹配并写入"),
+                unsafe_allow_html=True)
+        else:
+            tot_g = sum(float(p.get("gmv") or 0) for _, p in prod_rows)
+            tot_o = sum(float(p.get("orders") or 0) for _, p in prod_rows)
+            tot_c = sum(float(p.get("clicks") or 0) for _, p in prod_rows)
+            tot_i = sum(float(p.get("impressions") or 0) for _, p in prod_rows)
+            st.markdown(T.stats_row([
+                ("商品数", f"{len(prod_rows):,}", "c-pink"),
+                ("销售总额", f"{tot_g:,.0f}", "c-green"),
+                ("订单合计", f"{tot_o:,.0f}", "c-purple"),
+                ("点击合计", f"{tot_c:,.0f}", "c-amber"),
+            ]), unsafe_allow_html=True)
+            prod_rows.sort(key=lambda rp: float(rp[1].get("gmv") or 0),
+                           reverse=True)
+            prows = []
+            for r, p in prod_rows:
+                ctr, cvr = float(p.get("ctr") or 0), float(p.get("cvr") or 0)
+                pname = esc(str(p.get("name") or "-")[:40])
+                prows.append([
+                    f'<a data-nav="?detail={r["collab_id"]}&from=analysis" '
+                    f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
+                    f'{esc(r["name"])}</a>',
+                    pname,
+                    f'<span class="num">{int(float(p.get("video_views") or 0)):,}</span>',
+                    f'<span class="num">{int(float(p.get("impressions") or 0)):,}</span>',
+                    f'<span class="num">{int(float(p.get("clicks") or 0)):,}</span>',
+                    f'<span class="num">{ctr:.2f}%</span>',
+                    f'<span class="num">{int(float(p.get("orders") or 0)):,}</span>',
+                    f'<span class="num">{cvr:.2f}</span>',
+                    f'<span class="num"><b>{float(p.get("gmv") or 0):,.0f}</b></span>',
+                ])
+            T.component_html(
+                T.table(["网红", "商品", "观看", "展示", "点击", "点击率",
+                         "订单", "转化率", "销售额"], prows, wrap=False),
+                height=52 + len(prows) * 36)
+            st.markdown(T.foot("点击率 = 点击÷展示（自动计算）；"
+                               "转化率来自商品报表原值"),
+                        unsafe_allow_html=True)
 
 
 # ============================ 路由 ============================
