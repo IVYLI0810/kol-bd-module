@@ -31,3 +31,6 @@ Thumbs.db
 # Local test data & credentials
 yts_demo_data.json
 yida_config_local.py
+
+# Local data backups
+backups/

@@ -54,7 +54,7 @@ FIELD_IDS = {
     "email_status": "selectField_mspwxzcv",    # 邮件状态
     "settlement": "selectField_mspwxzcx",      # 结算方式（复用存「能否二次利用」）
     "settlement_note": "textField_mt6cwpmg",   # 结算备注
-    "sales_category": "textField_mt6cwpmm",    # 带货垂类/带货类目（挖掘站同步全覆盖 + 确认合作时可手动登记）
+    "sales_category": "textField_mt70lpal",    # 带货垂类/带货类目（2026-08-24 重建字段，旧 mt6cwpmm 更新通道失效已弃用）
     "group_link": "textField_mspwxzcz",        # 群链接
     "contract_status": "selectField_mspwxzd3", # 合同状态
     "order_status": "selectField_mspwxzd5",    # 下单状态
