@@ -82,29 +82,81 @@ AI_SECTION_TITLE = "## 7. 콘텐츠 방향 & 바이럴(爆款) 논리 제안 (AI
 SYSTEM_PROMPT = (
     "당신은 AliExpress 한국 YouTube Shopping 프로젝트의 시니어 콘텐츠 디렉터입니다. "
     "기존 제작 가이드 뒤에 덧붙일 「콘텐츠 방향 & 바이럴(爆款) 논리 제안」 섹션을 한국어로 작성합니다. "
-    "전제: 아직 최종 제품이 확정되지 않은 상태이므로, 특정 제품에 묶인 구체 대본은 쓰지 않습니다. "
-    "규칙: 1) 인플루언서의 카테고리/채널 스타일에 맞춘 맞춤형 주제(选题) 2-3개를 제안. "
-    "2) 각 주제마다 바이럴(爆款) 논리 설명 — 훅 설계, 시청 유지(전개) 설계, 감정 트리거, 왜 이 카테고리에서 먹히는지. "
-    "3) 각 주제에 유튜브 쇼핑 태그 & 할인 코드 YTSKOL($10 이상 구매 시 $2 할인)로 자연스럽게 이어지는 전환 포인트를 한 줄로 제시. "
-    "4) 심의 규칙 준수: 유료광고 표기 안내, 타 플랫폼 명칭 노출 금지. "
-    "5) 한국어로만 출력, 마크다운 형식(## / - / **굵은글자**) 사용, 서론 없이 바로 본문 출력."
+    "전제: 제공된 상품 이름/링크가 있으면 반드시 구체적으로 반영하고, 상품이 아직 없으면 "
+    "콘텐츠 카테고리·판매(带货) 카테고리 특성 기반으로 제안합니다. "
+    "규칙: 1) 인플루언서의 콘텐츠 카테고리, 판매 카테고리, 채널 스타일, 구독자 규모를 결합한 "
+    "맞춤형 주제 3개를 제안 — 뻔한 일반론 금지, 이 인플루언서라서 가능한 구체 주제로. "
+    "2) 각 주제마다: 콘텐츠 방향(2-3문장), 왜 이 인플루언서에게 맞는지, 상품을 자연스럽게 녹이는 방법. "
+    "3) 바이럴 논리: 훅 설계(그대로 써도 되는 한국어 훅 예문 주제별 1-2개 반드시 포함), "
+    "첫 3초 시청 유지 설계, 감정 트리거, 전환 포인트. "
+    "4) 전환 포인트는 유튜브 쇼핑 태그 클릭 & 할인 코드 YTSKOL($10 이상 구매 시 $2 할인)로 "
+    "자연스럽게 이어지게 한 줄로 제시. "
+    "5) 제목은 클릭을 유도하는 구체 예시 5개 + 해시태그 세트 함께 제시. "
+    "6) 심의 규칙 준수: 유료광고 표기, 타 플랫폼 명칭 노출 금지, 코드 혜택 정보 포함, 쇼핑 태그 필수. "
+    "7) 한국어로만 출력, 마크다운 형식(## / - / **굵은글자**) 사용, 서론 없이 바로 본문 출력. "
+    "8) 분량은 충분히 상세하게 — 인플루언서가 이 문서만으로 촬영 기획을 시작할 수 있을 수준으로."
 )
 
 USER_PROMPT_TPL = """인플루언서 정보:
 - 昵称(닉네임): {name}
-- 垂类(카테고리): {category}
+- 채널 URL: {channel_url}
+- 内容垂类(콘텐츠 카테고리): {category}
+- 带货垂类(판매 카테고리): {sales_category}
 - 粉丝数(구독자): {subscribers}
-- 选品清单(선정 희망 상품 링크, 아직 없을 수 있음):
+- 报价(제작비): {price}
+- 选品清单(선정 희망 상품):
 {products}
 - 计划上线(업로드 예정): {plan_month}
+- 备注(내부 참고 사항): {notes}
 
 추가 요청 사항:
 {requirements}
 
-아래 구조대로 출력하세요:
-## A. 맞춤형 콘텐츠 주제 제안（2-3개）
-## B. 주제별 바이럴(爆款) 논리（훅 / 전개 / 전환 포인트）
-## C. 제목 & 해시태그 방향"""
+아래 구조대로 최대한 구체적이고 상세하게 출력하세요:
+## A. 맞춤형 콘텐츠 주제 제안（3개）
+각 주제마다 **주제명** / **콘텐츠 방향**(2-3문장) / **왜 이 인플루언서에게 맞는가** / **상품 녹이는 방법** 포함
+## B. 주제별 바이럴(爆款) 논리
+각 주제마다 **훅 설계**(그대로 쓸 수 있는 한국어 훅 예문 1-2개 포함) / **시청 유지 설계**(전개 순서) / **감정 트리거** / **전환 포인트**(쇼핑 태그 & 코드 YTSKOL 연결 한 줄) 포함
+## C. 제목 예시 5개 & 해시태그 세트
+## D. 심의·필수사항 체크리스트（유료광고 표기 / 타 플랫폼 명칭 노출 금지 / 코드 YTSKOL 정보 포함 / 쇼핑 태그 / 전용 해시태그）
+"""
+
+
+def _fmt_num(v) -> str:
+    """粉丝数等数字千分位格式化，空值显示 -"""
+    try:
+        n = int(float(v))
+        return f"{n:,}" if n > 0 else "-"
+    except (TypeError, ValueError):
+        return str(v).strip() if v else "-"
+
+
+def _fmt_price(v) -> str:
+    """报价（韩币）格式化"""
+    try:
+        n = int(float(v))
+        return f"{n:,}원" if n > 0 else "(미정)"
+    except (TypeError, ValueError):
+        return "(미정)"
+
+
+def _fmt_products(collab: dict) -> str:
+    """选品信息：商品子表的名称/类目/ID 为主，product_list 链接作补充"""
+    lines = []
+    for p in collab.get("products") or []:
+        name = (p.get("name") or "").strip()
+        pid = (p.get("pid") or "").strip()
+        cat = (p.get("p_category") or "").strip()
+        if name or pid:
+            bits = [b for b in (name or "(이름 미입력)",
+                                f"카테고리: {cat}" if cat else "",
+                                f"상품ID: {pid}" if pid else "") if b]
+            lines.append("  - " + " / ".join(bits))
+    for link in collab.get("product_list") or []:
+        link = str(link).strip()
+        if link:
+            lines.append(f"  - 링크: {link}")
+    return "\n".join(lines)
 
 
 def get_api_key() -> str:
@@ -119,13 +171,17 @@ def get_api_key() -> str:
 
 
 def build_prompt(collab: dict, requirements: str = "") -> list:
-    products = collab.get("product_list") or []
+    products = _fmt_products(collab)
     user = USER_PROMPT_TPL.format(
-        name=collab.get("name") or "-",
+        name=collab.get("channel_name") or collab.get("name") or "-",
+        channel_url=collab.get("channel_url") or "-",
         category=collab.get("category") or "-",
-        subscribers=collab.get("followers") or collab.get("subscribers") or "-",
-        products="\n".join(f"  - {p}" for p in products) or "  - (아직 없음, 일반적인 강전환 방향으로 제안)",
+        sales_category=collab.get("sales_category") or "-",
+        subscribers=_fmt_num(collab.get("followers") or collab.get("subscribers")),
+        price=_fmt_price(collab.get("price")),
+        products=products or "  - (아직 없음 — 콘텐츠/판매 카테고리 특성 기반으로 강전환 방향으로 제안)",
         plan_month=collab.get("plan_month") or "-",
+        notes=(collab.get("notes") or "").strip() or "-",
         requirements=requirements.strip() or "(없음, 기본 강전환 방향)",
     )
     return [
@@ -138,19 +194,25 @@ def build_prompt(collab: dict, requirements: str = "") -> list:
 # 选品后：视频脚本推荐（3 个爆款脚本框架，不写全台词）
 # ---------------------------------------------------------------------------
 SCRIPT_SYSTEM_PROMPT = (
-    "당신은 AliExpress 한국 YouTube Shopping 프로젝트의 시니어 쇼츠 각본가입니다. "
+    "당신은 AliExpress 한국 YouTube Shopping 프로젝트의 시니어 쇼츠/롱폼 각본가입니다. "
     "확정된 선정 상품과 인플루언서의 카테고리/스타일을 결합해 「바이럴 스크립트 프레임워크」 3개를 한국어로 작성합니다. "
-    "규칙: 1) 대본 전체를 쓰지 않는다 — 프레임워크만 제공한다: 주제 각도, 형식(쇼츠/롱폼), 타임라인 구조(초 배분), 제품 등장 시점, 전환 포인트. "
-    "2) 타임라인 구조 예: 0-3초 훅 / 페인포인트·장면 / 제품 등장+셀링포인트 / 사용 효과 / 코드 혜택 / CTA. "
-    "3) 훅과 CTA는 그대로 써도 되는 한 줄 문장으로 제시하고, 그 외 대사는 인플루언서가 자유롭게 채우도록 둔다. "
-    "4) 상품 링크/이름에서 셀링포인트(가성비/공간 절약/사용 편의 등)를 추론해 인플루언서 콘텐츠 스타일과 결합. "
-    "5) 할인 코드 YTSKOL($10 이상 구매 시 $2 할인)과 유튜브 쇼핑 태그 클릭 유도 포함, 심의 규칙 준수(유료광고 표기, 타 플랫폼 명칭 노출 금지). "
-    "6) 한국어로만 출력, 마크다운 형식(## / - / **굵은글자**) 사용, 서론 없이 바로 본문 출력."
+    "원칙: 대본 전체(逐字稿)를 쓰지 않는다 — 방향 + 필수 요소 + 참고 화법만 제공한다. "
+    "규칙: 1) 각 프레임워크마다: 주제 각도(왜 이 각도가 먹히는지), 형식(쇼츠/롱폼)과 길이, "
+    "초 단위 타임라인 구조(예: 0-3초 훅 / 3-10초 페인포인트·장면 / 10-25초 제품 등장+셀링포인트 / …). "
+    "2) 훅 예문과 CTA 예문은 그대로 참고해도 되는 한국어 한 줄 문장으로 제시하고, "
+    "그 외 대사는 인플루언서가 자유롭게 채우도록 둔다. "
+    "3) 상품 이름/카테고리에서 셀링포인트(가성비/공간 절약/사용 편의/비주얼 등)를 추론해 "
+    "인플루언서 콘텐츠 스타일과 결합 — 어떤 제품을 몇 초에 등장시켜 어떤 특징을 강조할지 명시. "
+    "4) 전환 포인트: 유튜브 쇼핑 태그 클릭 유도 + 할인 코드 YTSKOL($10 이상 구매 시 $2 할인) 언급 시점 명시. "
+    "5) 심의 규칙 준수: 유료광고 표기, 타 플랫폼 명칭 노출 금지. "
+    "6) 한국어로만 출력, 마크다운 형식(## / - / **굵은글자**) 사용, 서론 없이 바로 본문 출력. "
+    "7) 세 프레임워크는 서로 다른 각도로(예: 언박싱/활용 꿀팁/비교 또는 하루 루틴 등), 분량은 충분히 상세하게."
 )
 
 SCRIPT_USER_PROMPT_TPL = """인플루언서 정보:
 - 昵称(닉네임): {name}
-- 垂类(카테고리): {category}
+- 内容垂类(콘텐츠 카테고리): {category}
+- 带货垂类(판매 카테고리): {sales_category}
 - 粉丝数(구독자): {subscribers}
 
 확정 선정 상품(选品清单):
@@ -159,21 +221,29 @@ SCRIPT_USER_PROMPT_TPL = """인플루언서 정보:
 추가 요청 사항:
 {requirements}
 
-아래 구조대로 출력하세요:
+아래 구조대로 출력하세요. 각 프레임워크는 충분히 구체적으로 작성:
 ## 스크립트 프레임워크 1. 「주제명」
 ## 스크립트 프레임워크 2. 「주제명」
 ## 스크립트 프레임워크 3. 「주제명」
-각 프레임워크 안에 - **각도** / - **형식·길이** / - **타임라인 구조** / - **전환 포인트** 를 포함하세요."""
+각 프레임워크 안에 다음을 모두 포함하세요:
+- **각도**: 왜 이 각도가 이 인플루언서·상품 조합에서 먹히는지 한 문장
+- **형식·길이**: 쇼츠/롱폼 + 목표 초 수
+- **타임라인 구조**: 초 단위 구간 구분(예: 0-3초 훅 / 3-10초 페인포인트 / 10-25초 제품 등장+셀링포인트 / 25-40초 사용 효과 / 40-50초 코드 혜택 / 50-60초 CTA)
+- **훅 예문**: 그대로 참고 가능한 한국어 한 문장
+- **제품 등장 시점 & 셀링포인트**: 어떤 제품을 몇 초에, 어떤 특징을 강조
+- **전환 포인트**: 쇼핑 태그 클릭 유도 + 코드 YTSKOL 언급 시점
+- **CTA 예문**: 한국어 한 문장"""
 
 
 def build_script_prompt(collab: dict, requirements: str = "") -> list:
     """选品后脚本推荐提示词：商品清单 + 网红垂类/风格 → 3 个爆款脚本框架"""
-    products = collab.get("product_list") or []
+    products = _fmt_products(collab)
     user = SCRIPT_USER_PROMPT_TPL.format(
-        name=collab.get("name") or "-",
+        name=collab.get("channel_name") or collab.get("name") or "-",
         category=collab.get("category") or "-",
-        subscribers=collab.get("followers") or collab.get("subscribers") or "-",
-        products="\n".join(f"  - {p}" for p in products) or "  - (없음)",
+        sales_category=collab.get("sales_category") or "-",
+        subscribers=_fmt_num(collab.get("followers") or collab.get("subscribers")),
+        products=products or "  - (없음)",
         requirements=requirements.strip() or "(없음)",
     )
     return [

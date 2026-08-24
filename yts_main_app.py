@@ -2477,18 +2477,17 @@ def page_analysis():
     # ---- 数据更新权限门：仅负责人(艾薇李)可触发抓取/刷新；其他人只读 ----
     is_owner = _is_data_owner()
     _force = st.session_state.pop("force_refresh", False)
-    if is_owner:
+    # 仅手动触发：打开页面不再自动抓取，避免每次刷新都等加载
+    if is_owner and _force:
         if closed_recs and (YT.get_key() or GMC.configured()):
-            with st.spinner("正在同步视频数据…" if _force
-                            else "正在同步视频数据（每日一次）…"):
-                n_upd, failed = _refresh_videos_granular(closed_recs, force=_force)
-            if _force:
-                st.toast(f"已强制刷新 {n_upd} 条视频记录的数据")
+            with st.spinner("正在同步视频数据…"):
+                n_upd, failed = _refresh_videos_granular(closed_recs, force=True)
+            st.toast(f"已强制刷新 {n_upd} 条视频记录的数据")
             if failed and not YT.get_key():
                 st.warning("未配置 YOUTUBE_API_KEY：播放/点赞/评论无法抓取。"
                            "请在 Streamlit Cloud → Settings → Secrets 添加后使用一键刷新")
         elif closed_recs:
-            st.warning("未配置 YOUTUBE_API_KEY 与 GMC 凭证：视频数据无法自动抓取")
+            st.warning("未配置 YOUTUBE_API_KEY 与 GMC 凭证：视频数据无法抓取")
     months = sorted({r["plan_month"] for r in recs if r.get("plan_month")},
                     reverse=True)
     # 月份筛选先读上一次的选择（顶栏导出按钮要先于 pills 渲染就拿到数据）
