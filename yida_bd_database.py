@@ -33,7 +33,6 @@ FIELD_IDS = {
     "channel_name": "textField_msn2qhnd",      # 昵称
     "channel_url": "textField_msn2qhnh",       # YouTube主页
     "category": "selectField_msn2qhnj",        # 内容垂类（原「垂类」下拉，2026-08-24 起存内容垂类）
-    "sales_category": "textField_mt6cwpmm", # 带货垂类（2026-08-24 新增）
     "recruiter": "textField_msn2qhnl",         # 挖掘人
     "subscribers": "numberField_msn2qhnp",     # 粉丝数
     "total_views": "numberField_msn2qhnt",     # 总播放
@@ -53,7 +52,9 @@ FIELD_IDS = {
     # ---- YTS 项目流程字段（2026-08-12 第二批实测） ----
     "stage": "selectField_mspwxzct",           # 合作阶段
     "email_status": "selectField_mspwxzcv",    # 邮件状态
-    "settlement": "selectField_mspwxzcx",      # 结算方式
+    "settlement": "selectField_mspwxzcx",      # 结算方式（复用存「能否二次利用」）
+    "settlement_note": "textField_mt6cwpmg",   # 结算备注
+    "sales_category": "textField_mt6cwpmm",    # 带货垂类/带货类目（挖掘站同步全覆盖 + 确认合作时可手动登记）
     "group_link": "textField_mspwxzcz",        # 群链接
     "contract_status": "selectField_mspwxzd3", # 合同状态
     "order_status": "selectField_mspwxzd5",    # 下单状态
@@ -105,19 +106,21 @@ VIDEO_FLOAT_FIELDS = {"ctr", "gmv", "cpm"}
 PRODUCT_SUB_FIELD_IDS = {
     "pid": "textField_mt60r3av",               # 商品ID（纯数字）
     "name": "textField_mt60r3ax",              # 商品名称
+    "p_category": "textField_mt6cwpmk",        # 商品类目
     "gmv": "numberField_mt60r3az",             # 销售总额
     "net_sales": "numberField_mt60r3b1",       # 净销售额
     "commission": "numberField_mt60r3b3",      # 佣金
-    "video_views": "numberField_mt60r3b5",     # 观看次数
+    "video_views": "numberField_mt60r3b5",     # 视频观看次数
     "impressions": "numberField_mt60r3b7",     # 展示次数
     "clicks": "numberField_mt60r3b9",          # 点击次数
     "orders": "numberField_mt60r3bb",          # 订单数
-    "cvr": "numberField_mt60r3bd",             # 转化率
+    "cvr": "numberField_mt60r3bd",             # 商品转化率（CSV原值）
     "ctr": "numberField_mt60r3bf",             # 点击率（点击÷展示，导入时计算）
+    "video_cvr": "numberField_mt6cwpmi",       # 视频转化率（订单÷视频观看次数）
 }
 
 # 商品明细子表内的浮点字段（写入时保留小数）
-PRODUCT_FLOAT_FIELDS = {"gmv", "net_sales", "commission", "cvr", "ctr"}
+PRODUCT_FLOAT_FIELDS = {"gmv", "net_sales", "commission", "cvr", "ctr", "video_cvr"}
 
 NUMBER_FIELDS = {
     "subscribers", "total_views", "video_views", "video_likes", "video_comments",
@@ -283,9 +286,10 @@ class YidaBDDB:
         out = {
             PRODUCT_SUB_FIELD_IDS["pid"]: str(row.get("pid", "")),
             PRODUCT_SUB_FIELD_IDS["name"]: str(row.get("name", ""))[:400],
+            PRODUCT_SUB_FIELD_IDS["p_category"]: str(row.get("p_category", ""))[:200],
         }
         for code in ("gmv", "net_sales", "commission", "video_views",
-                     "impressions", "clicks", "orders", "cvr", "ctr"):
+                     "impressions", "clicks", "orders", "cvr", "ctr", "video_cvr"):
             try:
                 v = float(row.get(code) or 0)
             except (TypeError, ValueError):
@@ -537,6 +541,21 @@ class YidaBDDB:
         if not inst:
             return False
         instance_id = inst.get("FormInstanceId") or inst.get("formInstanceId")
+        request = aliding_models.DeleteFormDataRequest(
+            app_type=self.app_type,
+            system_token=self.system_token,
+            form_instance_id=instance_id,
+            language="zh_CN",
+        )
+        self._client.delete_form_data_with_options(
+            request, self._headers("DeleteFormData"), self._runtime)
+        return True
+
+    def delete_instance(self, instance_id: str) -> bool:
+        """按实例ID精确删除一条记录（多月份模型安全：不依赖频道ID查找，
+        绝不会误删同频道其他月份的记录）。返回是否删除成功"""
+        if not instance_id:
+            return False
         request = aliding_models.DeleteFormDataRequest(
             app_type=self.app_type,
             system_token=self.system_token,

@@ -284,7 +284,6 @@ class YTSStore:
             "platform": "YouTube",
             "followers": r.get("subscribers") or 0,
             "category": r.get("category") or "",
-            "sales_category": r.get("sales_category") or "",
             "email": r.get("email") or "",
             "recruiter": r.get("recruiter") or "",
             "avatar": "",
@@ -325,6 +324,11 @@ class YTSStore:
             "submit_actual": r.get("submit_actual") or "",
             # 最近一次审核时间（取审核记录最后一条的日期，精确到分钟）
             "audit_time": (audit_log[-1].get("audit_date", "") if audit_log else ""),
+            # 结算方式（复用存「能否二次利用」）+ 结算备注
+            "settlement": r.get("settlement") or "",
+            "settlement_note": r.get("settlement_note") or "",
+            # 带货类目（网红级，分析模块网红维度展示）
+            "sales_category": r.get("sales_category") or "",
             "notes": r.get("notes") or "",
             "audit_log": audit_log,
             # ---- 视频明细子表（一行一条视频，闭环时登记） ----
@@ -370,9 +374,11 @@ class YTSStore:
 
     # ---------------- 编辑基本信息 ----------------
     EDIT_FIELDS = ("price", "plan_month", "email", "channel_url",
-                   "group_link", "submit_deadline", "notes")
+                   "group_link", "submit_deadline", "notes",
+                   "settlement", "settlement_note")
     # 允许清空的文本字段（plan_month/channel_url 清空会破坏流程状态，不允许）
-    CLEARABLE = ("notes", "group_link", "email", "submit_deadline")
+    CLEARABLE = ("notes", "group_link", "email", "submit_deadline",
+                 "settlement_note")
 
     def update_info(self, collab_id, fields: dict) -> None:
         """编辑基本信息（报价/月份/邮箱/链接/交稿截止/备注）。
@@ -673,9 +679,17 @@ class YTSStore:
         return {"matched": matched, "updated": updated, "total": len(rows),
                 "emails_filled": emails_filled}
 
-    def confirm_collab(self, collab_id, plan_month, price=0):
-        self._upd(collab_id, {"plan_month": plan_month, "stage": "已确认",
-                              "price": int(price or 0)})
+    def confirm_collab(self, collab_id, plan_month, price=0,
+                       reusable=None, settle_note=""):
+        """确认合作。「能否二次利用」复用宜搭「结算方式」字段存储：
+        可二次利用 / 不可二次利用；备注写入「结算备注」"""
+        patch = {"plan_month": plan_month, "stage": "已确认",
+                 "price": int(price or 0)}
+        if reusable is not None:
+            patch["settlement"] = "可二次利用" if reusable else "不可二次利用"
+        if settle_note:
+            patch["settlement_note"] = str(settle_note).strip()
+        self._upd(collab_id, patch)
         try:  # 即时回流挖掘站标「已引入」；失败则由对账兜底
             R.mark_introduced(_split(collab_id)[0])
         except Exception:
@@ -1153,6 +1167,28 @@ class YTSStore:
         """淘汰：从挖掘池移除（清空已发邮件/洽谈标记，回到未触达状态）"""
         self._upd(collab_id, {"email_status": "", "stage": "", "plan_month": ""},
                   clear_fields=["email_status", "stage", "plan_month"])
+
+    def remove_record(self, collab_id) -> bool:
+        """彻底删除一条记录（真删除，不可恢复）。
+
+        与 remove_influencer（只清状态）的区别：本方法直接删掉宜搭里那条记录。
+        多月份模型安全：按身份串(频道#月份)精确取到目标行的 form_instance_id，
+        再按实例ID删除，绝不串删同频道其他月份的记录。
+        返回是否删除成功"""
+        r = _best_row(self._cache.get("all", (0, []))[1], collab_id)
+        if r is None:
+            r = self._get(collab_id)
+        inst = (r or {}).get("form_instance_id") or ""
+        if not inst:
+            return False
+        ok = self.db.delete_instance(inst)
+        if ok:
+            # 同步缓存：从全量缓存移除该行，清掉单条缓存
+            hit = self._cache.get("all")
+            if hit is not None:
+                hit[1][:] = [x for x in hit[1] if _ident(x) != collab_id]
+            self._cache.pop("one:" + collab_id, None)
+        return ok
 
     # 步骤回退：把对应字段写回"未完成"值（均为宜搭表单已有选项或清空）
     STEP_UNDO = {
