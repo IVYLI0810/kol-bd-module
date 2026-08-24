@@ -32,7 +32,8 @@ FIELD_IDS = {
     "channel_id": "textField_msn2qhnb",        # 频道ID（唯一）
     "channel_name": "textField_msn2qhnd",      # 昵称
     "channel_url": "textField_msn2qhnh",       # YouTube主页
-    "category": "selectField_msn2qhnj",        # 垂类
+    "category": "selectField_msn2qhnj",        # 内容垂类（原「垂类」下拉，2026-08-24 起存内容垂类）
+    "sales_category": "textField_mt6cwpmm", # 带货垂类（2026-08-24 新增）
     "recruiter": "textField_msn2qhnl",         # 挖掘人
     "subscribers": "numberField_msn2qhnp",     # 粉丝数
     "total_views": "numberField_msn2qhnt",     # 总播放
@@ -125,7 +126,8 @@ NUMBER_FIELDS = {
 
 CODE_TO_LABEL = {
     "channel_id": "频道ID", "channel_name": "昵称", "channel_url": "YouTube主页",
-    "category": "垂类", "recruiter": "挖掘人", "subscribers": "粉丝数",
+    "category": "内容垂类", "sales_category": "带货垂类",
+    "recruiter": "挖掘人", "subscribers": "粉丝数",
     "total_views": "总播放", "status": "状态", "video_link": "视频回链",
     "video_views": "播放量", "video_likes": "点赞数", "video_comments": "评论数",
     "product_link": "商品链接", "product_views": "浏览量",
@@ -408,27 +410,34 @@ class YidaBDDB:
         form_data = self._to_form_data(record)
         if existing:
             instance_id = existing.get("FormInstanceId") or existing.get("formInstanceId")
-            request = aliding_models.UpdateFormDataRequest(
-                app_type=self.app_type,
-                system_token=self.system_token,
-                form_instance_id=instance_id,
-                language="zh_CN",
-                use_latest_version=True,
-                update_form_data_json=json.dumps(form_data, ensure_ascii=False),
-            )
-            self._client.update_form_data_with_options(
-                request, self._headers("UpdateFormData"), self._runtime)
+            self._update_form_data(instance_id, form_data)
         else:
-            request = aliding_models.SaveFormDataRequest(
-                app_type=self.app_type,
-                system_token=self.system_token,
-                form_uuid=self.form_uuid,
-                language="zh_CN",
-                form_data_json=json.dumps(form_data, ensure_ascii=False),
-            )
-            self._client.save_form_data_with_options(
-                request, self._headers("SaveFormData"), self._runtime)
+            self._save_form(form_data)
         return self.get_by_channel_id(record["channel_id"], month) or record
+
+    def _save_form(self, form_data: dict):
+        """SaveFormData 统一出口；带货垂类字段未建好时降级重试（同上）"""
+        commerce_fid = FIELD_IDS.get("sales_category", "")
+        try:
+            self._send_save(form_data)
+        except Exception:
+            if commerce_fid and commerce_fid in form_data:
+                fallback = {k: v for k, v in form_data.items()
+                            if k != commerce_fid}
+                self._send_save(fallback)
+            else:
+                raise
+
+    def _send_save(self, form_data: dict):
+        request = aliding_models.SaveFormDataRequest(
+            app_type=self.app_type,
+            system_token=self.system_token,
+            form_uuid=self.form_uuid,
+            language="zh_CN",
+            form_data_json=json.dumps(form_data, ensure_ascii=False),
+        )
+        self._client.save_form_data_with_options(
+            request, self._headers("SaveFormData"), self._runtime)
 
     def get_by_channel_id(self, channel_id: str, plan_month=None) -> Optional[dict]:
         """读取记录。plan_month 语义同 _find_instance：
@@ -466,6 +475,33 @@ class YidaBDDB:
         results.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
         return results
 
+    def _update_form_data(self, instance_id: str, form_data: dict):
+        """UpdateFormData 统一出口。带货垂类是 2026-08-24 新接的字段，
+        若表单里还没建好该组件，整次写入会被宜搭拒绝——此时去掉它
+        重试一次，保证其余字段照常写入（字段建好后自动生效，无需改代码）"""
+        commerce_fid = FIELD_IDS.get("sales_category", "")
+        try:
+            self._send_update(instance_id, form_data)
+        except Exception:
+            if commerce_fid and commerce_fid in form_data:
+                fallback = {k: v for k, v in form_data.items()
+                            if k != commerce_fid}
+                self._send_update(instance_id, fallback)
+            else:
+                raise
+
+    def _send_update(self, instance_id: str, form_data: dict):
+        request = aliding_models.UpdateFormDataRequest(
+            app_type=self.app_type,
+            system_token=self.system_token,
+            form_instance_id=instance_id,
+            language="zh_CN",
+            use_latest_version=True,
+            update_form_data_json=json.dumps(form_data, ensure_ascii=False),
+        )
+        self._client.update_form_data_with_options(
+            request, self._headers("UpdateFormData"), self._runtime)
+
     def update(self, channel_id: str, updates: dict,
                clear_fields: Optional[list] = None,
                plan_month=None) -> Optional[dict]:
@@ -480,16 +516,7 @@ class YidaBDDB:
             fid = FIELD_IDS.get(code, "")
             if fid:
                 form_data[fid] = ""
-        request = aliding_models.UpdateFormDataRequest(
-            app_type=self.app_type,
-            system_token=self.system_token,
-            form_instance_id=instance_id,
-            language="zh_CN",
-            use_latest_version=True,
-            update_form_data_json=json.dumps(form_data, ensure_ascii=False),
-        )
-        self._client.update_form_data_with_options(
-            request, self._headers("UpdateFormData"), self._runtime)
+        self._update_form_data(instance_id, form_data)
         # 不再回读验证：调用方（store层）会就地同步缓存，省1次HTTP提速约1/3
         return None
 
@@ -502,16 +529,7 @@ class YidaBDDB:
             fid = FIELD_IDS.get(code, "")
             if fid:
                 form_data[fid] = ""
-        request = aliding_models.UpdateFormDataRequest(
-            app_type=self.app_type,
-            system_token=self.system_token,
-            form_instance_id=instance_id,
-            language="zh_CN",
-            use_latest_version=True,
-            update_form_data_json=json.dumps(form_data, ensure_ascii=False),
-        )
-        self._client.update_form_data_with_options(
-            request, self._headers("UpdateFormData"), self._runtime)
+        self._update_form_data(instance_id, form_data)
         return True
 
     def delete(self, channel_id: str) -> bool:

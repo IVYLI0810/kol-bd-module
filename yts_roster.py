@@ -54,7 +54,8 @@ def fetch_emailed_channels(force: bool = False) -> list:
         while True:
             r = requests.get(f"{SUPABASE_URL}/rest/v1/influencers",
                              params={"select": "channel_id,channel_name,channel_url,"
-                                               "category,subscribers,discovered_by,emails",
+                                               "category,content_category,subscribers,"
+                                               "discovered_by,emails",
                                      "status": "eq.已发邮件",
                                      "offset": off, "limit": 200},
                              headers={"apikey": SUPABASE_KEY,
@@ -87,7 +88,7 @@ def fetch_all_channels(force: bool = False) -> list:
         while True:
             r = requests.get(f"{SUPABASE_URL}/rest/v1/influencers",
                              params={"select": "channel_id,channel_name,channel_url,"
-                                               "category,subscribers,emails",
+                                               "category,content_category,subscribers,emails",
                                      "offset": off, "limit": 500},
                              headers={"apikey": SUPABASE_KEY,
                                       "Authorization": f"Bearer {SUPABASE_KEY}"},

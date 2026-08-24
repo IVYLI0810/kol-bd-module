@@ -113,7 +113,7 @@ def dlg_add():
         cid = a1.text_input("频道ID（必填）", placeholder="UC_xxx")
         cname = a2.text_input("昵称（必填）")
         b1, b2, b3 = st.columns(3)
-        cat = b1.text_input("垂类", placeholder="뷰티")
+        cat = b1.text_input("内容垂类", placeholder="뷰티")
         subs = b2.number_input("粉丝数", min_value=0, step=1000)
         recruiter = b3.text_input("挖掘人（你的名字）")
         email = st.text_input("联系邮箱")
@@ -135,7 +135,7 @@ def _import_template_bytes() -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "导入模板"
-    ws.append(["频道ID", "昵称", "垂类", "粉丝数", "挖掘人", "联系邮箱"])
+    ws.append(["频道ID", "昵称", "内容垂类", "粉丝数", "挖掘人", "联系邮箱"])
     ws.append(["UC_example001", "예시채널", "뷰티", 12000, "艾薇李",
                "hello@example.com"])
     buf = io.BytesIO()
@@ -155,7 +155,8 @@ def dlg_import():
         except Exception:
             st.error("文件解析失败，请确认使用的是模板格式")
             return
-        col_map = {"频道ID": "channel_id", "昵称": "channel_name", "垂类": "category",
+        col_map = {"频道ID": "channel_id", "昵称": "channel_name",
+                   "内容垂类": "category", "垂类": "category",
                    "粉丝数": "subscribers", "挖掘人": "recruiter", "联系邮箱": "email"}
         df = df.rename(columns=col_map)
         if "channel_id" not in df.columns:
@@ -431,7 +432,7 @@ def page_dig():
     c1, c2, c3, c4, c5, c6 = st.columns([2.2, 1.1, 1.1, 1.9, 1.1, 1.1])
     q = c1.text_input("搜索昵称 / 频道ID", key="dig_q", placeholder="🔍 输入关键词")
     cats = sorted({p.get("category") for p in pool if p.get("category")})
-    cat = c2.selectbox("垂类", ["全部垂类"] + cats, key="dig_cat")
+    cat = c2.selectbox("内容垂类", ["全部垂类"] + cats, key="dig_cat")
     recs_data = sorted({p.get("recruiter") for p in pool if p.get("recruiter")})
     roster_d = R.get_members()
     recs = list(roster_d) + [n for n in recs_data if not R.match_name(n, roster_d)]
@@ -514,7 +515,10 @@ def page_dig():
                 st_cell = T.badge("已流入活动")
             trows.append([
                 name_cell,
-                esc(p.get("category") or "-"),
+                esc(" · ".join(
+                    t for t in ((p.get("category") or "").strip(),
+                                (p.get("sales_category") or "").strip())
+                    if t) or "-"),
                 f'<span class="num">{p.get("followers", 0):,}</span>',
                 esc(p.get("recruiter") or "-"),
                 f'<span style="color:#86868b">{esc(p.get("email") or "-")}</span>',
@@ -600,7 +604,7 @@ def _export_all_data():
         ws1 = wb.active
         ws1.title = "网红汇总"
         headers1 = [
-            "频道ID", "频道名称", "负责人", "归属月份", "垂类", "报价",
+            "频道ID", "频道名称", "负责人", "归属月份", "内容垂类", "带货垂类", "报价",
             "频道链接", "联系邮箱", "粉丝数",
             "Guideline", "合同", "GMC校验",
             "下单", "收货", "拍摄状态", "审核状态", "闭环",
@@ -617,6 +621,7 @@ def _export_all_data():
                 r.get("recruiter", ""),
                 r.get("plan_month", ""),
                 r.get("category", ""),
+                r.get("sales_category", ""),
                 r.get("price", 0),
                 r.get("channel_url", ""),
                 r.get("email", ""),
@@ -821,12 +826,15 @@ def page_activity():
                         unsafe_allow_html=True)
         for c in negs:
             with st.container():
+                _cat_txt = " · ".join(
+                    t for t in ((c.get("category") or "").strip(),
+                                (c.get("sales_category") or "").strip()) if t)
                 st.markdown(T.ycard_open(), unsafe_allow_html=True)
                 st.markdown(
                     f'<div class="nm" style="font-size:13px;font-weight:700">'
                     f'{esc(c["name"])}</div>'
                     f'<div class="mt" style="font-size:11px;color:#86868b;'
-                    f'margin-top:2px">{esc(c.get("category") or "-")} · '
+                    f'margin-top:2px">{esc(_cat_txt or "-")} · '
                     f'{c.get("followers", 0):,} 粉丝</div>',
                     unsafe_allow_html=True)
                 m1, m2 = st.columns(2)
@@ -1031,9 +1039,17 @@ def page_detail(collab_id):
         with st.spinner("正在同步频道播放数据…"):
             yt = YT.fetch_stats(_yt_cid)
     fol = c.get("followers") or (yt or {}).get("subscribers") or 0
+    # 双垂类展示：🎬 内容垂类（拍什么） / 🛍 带货垂类（卖什么）
+    _cv = (c.get("category") or "").strip()
+    _cc = (c.get("sales_category") or "").strip()
+    if _cv and _cc:
+        _cat_html = (f'<div style="line-height:1.55">🎬 {esc(_cv)}<br>'
+                     f'🛍 {esc(_cc)}</div>')
+    else:
+        _cat_html = esc(_cv or _cc or "-")
     st.markdown(T.stats_row([
         ("粉丝量", f"{fol:,}", "c-pink"),
-        ("垂类", esc(c.get("category") or "-"), "c-purple"),
+        ("垂类（内容 / 带货）", _cat_html, "c-purple"),
         ("长视频总播放", f'{yt["long_views"]:,}' if yt else "-", "c-green"),
         ("短视频总播放", f'{yt["short_views"]:,}' if yt else "-", "c-amber"),
     ]), unsafe_allow_html=True)
@@ -1663,41 +1679,6 @@ def _build_video_payload(cid, c, filled_rows):
     return videos
 
 
-# ============================ 分析模块 ============================
-def _pull_product_metrics(closed_recs):
-    """从 GMC 报表拉取闭环视频选品的点击/CTR/成交/GMV（近30天）并回写宜搭"""
-    if not GMC.configured():
-        st.error("未配置 GMC 凭证：请在 Streamlit Cloud → Settings → Secrets 添加 "
-                 "[gmc] 段（client_email / private_key / merchant_id / feed_label）。"
-                 "配置前商品指标请回宜搭表单手工回填")
-        return
-    with st.spinner("正在从 GMC 拉取商品效果数据…"):
-        end = datetime.now().strftime("%Y-%m-%d")
-        start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        hit_n = 0
-        for r in closed_recs:
-            prods = r.get("product_list") or []
-            if not prods:
-                continue
-            perf = GMC.fetch_performance(prods, start, end)
-            if not perf:
-                continue
-            clicks = sum(v["clicks"] for v in perf.values())
-            orders = sum(v["orders"] for v in perf.values())
-            gmv = sum(v["gmv"] for v in perf.values())
-            ctr = round(sum(v["ctr"] for v in perf.values()) / len(perf), 2)
-            try:
-                store.update_product_metrics(r, clicks, ctr, orders, gmv)
-                hit_n += 1
-            except Exception:
-                pass
-    if hit_n:
-        st.toast(f"已回写 {hit_n} 条闭环记录的商品效果数据（近30天）")
-        st.rerun()
-    else:
-        st.warning("未拉到数据：请检查 GMC 凭证是否有效、选品是否已入池")
-
-
 # ---------------------------------------------------------------------------
 # 汇率与货币换算（2026-08-24 审查修复）
 # 背景：商品报表的销售额/佣金是美金(≈)，网红报价存的是韩币。
@@ -2199,16 +2180,11 @@ def page_analysis():
         elif closed_recs:
             st.warning("未配置 YOUTUBE_API_KEY 与 GMC 凭证：视频数据无法自动抓取")
     if is_owner:
-        fb1, fb2 = st.columns(2)
-        if fb1.button("🔄 一键刷新闭环视频数据", key="force_refresh_btn",
+        if st.button("🔄 一键刷新闭环视频数据", key="force_refresh_btn",
                       help="无视24小时缓存，按视频粒度重新抓取播放/点赞/评论，"
                            "并按各视频关联商品拉取点击/CTR/成交/GMV（近30天）"):
             st.session_state["force_refresh"] = True
             st.rerun()
-        if fb2.button("📦 一键拉取商品效果数据", key="gmc_perf_btn",
-                      help="从 GMC 报表按合作选品拉取点击/CTR/成交/GMV（近30天），"
-                           "写入主记录指标（兼容老数据）"):
-            _pull_product_metrics(closed_recs)
         # ---- 商品数据两步导入：①导出映射表 → 离线匹配 → ②上传导入表 ----
         mc1, mc2 = st.columns(2)
         with mc1:

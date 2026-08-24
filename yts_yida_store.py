@@ -284,6 +284,7 @@ class YTSStore:
             "platform": "YouTube",
             "followers": r.get("subscribers") or 0,
             "category": r.get("category") or "",
+            "sales_category": r.get("sales_category") or "",
             "email": r.get("email") or "",
             "recruiter": r.get("recruiter") or "",
             "avatar": "",
@@ -416,6 +417,7 @@ class YTSStore:
                 "platform": "YouTube",
                 "followers": r.get("subscribers") or 0,
                 "category": r.get("category") or "",
+                "sales_category": r.get("sales_category") or "",
                 "avatar": "",
                 "email": r.get("email") or "",
                 "recruiter": r.get("recruiter") or "",
@@ -532,7 +534,8 @@ class YTSStore:
         """挖掘站「已发邮件」自动同步进挖掘池。
 
         新增：补基础信息并标记已发邮件；
-        已存在：补空标记 + 粉丝量以挖掘站最新值覆盖、垂类/邮箱仅空缺时补，
+        已存在：补空标记 + 粉丝量以挖掘站最新值覆盖、双垂类以挖掘站最新值
+        全覆盖（内容垂类/带货垂类，库里有值就对齐）、邮箱仅空缺时补，
         已有进度一律不动。
         """
         rows = R.fetch_emailed_channels(force=force)
@@ -549,7 +552,8 @@ class YTSStore:
                     "channel_id": cid,
                     "channel_name": x.get("channel_name") or "",
                     "channel_url": x.get("channel_url") or "",
-                    "category": x.get("category") or "",
+                    "category": (x.get("content_category") or "").strip(),
+                    "sales_category": (x.get("category") or "").strip(),
                     "subscribers": int(x.get("subscribers") or 0),
                     "recruiter": x.get("discovered_by") or "",
                     "email": (x.get("emails") or "").strip(),
@@ -567,14 +571,20 @@ class YTSStore:
                         patch["email_status"] = "已发送"
                         if not cur.get("stage"):
                             patch["stage"] = "已发邮件"
-                    # 旧记录基础信息：粉丝量以挖掘站最新值覆盖，垂类/邮箱仅空缺时补
+                    # 旧记录基础信息：粉丝量以挖掘站最新值覆盖，邮箱仅空缺时补
                     cur_sub = int(cur.get("subscribers") or 0)
                     new_sub = int(x.get("subscribers") or 0)
                     if new_sub > 0 and new_sub != cur_sub:
                         patch["subscribers"] = new_sub
-                    if not (cur.get("category") or "").strip() \
-                            and (x.get("category") or "").strip():
-                        patch["category"] = x.get("category")
+                    # 双垂类全覆盖：挖掘站是新版口径唯一来源，有值就对齐
+                    new_content = (x.get("content_category") or "").strip()
+                    if new_content \
+                            and new_content != (cur.get("category") or "").strip():
+                        patch["category"] = new_content
+                    new_commerce = (x.get("category") or "").strip()
+                    if new_commerce and new_commerce != \
+                            (cur.get("sales_category") or "").strip():
+                        patch["sales_category"] = new_commerce
                     if not (cur.get("email") or "").strip() \
                             and (x.get("emails") or "").strip():
                         patch["email"] = x["emails"].strip()
@@ -598,7 +608,8 @@ class YTSStore:
     def sync_basic_info(self, force: bool = False, progress=None,
                         limit: int = 0) -> dict:
         """全量同步挖掘站基础信息：粉丝量以挖掘站最新值覆盖更新
-        （挖掘站>0 且与宜搭不同就写，保持新鲜）；垂类/频道名/邮箱
+        （挖掘站>0 且与宜搭不同就写，保持新鲜）；双垂类以挖掘站为准
+        全覆盖（库里有值就对齐，新版口径唯一来源）；频道名/邮箱
         属人工维护字段，仅空缺时补，已有值一律不动；进度类字段一律不动。
         limit>0 时本轮最多写 limit 条（自动同步限速；按钮全量传 0）。"""
         rows = R.fetch_all_channels(force=force)
@@ -624,9 +635,15 @@ class YTSStore:
             # 粉丝量覆盖更新：挖掘站有新值且与宜搭不同就写（客观数据保持新鲜）
             if new_sub > 0 and new_sub != cur_sub:
                 patch["subscribers"] = new_sub
-            if not (rec.get("category") or "").strip() \
-                    and (m.get("category") or "").strip():
-                patch["category"] = m["category"].strip()
+            # 双垂类全覆盖：挖掘站是新版口径唯一来源，有值就对齐
+            new_content = (m.get("content_category") or "").strip()
+            if new_content \
+                    and new_content != (rec.get("category") or "").strip():
+                patch["category"] = new_content
+            new_commerce = (m.get("category") or "").strip()
+            if new_commerce and new_commerce != \
+                    (rec.get("sales_category") or "").strip():
+                patch["sales_category"] = new_commerce
             if not (rec.get("channel_name") or "").strip() \
                     and (m.get("channel_name") or "").strip():
                 patch["channel_name"] = m["channel_name"].strip()
