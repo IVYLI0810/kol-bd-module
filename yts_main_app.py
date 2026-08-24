@@ -2536,8 +2536,16 @@ def page_analysis():
             key="ana_result_export", use_container_width=True,
             help="导出当前月份口径：看板摘要 + 网红/视频/商品三维度明细（xlsx）")
     if xlsx_up is not None:
-        _import_matched_xlsx(xlsx_up)
-        st.rerun()
+        # 防重复循环：file_uploader 在每次 rerun 都会返回同一文件，
+        # 用内容hash去重——相同内容只导入一次，避免反复写宜搭
+        import hashlib
+        raw = xlsx_up.getvalue()
+        fhash = hashlib.md5(raw).hexdigest()
+        if st.session_state.get("ana_imported_hash") != fhash:
+            import io as _io
+            _import_matched_xlsx(_io.BytesIO(raw))
+            st.session_state["ana_imported_hash"] = fhash
+            st.rerun()
     if not is_owner and closed_recs:
         st.caption("📊 视频与商品数据由负责人统一更新；如需刷新请联系艾薇李。"
                    "下方为最新已同步的数据。")
