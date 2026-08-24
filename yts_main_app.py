@@ -2101,7 +2101,7 @@ def _data_health(all_recs):
          "rows": r5, "status": lambda r: "播放量为 0"},
         {"icon": "💸", "title": "已闭环·缺商品数据",
          "hint": "挂了商品但无成交 / GMV",
-         "fix": "点「一键刷新闭环视频数据」或走「导出映射表→上传导入表」补商品数据",
+         "fix": "点「🔄 一键刷新」或走「📤 映射表→上传导入表」补商品数据",
          "rows": r6, "status": lambda r: "无成交/GMV"},
     ]
 
@@ -2157,6 +2157,65 @@ def _export_mapping_bytes():
     import yts_product_match as PM
     sel, vids = PM.build_mapping_records(store.list_all())
     return PM.mapping_to_excel_bytes(sel, vids)
+
+
+def _export_analysis_bytes(kdim, vdim, pdim, month_sel):
+    """导出分析结果 xlsx：看板摘要 + 网红/视频/商品三维度明细（当前月份口径）"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    def _sum(df, col):
+        try:
+            return float(df[col].sum()) if not df.empty else 0.0
+        except KeyError:
+            return 0.0
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "看板摘要"
+    gmv, quote = _sum(kdim, "总GMV($)"), _sum(kdim, "报价($)")
+    summary = [
+        ("月份口径", month_sel or "全部"),
+        ("已闭环网红(人×月)", int(len(kdim))),
+        ("视频数", int(len(vdim))),
+        ("商品数", int(len(pdim))),
+        ("总播放", int(_sum(kdim, "总播放"))),
+        ("总点赞", int(_sum(kdim, "总点赞"))),
+        ("总点击", int(_sum(kdim, "总点击"))),
+        ("总订单", int(_sum(kdim, "总订单"))),
+        ("总GMV($)", round(gmv, 1)),
+        ("总佣金($)", round(_sum(kdim, "总佣金($)"), 1)),
+        ("总报价($)", round(quote, 1)),
+        ("整体ROI", round(gmv / quote, 2) if quote else 0),
+    ]
+    ws.append(["指标", "数值"])
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for k, v in summary:
+        ws.append([k, v])
+    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["B"].width = 16
+
+    def _sheet(title, df):
+        sh = wb.create_sheet(title)
+        cols = [c for c in df.columns if not str(c).startswith("_")]
+        sh.append([str(c) for c in cols])
+        for c in sh[1]:
+            c.font = Font(bold=True)
+        for _, r in df[cols].iterrows():
+            sh.append(["" if v is None or (isinstance(v, float) and v != v) else v
+                       for v in r.tolist()])
+        for i, c in enumerate(cols, 1):
+            sh.column_dimensions[get_column_letter(i)].width = min(
+                max(len(str(c)) * 2 + 4, 10), 40)
+
+    _sheet("网红维度", kdim)
+    _sheet("视频维度", vdim)
+    _sheet("商品维度", pdim)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 def _import_matched_xlsx(xlsx_file):
@@ -2430,40 +2489,70 @@ def page_analysis():
                            "请在 Streamlit Cloud → Settings → Secrets 添加后使用一键刷新")
         elif closed_recs:
             st.warning("未配置 YOUTUBE_API_KEY 与 GMC 凭证：视频数据无法自动抓取")
-    if is_owner:
-        if st.button("🔄 一键刷新闭环视频数据", key="force_refresh_btn",
-                      help="无视24小时缓存，按视频粒度重新抓取播放/点赞/评论，"
-                           "并按各视频关联商品拉取点击/CTR/成交/GMV（近30天）"):
-            st.session_state["force_refresh"] = True
-            st.rerun()
-        # ---- 商品数据两步导入：①导出映射表 → 离线匹配 → ②上传导入表 ----
-        mc1, mc2 = st.columns(2)
-        with mc1:
-            st.download_button(
-                "① 📤 导出网红×视频×商品映射表",
-                data=_export_mapping_bytes(),
-                file_name=f"YTS映射表_{datetime.now():%Y%m%d}.xlsx",
-                key="ana_map_export", use_container_width=True,
-                help="导出系统里的选品和视频挂品清单，发给助手离线匹配 "
-                     "YouTube Shopping 全量数据")
-        with mc2:
-            xlsx_up = st.file_uploader(
-                "② 上传匹配后的导入表（xlsx）",
-                type=["xlsx"], key="ana_matched_up",
-                help="上传助手匹配生成的「YTS商品导入表」，快速写入宜搭")
-            if xlsx_up is not None:
-                _import_matched_xlsx(xlsx_up)
-                st.rerun()
-    elif closed_recs:
-        st.caption("📊 视频与商品数据由负责人统一更新；如需刷新请联系艾薇李。"
-                   "下方为最新已同步的数据。")
     months = sorted({r["plan_month"] for r in recs if r.get("plan_month")},
                     reverse=True)
-    if months:
-        sel = st.pills("月份", ["全部"] + months, default="全部", key="ana_month")
-        if sel != "全部":
-            recs = [r for r in recs if r["plan_month"] == sel]
+    # 月份筛选先读上一次的选择（顶栏导出按钮要先于 pills 渲染就拿到数据）
+    _sel = st.session_state.get("ana_month", "全部")
+    if _sel != "全部" and _sel not in months:
+        _sel = "全部"
+    if _sel != "全部":
+        recs = [r for r in recs if r["plan_month"] == _sel]
+    closed_recs = [r for r in recs if r.get("is_closed")]
 
+    # ---- 预构建看板聚合与三维度表：顶栏导出与各 Tab 共用，避免重复计算 ----
+    dash_rows = []
+    for r in closed_recs:
+        vids = r.get("videos") or []
+        if vids:
+            dash_rows += [(r, v) for v in vids]
+        else:
+            dash_rows.append((r, None))
+    kols = _aggregate_kols(closed_recs, dash_rows) if closed_recs else []
+    kdim = pd.DataFrame(_build_kol_dim(closed_recs))
+    vdim = pd.DataFrame(_build_video_dim(closed_recs))
+    pdim = pd.DataFrame(_build_prod_dim(closed_recs))
+
+    # ---- 顶栏：月份在左、操作控件靠右（一行紧凑排布，释放页面空间） ----
+    xlsx_up = None
+    if is_owner:
+        tb = st.columns([2.0, 0.8, 1.0, 1.25, 1.1], vertical_alignment="center")
+    else:
+        tb = st.columns([3.6, 1.1], vertical_alignment="center")
+    with tb[0]:
+        st.pills("月份", ["全部"] + months, default=_sel, key="ana_month",
+                 label_visibility="collapsed")
+    if is_owner:
+        with tb[1]:
+            if st.button("🔄 一键刷新", key="force_refresh_btn",
+                         help="无视24小时缓存，按视频粒度重新抓取播放/点赞/评论，"
+                              "并按各视频关联商品拉取点击/CTR/成交/GMV（近30天）"):
+                st.session_state["force_refresh"] = True
+                st.rerun()
+        with tb[2]:
+            st.download_button(
+                "📤 映射表", data=_export_mapping_bytes(),
+                file_name=f"YTS映射表_{datetime.now():%Y%m%d}.xlsx",
+                key="ana_map_export", use_container_width=True,
+                help="① 导出系统里的选品和视频挂品清单，发给助手离线匹配 "
+                     "YouTube Shopping 全量数据")
+        with tb[3]:
+            xlsx_up = st.file_uploader(
+                "② 上传匹配后的导入表（xlsx）", type=["xlsx"],
+                key="ana_matched_up", label_visibility="collapsed",
+                help="② 上传助手匹配生成的「YTS商品导入表」，快速写入宜搭")
+    with tb[-1]:
+        st.download_button(
+            "📊 导出分析结果",
+            data=_export_analysis_bytes(kdim, vdim, pdim, _sel),
+            file_name=f"YTS分析结果_{_sel}_{datetime.now():%Y%m%d}.xlsx",
+            key="ana_result_export", use_container_width=True,
+            help="导出当前月份口径：看板摘要 + 网红/视频/商品三维度明细（xlsx）")
+    if xlsx_up is not None:
+        _import_matched_xlsx(xlsx_up)
+        st.rerun()
+    if not is_owner and closed_recs:
+        st.caption("📊 视频与商品数据由负责人统一更新；如需刷新请联系艾薇李。"
+                   "下方为最新已同步的数据。")
     if not recs:
         st.markdown(T.empty_hint("暂无履约/闭环记录：确认合作或流程导入「已闭环」后，"
                                  "自动进这里追踪数据"),
@@ -2474,25 +2563,13 @@ def page_analysis():
     tab_dash, tab_kol, tab_video, tab_prod, tab_health = st.tabs(
         ["🎯 四象限", "👤 网红维度", "📹 视频维度", "🛍 商品维度", "🩺 数据健康"])
 
-    closed_recs = [r for r in recs if r.get("is_closed")]
-
     # ---- 🎯 四象限：KPI(10项) + 四象限 + 问题清单 + GMV Top ----
     with tab_dash:
-        dash_recs = closed_recs
-        if not dash_recs:
+        if not closed_recs:
             st.markdown(T.empty_hint("暂无已闭环的网红：完成合作流程并闭环后，"
                                      "自动进入分析看板追踪声量与 GMV"),
                         unsafe_allow_html=True)
         else:
-            dash_rows = []  # [(记录, 视频dict或None)]
-            for r in dash_recs:
-                vids = r.get("videos") or []
-                if vids:
-                    for v in vids:
-                        dash_rows.append((r, v))
-                else:
-                    dash_rows.append((r, None))
-            kols = _aggregate_kols(dash_recs, dash_rows)
             _render_kpi(kols, dash_rows)
             st.markdown(T.sub("🎯 四象限：声量 × GMV"), unsafe_allow_html=True)
             _render_quadrant(kols)
@@ -2515,7 +2592,6 @@ def page_analysis():
         st.caption("一位网红×月份一行 · 仅已闭环 · 点网红名进履约详情 · "
                    "互动率(%) = (点赞+评论) ÷ 播放 × 100 · "
                    "ROI = 总GMV($) ÷ 报价($)")
-        kdim = pd.DataFrame(_build_kol_dim(closed_recs))
         if kdim.empty:
             st.markdown(T.empty_hint("暂无已闭环网红"),
                         unsafe_allow_html=True)
@@ -2561,7 +2637,6 @@ def page_analysis():
         st.caption("一条视频一行 · 仅已闭环 · 点网红名进履约详情 · "
                    "点击/订单 = 网红全部商品总和 ÷ 视频数（均摊）；"
                    "GMV($) = 按挂品均摊；CPM($) = 报价($) ÷ 播放 × 1000")
-        vdim = pd.DataFrame(_build_video_dim(closed_recs))
         if vdim.empty:
             st.markdown(T.empty_hint("暂无已闭环视频数据"),
                         unsafe_allow_html=True)
@@ -2606,7 +2681,6 @@ def page_analysis():
     with tab_prod:
         st.caption("一个商品一行 · 多网红选同一商品时合并一行（名字并列）· "
                    "选品清单有、但报表无数据的商品显示0")
-        pdim = pd.DataFrame(_build_prod_dim(closed_recs))
         if pdim.empty:
             st.markdown(T.empty_hint("暂无商品数据：请先在分析模块顶部上传"
                                      "「表现最好的链接商品」CSV"),
