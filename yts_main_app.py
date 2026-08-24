@@ -18,7 +18,6 @@ import yts_theme as T
 import yts_guide_gen as G
 import yts_roster as R
 import yts_yt_stats as YT
-import yts_gmc as GMC
 import yts_contract as C
 from yts_import_flow import norm_month, norm_date
 
@@ -900,37 +899,6 @@ def _set_detail_step(cid, i):
     st.session_state.setdefault("detail_steps", {})[cid] = i
 
 
-def _auto_gmc_check(cid, c):
-    """分支C 自动校验：提取选品商品ID → 逐个查 GMC 池 → 全在池才点亮分支C"""
-    if not GMC.configured():
-        st.error("未配置 GMC 凭证：请在 Streamlit Cloud → Settings → Secrets 添加 "
-                 "[gmc] 段（client_email / private_key / merchant_id / feed_label），"
-                 "配置方法见《GMC 自动校验配置指引》。配置前请继续用手动「GMC校验通过」")
-        return
-    prods = c.get("product_list") or []
-    if not prods:
-        st.warning("选品清单为空：先在下方「选品清单」填入商品链接并保存，再自动校验")
-        return
-    with st.spinner(f"正在校验 {len(prods)} 个商品是否在 GMC 池…"):
-        results = GMC.check_products(prods)
-    if not results:
-        st.warning("未能从选品清单提取商品ID，请检查链接格式")
-        return
-    rows = [[oid, T.badge("在池 ✅" if r["ok"] else "不在池 ❌"),
-             esc(r["msg"])] for oid, r in results.items()]
-    st.markdown(T.table(["商品ID", "校验结果", "说明"], rows),
-                unsafe_allow_html=True)
-    if all(r["ok"] for r in results.values()):
-        if not c["branches"]["gmc"]:
-            store.set_branch(cid, "gmc", True)
-        st.toast(f"✅ 全部 {len(results)} 个商品都在 GMC 池内，分支C 已自动点亮")
-        st.rerun()
-    else:
-        bad = [oid for oid, r in results.items() if not r["ok"]]
-        st.error(f"{len(bad)} 个商品不在池内：{'、'.join(bad)}。"
-                 "请更换选品或联系 GMC 管理员入池后重试")
-
-
 def _gen_guide(cid, c, req):
     """调 AI 生成「定制选题&爆款逻辑」，组装完整 guide 存 session"""
     with st.spinner("AI 正在生成选题&爆款逻辑建议（约1-3分钟，期间请勿操作页面）· 생성 중..."):
@@ -1536,11 +1504,28 @@ def _render_actions(cid, c, step):
         _render_step7_videos(cid, c, rs)
 
 
+def _extract_offer_id(url_or_id: str) -> str:
+    """从商品链接/offerId参数/裸ID中提取商品ID；无法提取返回空串。
+    （原 GMC.extract_offer_id 的本地实现，GMC 模块下线后保留此工具函数）"""
+    s = str(url_or_id or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"offerId=([\w-]+)", s)
+    if m:
+        return m.group(1)
+    m = re.search(r"/item/(\d+)", s)
+    if m:
+        return m.group(1)
+    if re.fullmatch(r"[\w-]{4,}", s):
+        return s
+    return ""
+
+
 def _offer_options(product_list):
     """选品清单 → [(显示名, 商品ID)]，供视频挂商品选择"""
     opts = []
     for p in product_list or []:
-        oid = GMC.extract_offer_id(p) or str(p).strip()
+        oid = _extract_offer_id(p) or str(p).strip()
         opts.append((oid[-6:] and f"…{oid[-6:]}" or oid, oid))
     return opts
 
@@ -2478,7 +2463,7 @@ def page_analysis():
     _force = st.session_state.pop("force_refresh", False)
     # 仅手动触发：打开页面不再自动抓取，避免每次刷新都等加载
     if is_owner and _force:
-        if closed_recs and (YT.get_key() or GMC.configured()):
+        if closed_recs and YT.get_key():
             # 数据安全：刷新前备份当前数据快照
             _snapshot_data("一键刷新视频数据")
             with st.spinner("正在同步视频数据…"):
@@ -2489,7 +2474,8 @@ def page_analysis():
                            + "、".join(f"{n}" for n, _ in failed[:5])
                            + ("…" if len(failed) > 5 else ""))
         elif closed_recs:
-            st.warning("未配置 YOUTUBE_API_KEY 与 GMC 凭证：视频数据无法抓取")
+            st.warning("未配置 YOUTUBE_API_KEY：视频数据无法抓取。"
+                       "请到 Streamlit Cloud → Settings → Secrets 添加后使用一键刷新")
     months = sorted({r["plan_month"] for r in recs if r.get("plan_month")},
                     reverse=True)
     # 月份筛选先读上一次的选择（顶栏导出按钮要先于 pills 渲染就拿到数据）
