@@ -42,10 +42,12 @@ def build_mapping_records(recs: list) -> tuple:
         cid = r.get("collab_id") or ""
         name = r.get("name") or ""
         price = float(r.get("price") or 0)
+        sc = r.get("sales_category") or ""  # 带货类目（网红级）
         for item in r.get("product_list") or []:
             pid = norm_pid(item)
             if pid:
                 sel.append({"channel_id": cid, "网红": name, "报价": price,
+                            "带货类目": sc,
                             "商品ID": pid, "选品链接": str(item).strip()})
         for v in r.get("videos") or []:
             vids.append({"channel_id": cid, "网红": name,
@@ -91,14 +93,20 @@ def match_to_import_file(mapping_xlsx: str, big_csv: str, out_xlsx: str) -> dict
         if not pid or pid not in csv_data:
             continue
         d = csv_data[pid]
+        vv = int(d["video_views"])
+        od = int(d["orders"])
         prod_rows.append({
             "channel_id": cid, "网红": row.get("网红", ""),
             "商品ID": pid, "商品名称": d["name"],
+            # 商品类目：若映射表有「商品类目」列则带上，否则空（可在导入表中手动补）
+            "商品类目": row.get("商品类目") if "商品类目" in sel_df.columns else "",
             "销售总额": round(d["gmv"], 2), "净销售额": round(d["net_sales"], 2),
-            "佣金": round(d["commission"], 2), "观看次数": int(d["video_views"]),
+            "佣金": round(d["commission"], 2), "观看次数": vv,
             "展示次数": int(d["impressions"]), "点击次数": int(d["clicks"]),
-            "订单数": int(d["orders"]),
+            "订单数": od,
             "转化率": round(d["cvr"], 4), "点击率": round(d["ctr"], 2),
+            # 视频转化率 = 订单数 ÷ 视频观看次数 × 100（观看为0记0）
+            "视频转化率": round(od / vv * 100, 2) if vv else 0,
         })
         kol_groups.setdefault(cid, {"name": row.get("网红", ""),
                                     "price": float(row.get("报价") or 0),
@@ -171,6 +179,7 @@ def parse_import_excel(data: bytes) -> dict:
               if SHEET_VIDEOS in xl.sheet_names else pd.DataFrame())
 
     col = {"商品ID": ("pid", str), "商品名称": ("name", str),
+           "商品类目": ("p_category", str),
            "销售总额": ("gmv", float), "净销售额": ("net_sales", float),
            "佣金": ("commission", float), "观看次数": ("video_views", float),
            "展示次数": ("impressions", float), "点击次数": ("clicks", float),

@@ -324,6 +324,11 @@ class YTSStore:
             "submit_actual": r.get("submit_actual") or "",
             # 最近一次审核时间（取审核记录最后一条的日期，精确到分钟）
             "audit_time": (audit_log[-1].get("audit_date", "") if audit_log else ""),
+            # 结算方式（复用存「能否二次利用」）+ 结算备注
+            "settlement": r.get("settlement") or "",
+            "settlement_note": r.get("settlement_note") or "",
+            # 带货类目（网红级，分析模块网红维度展示）
+            "sales_category": r.get("sales_category") or "",
             "notes": r.get("notes") or "",
             "audit_log": audit_log,
             # ---- 视频明细子表（一行一条视频，闭环时登记） ----
@@ -369,9 +374,11 @@ class YTSStore:
 
     # ---------------- 编辑基本信息 ----------------
     EDIT_FIELDS = ("price", "plan_month", "email", "channel_url",
-                   "group_link", "submit_deadline", "notes")
+                   "group_link", "submit_deadline", "notes",
+                   "settlement", "settlement_note")
     # 允许清空的文本字段（plan_month/channel_url 清空会破坏流程状态，不允许）
-    CLEARABLE = ("notes", "group_link", "email", "submit_deadline")
+    CLEARABLE = ("notes", "group_link", "email", "submit_deadline",
+                 "settlement_note")
 
     def update_info(self, collab_id, fields: dict) -> None:
         """编辑基本信息（报价/月份/邮箱/链接/交稿截止/备注）。
@@ -656,9 +663,17 @@ class YTSStore:
         return {"matched": matched, "updated": updated, "total": len(rows),
                 "emails_filled": emails_filled}
 
-    def confirm_collab(self, collab_id, plan_month, price=0):
-        self._upd(collab_id, {"plan_month": plan_month, "stage": "已确认",
-                              "price": int(price or 0)})
+    def confirm_collab(self, collab_id, plan_month, price=0,
+                       reusable=None, settle_note=""):
+        """确认合作。「能否二次利用」复用宜搭「结算方式」字段存储：
+        可二次利用 / 不可二次利用；备注写入「结算备注」"""
+        patch = {"plan_month": plan_month, "stage": "已确认",
+                 "price": int(price or 0)}
+        if reusable is not None:
+            patch["settlement"] = "可二次利用" if reusable else "不可二次利用"
+        if settle_note:
+            patch["settlement_note"] = str(settle_note).strip()
+        self._upd(collab_id, patch)
         try:  # 即时回流挖掘站标「已引入」；失败则由对账兜底
             R.mark_introduced(_split(collab_id)[0])
         except Exception:

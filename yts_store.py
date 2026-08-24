@@ -348,13 +348,19 @@ class YTSStore:
     def list_all(self):
         return self._load()["collabs"]
 
-    def confirm_collab(self, collab_id, plan_month, price=0):
+    def confirm_collab(self, collab_id, plan_month, price=0,
+                       reusable=None, settle_note=""):
         def fn(data):
             for c in data["collabs"]:
                 if c["collab_id"] == collab_id:
                     c["status"] = "履约中"
                     c["plan_month"] = plan_month
                     c["price"] = int(price or 0)
+                    if reusable is not None:
+                        c["settlement"] = ("可二次利用" if reusable
+                                           else "不可二次利用")
+                    if settle_note:
+                        c["settlement_note"] = str(settle_note).strip()
         self._modify(fn)
 
     def get_collab(self, collab_id, fresh: bool = False):
