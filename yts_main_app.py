@@ -1762,17 +1762,19 @@ def _is_data_owner() -> bool:
 
 
 def _refresh_videos_granular(closed_recs, force=False):
-    """按视频粒度刷新：videos 子表每一行抓 YouTube 互动 + GMC 商品数据，回写对应行。
+    """按视频粒度刷新：只抓 YouTube 互动(播放/点赞/评论)回写。
+
+    ⚠ 数据安全（2026-08-25 修复）：
+    - 以【宜搭实时数据】为底刷新，不用缓存（缓存可能缺导入的点击/订单/GMV）
+    - 只覆盖 YouTube 抓到的 views/likes/comments
+    - 点击/订单/GMV/CPM 来自 CSV 导入，刷新绝不覆盖（避免被刷成0）
+    - 刷新前自动备份当前视频数据（防误覆盖）
 
     性能要点（10人共用）：
-    1. 数据无变化时不写回宜搭（否则每次打开分析页都产生写入风暴）
-    2. 一个网红的所有视频行合并为一次 save_videos（原来每行写一次）
-    3. 相同商品集的 GMC 报表请求本轮去重（同批多视频挂同组商品只查一次）
+    1. 数据无变化时不写回宜搭
+    2. 一个网红的所有视频行合并为一次 save_videos
     返回 (有数据更新并回写成功的记录数, 抓取失败列表[(网红名, 链接)])"""
     updated, failed = 0, []
-    end = datetime.now().strftime("%Y-%m-%d")
-    start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    perf_cache = {}  # 本轮 GMC 请求去重：商品集 -> 报表结果
     for r in closed_recs:
         vids = r.get("videos") or []
         if not vids:
@@ -1797,62 +1799,47 @@ def _refresh_videos_granular(closed_recs, force=False):
                                                patch.get("video_views", r.get("video_views") or 0),
                                                patch.get("video_likes", r.get("video_likes") or 0),
                                                patch.get("video_comments", r.get("video_comments") or 0))
-                    r.update(patch)  # 页面快照同步
+                    r.update(patch)
                     updated += 1
                 except Exception:
                     failed.append((r["name"], "回写失败"))
             continue
+
+        # ---- 有视频子表的记录 ----
+        # 关键修复：以【宜搭实时数据】为底，不用缓存
+        fresh_videos = None
+        if getattr(store, "_fresh_videos", None):
+            try:
+                fresh_videos = store._fresh_videos(r["collab_id"])
+            except Exception:
+                fresh_videos = None
+        base_videos = fresh_videos if fresh_videos else vids
+
         changed = False
         new_videos = []
-        for v in vids:
+        for v in base_videos:
             nv = dict(v)
-            url = v.get("video_url") or ""
-            # TikTok/Instagram 播放量为手动填写，跳过 YouTube 抓取（避免误报失败）
+            url = (v.get("video_url") or "").strip()
+            # TikTok/Instagram 播放量为手动填写，跳过 YouTube 抓取
             if (v.get("video_type") or "") in ("TikTok", "Instagram"):
                 new_videos.append(nv)
                 continue
             if url:
                 stats = YT.fetch_video_stats(url, force=force)
                 if stats is not None:
+                    # 只更新播放/点赞/评论；点击/订单/GMV/CPM 保留宜搭现值
                     for k in ("views", "likes", "comments"):
                         if int(nv.get(k) or 0) != int(stats[k] or 0):
                             nv[k] = stats[k]
                             changed = True
                 elif YT.get_key():
                     failed.append((r["name"], url))
-                # 按该视频关联的商品拉 GMC 数据（未配置 GMC 时跳过）
-                pids = tuple(sorted(p.strip()
-                                    for p in str(v.get("product_ids") or "").split(",")
-                                    if p.strip()))
-                if pids and GMC.configured():
-                    perf = perf_cache.get(pids)
-                    if perf is None:
-                        perf = GMC.fetch_performance(list(pids), start, end)
-                        perf_cache[pids] = perf
-                    if perf:
-                        clicks = sum(x["clicks"] for x in perf.values())
-                        orders = sum(x["orders"] for x in perf.values())
-                        gmv = sum(x["gmv"] for x in perf.values())
-                        ctr = round(sum(x["ctr"] for x in perf.values())
-                                    / len(perf), 2)
-                        for k, val in (("clicks", clicks), ("ctr", ctr),
-                                       ("orders", orders), ("gmv", gmv)):
-                            if abs(float(nv.get(k) or 0) - float(val)) > 0.01:
-                                nv[k] = val
-                                changed = True
             new_videos.append(nv)
+
         if changed:
             try:
-                # 并发合并（宜搭版 store）：fresh 重读子表做并集合并，
-                # 合并结果与宜搭现状完全相同则跳过写库，避免无意义写入
-                if getattr(store, "merge_videos", None):
-                    merged, fresh = store.merge_videos(r["collab_id"], new_videos)
-                    if merged == fresh:
-                        r["videos"] = fresh  # 宜搭侧已是最新：仅同步页面快照
-                        continue
-                    new_videos = merged
                 store.save_videos(r["collab_id"], new_videos)
-                r["videos"] = new_videos  # 页面快照同步，避免缓存延迟
+                r["videos"] = new_videos
                 updated += 1
             except Exception:
                 failed.append((r["name"], "回写失败"))
@@ -2216,6 +2203,23 @@ def _export_analysis_bytes(kdim, vdim, pdim, month_sel):
     return buf.getvalue()
 
 
+def _snapshot_data(reason: str):
+    """数据安全：把当前全量数据快照存到 session_state（保留最近5次）。
+    用于导入/刷新等批量写操作前备份，出问题可人工比对回滚。
+    注意：这是内存快照（进程级），不写宜搭；真正回滚需人工或重新导入。"""
+    try:
+        snaps = st.session_state.setdefault("yts_snapshots", [])
+        snaps.append({
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "reason": reason,
+            "data": [dict(r) for r in store.list_all()],
+        })
+        # 只保留最近5次，避免内存膨胀
+        st.session_state["yts_snapshots"] = snaps[-5:]
+    except Exception:
+        pass  # 备份失败不阻断主流程
+
+
 def _import_matched_xlsx(xlsx_file):
     """上传离线匹配后的「导入表」：按 channel_id 直接写宜搭。
     每个网红合并为 1 次写入（商品子表+视频子表+主记录指标），带进度条"""
@@ -2251,6 +2255,8 @@ def _import_matched_xlsx(xlsx_file):
         return max(cands, key=_score)
 
     prog = st.progress(0.0, text="正在写入宜搭…")
+    # ---- 数据安全：写入前自动备份当前数据快照（保留最近5次，可回滚）----
+    _snapshot_data("导入商品/视频数据")
     hit, n_prod = 0, 0
     for i, (cid, g) in enumerate(data.items()):
         prog.progress(i / len(data), text=f"正在写入（{i + 1}/{len(data)}）")
@@ -2469,12 +2475,15 @@ def page_analysis():
     # 仅手动触发：打开页面不再自动抓取，避免每次刷新都等加载
     if is_owner and _force:
         if closed_recs and (YT.get_key() or GMC.configured()):
+            # 数据安全：刷新前备份当前数据快照
+            _snapshot_data("一键刷新视频数据")
             with st.spinner("正在同步视频数据…"):
                 n_upd, failed = _refresh_videos_granular(closed_recs, force=True)
             st.toast(f"已强制刷新 {n_upd} 条视频记录的数据")
-            if failed and not YT.get_key():
-                st.warning("未配置 YOUTUBE_API_KEY：播放/点赞/评论无法抓取。"
-                           "请在 Streamlit Cloud → Settings → Secrets 添加后使用一键刷新")
+            if failed:
+                st.warning(f"以下 {len(failed)} 条视频抓取失败（数据未改动，保持原值）："
+                           + "、".join(f"{n}" for n, _ in failed[:5])
+                           + ("…" if len(failed) > 5 else ""))
         elif closed_recs:
             st.warning("未配置 YOUTUBE_API_KEY 与 GMC 凭证：视频数据无法抓取")
     months = sorted({r["plan_month"] for r in recs if r.get("plan_month")},
