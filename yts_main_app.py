@@ -1861,22 +1861,20 @@ def _refresh_videos_granular(closed_recs, force=False):
 
 def _aggregate_kols(recs, vrows_data):
     """按网红聚合（四象限/KPI 数据源，与网红维度同口径）：
-    播放/点赞=视频加总；订单/GMV=商品子表加总（新导入的商品数据）；
+    全部指标 = 名下【视频子表】加总（网红是视频维度的聚合）；
     报价换算美金；ROI=GMV($)/报价($)；CPM=报价($)/播放×1000。
     返回 [{cid, name, views, likes, orders, gmv, price, price_usd, roi, cpm}]"""
     agg = {}
     for r in recs:
         vids = r.get("videos") or []
-        prods = r.get("products") or []
         tot_views = sum(int(v.get("views") or 0) for v in vids)
         tot_likes = sum(int(v.get("likes") or 0) for v in vids)
-        tot_orders = sum(float(p.get("orders") or 0) for p in prods)
-        tot_gmv = sum(float(p.get("gmv") or 0) for p in prods)
-        # 老数据兜底：无视频子表/商品子表时用主记录指标
+        tot_orders = sum(float(v.get("orders") or 0) for v in vids)
+        tot_gmv = sum(float(v.get("gmv") or 0) for v in vids)
+        # 老数据兜底：无视频子表时用主记录指标
         if not vids:
             tot_views = int(r.get("video_views") or 0)
             tot_likes = int(r.get("video_likes") or 0)
-        if not prods:
             tot_orders = float(r.get("orders") or 0)
             tot_gmv = float(r.get("gmv") or 0)
         price = float(r.get("price") or 0)
@@ -2292,47 +2290,35 @@ def _pids_of(v):
 
 
 def _build_video_dim(recs):
-    """📹 视频维度：一条视频一行。口径（定稿）：
-    点击/订单 = 该网红全部商品总和 ÷ 视频数（每条视频相同）；
-    GMV = 按商品挂品均摊（商品销售额 ÷ 挂它的视频数）；
-    CPM = 报价($) ÷ 播放 × 1000"""
+    """📹 视频维度：一条视频一行，直接读视频子表（内容CSV导入的视频级真实数据）。
+    播放/点赞/评论=YouTube抓取；点击/订单/GMV/CPM=内容CSV导入写入视频子表。
+    口径：视频是视频，不再用商品均摊。"""
     rows = []
     for r in recs:
         vids = r.get("videos") or []
         if not vids:
             continue
-        prods = r.get("products") or []
-        n = len(vids)
-        tot_clicks = sum(float(p.get("clicks") or 0) for p in prods)
-        tot_orders = sum(float(p.get("orders") or 0) for p in prods)
-        avg_clicks = tot_clicks / n
-        avg_orders = tot_orders / n
         price_usd = _krw_to_usd(r.get("price"))
-        gmv_by_id = {str(p.get("pid") or ""): float(p.get("gmv") or 0)
-                     for p in prods}
-        holder = {}
         for v in vids:
-            for pid in _pids_of(v):
-                if pid in gmv_by_id:
-                    holder[pid] = holder.get(pid, 0) + 1
-        for v in vids:
-            pids = _pids_of(v)
-            vgmv = sum(gmv_by_id[p] / holder[p]
-                       for p in pids if holder.get(p))
             views = int(v.get("views") or 0)
+            clicks = float(v.get("clicks") or 0)
+            orders = float(v.get("orders") or 0)
+            gmv = float(v.get("gmv") or 0)
+            cpm = float(v.get("cpm") or 0)
+            if not cpm and price_usd and views:
+                cpm = round(price_usd / views * 1000, 2)
             rows.append({
                 "网红": r["name"], "_cid": r["collab_id"],
                 "月份": r.get("plan_month") or "",
                 "视频类型": v.get("video_type") or "长视频",
                 "视频链接": v.get("video_url") or "",
-                "挂品数": len(pids),
+                "挂品数": len(_pids_of(v)),
                 "播放": views, "点赞": int(v.get("likes") or 0),
                 "评论": int(v.get("comments") or 0),
-                "点击": round(avg_clicks, 1), "订单": round(avg_orders, 1),
-                "GMV($)": round(vgmv, 2),
+                "点击": int(clicks), "订单": int(orders),
+                "GMV($)": round(gmv, 2),
                 "报价($)": round(price_usd, 2),
-                "CPM($/千次)": round(price_usd / views * 1000, 2)
-                if (price_usd and views) else 0,
+                "CPM($/千次)": round(cpm, 2),
                 "能否二次利用": r.get("settlement") or "",
             })
     return rows
@@ -2398,8 +2384,10 @@ def _build_prod_dim(recs):
 
 
 def _build_kol_dim(recs):
-    """👤 网红维度：一位网红×月份一行。点击/订单/销售额/佣金=名下商品直接加总；
-    互动率=(点赞+评论)÷播放；ROI=总GMV($)÷报价($)"""
+    """👤 网红维度：一位网红×月份一行。口径（定稿）：
+    播放/点赞/评论/点击/订单/GMV = 名下【视频子表】聚合（网红是视频的聚合）；
+    互动率=(点赞+评论)÷播放；ROI=总GMV($)÷报价($)。
+    佣金：视频子表无此字段，暂从商品子表取（仅这一列）。"""
     rows = []
     for r in recs:
         prods = r.get("products") or []
@@ -2408,9 +2396,10 @@ def _build_kol_dim(recs):
         tot_likes = sum(int(v.get("likes") or 0) for v in vids)
         tot_comments = sum(int(v.get("comments") or 0) for v in vids)
         eng = ((tot_likes + tot_comments) / tot_views * 100) if tot_views else 0
-        tot_clicks = sum(float(p.get("clicks") or 0) for p in prods)
-        tot_orders = sum(float(p.get("orders") or 0) for p in prods)
-        tot_gmv = sum(float(p.get("gmv") or 0) for p in prods)
+        # 核心指标改为视频聚合（不再用商品）
+        tot_clicks = sum(float(v.get("clicks") or 0) for v in vids)
+        tot_orders = sum(float(v.get("orders") or 0) for v in vids)
+        tot_gmv = sum(float(v.get("gmv") or 0) for v in vids)
         tot_comm = sum(float(p.get("commission") or 0) for p in prods)
         price_usd = _krw_to_usd(r.get("price"))
         n_prod = len([p for p in (r.get("product_list") or []) if str(p).strip()])
@@ -2628,14 +2617,15 @@ def page_analysis():
                          "报价($)", "ROI"], krows, wrap=False),
                 height=52 + len(krows) * 36)
             st.markdown(T.foot(f"报价($) = 韩币报价 ÷ 汇率{_usd_rate():,.0f} · "
-                               "金额为美元($) · 点击/订单/销售额/佣金 = 名下商品直接加总"),
+                               "金额为美元($) · 网红维度 = 名下视频数据聚合"
+                               "（播放/点击/订单/GMV 均为视频加总；佣金暂取商品）"),
                         unsafe_allow_html=True)
 
     # ---- 📹 视频维度：一条视频一行（汇总+筛选+排序+搜索+跳转） ----
     with tab_video:
         st.caption("一条视频一行 · 仅已闭环 · 点网红名进履约详情 · "
-                   "点击/订单 = 网红全部商品总和 ÷ 视频数（均摊）；"
-                   "GMV($) = 按挂品均摊；CPM($) = 报价($) ÷ 播放 × 1000")
+                   "播放/点赞/评论 = YouTube抓取；点击/订单/GMV = 内容CSV导入（视频级真实数据）；"
+                   "CPM($) = 报价($) ÷ 播放 × 1000")
         if vdim.empty:
             st.markdown(T.empty_hint("暂无已闭环视频数据"),
                         unsafe_allow_html=True)

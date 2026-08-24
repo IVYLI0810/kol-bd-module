@@ -210,6 +210,7 @@ def parse_import_excel(data: bytes) -> dict:
         s[2] += float(p.get("gmv") or 0)
 
     # 视频分摊：按 channel_id + 视频链接 组装补丁
+    # 「点击」列可选：视频级真实数据导入表带该列时写入视频子表 clicks
     for _, row in vid_df.iterrows():
         cid = str(row.get("channel_id") or "").strip()
         if not cid or cid not in out:
@@ -219,6 +220,7 @@ def parse_import_excel(data: bytes) -> dict:
             "gmv": float(row.get("分摊销售额") or 0),
             "orders": float(row.get("分摊订单") or 0),
             "cpm": float(row.get("CPM") or 0),
+            "clicks": float(row.get("点击") or 0),
         })
     return out
 
@@ -236,5 +238,7 @@ def apply_video_patch(videos: list, patch: list) -> list:
                 v["orders"] = round(p["orders"], 2)
             if p["cpm"]:
                 v["cpm"] = round(p["cpm"], 2)
+            if p.get("clicks"):
+                v["clicks"] = round(p["clicks"], 2)
         merged.append(v)
     return merged
