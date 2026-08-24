@@ -1912,7 +1912,8 @@ def _aggregate_kols(recs, vrows_data):
 
 
 def _render_kpi(kols, vrows_data):
-    """KPI 大数字卡（10项）：声量侧 + GMV侧 + 成本侧"""
+    """KPI 大数字卡（10项）：两行各5张等宽满宽卡。
+    第一行=声量侧，第二行=GMV/成本侧"""
     tot_views = sum(a["views"] for a in kols)
     tot_likes = sum(a["likes"] for a in kols)
     eng = (tot_likes / tot_views * 100) if tot_views else 0
@@ -1921,20 +1922,22 @@ def _render_kpi(kols, vrows_data):
     tot_cost = sum(a["price_usd"] for a in kols)  # 美金口径（韩币已换算）
     roi = (tot_gmv / tot_cost) if tot_cost else 0
     cpm = (tot_cost / tot_views * 1000) if tot_views else 0
+    # 第一行：声量侧
     st.markdown(T.stats_row([
         ("🔊 总声量（播放）", f"{tot_views:,}", "c-pink"),
         ("❤️ 总点赞", f"{tot_likes:,}", "c-purple"),
+        ("✨ 平均互动率", f"{eng:.1f}%", "c-green"),
+        ("👥 闭环网红数", str(len(kols)), "c-amber"),
+        ("🎬 视频总数", str(len(vrows_data)), "c-pink"),
+    ]), unsafe_allow_html=True)
+    # 第二行：GMV / 成本侧（与第一行等宽满宽，卡片大小一致）
+    st.markdown(T.stats_row([
         ("💰 总GMV($)", f"{tot_gmv:,.0f}", "c-green"),
         ("🛒 总成交", f"{tot_orders:,}", "c-amber"),
         ("💵 总报价花费($)", f"{tot_cost:,.0f}", "c-purple"),
-    ]), unsafe_allow_html=True)
-    st.markdown(T.stats_row([
-        ("✨ 平均互动率", f"{eng:.1f}%", "c-pink"),
         ("📈 整体ROI", f"{roi:.2f}", "c-green"),
-        ("🎯 整体CPM($/千次播放)", f"{cpm:.2f}", "c-amber"),
-        ("👥 闭环网红数", str(len(kols)), "c-purple"),
-        ("🎬 视频总数", str(len(vrows_data)), "c-pink"),
-    ], narrow=True), unsafe_allow_html=True)
+        ("🎯 整体CPM($/千次播放)", f"{cpm:.2f}", "c-pink"),
+    ]), unsafe_allow_html=True)
 
 
 def _render_quadrant(kols):
