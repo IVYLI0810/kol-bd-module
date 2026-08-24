@@ -1371,17 +1371,11 @@ def _render_actions(cid, c, step):
                 prods = st.text_area("选品清单（每行一个链接）",
                                      value="\n".join(c["product_list"]), key="prods",
                                      height=80)
-                sc1, sc2 = st.columns(2)
-                if sc1.button("💾 保存选品清单", key="sp", use_container_width=True):
+                if st.button("💾 保存选品清单", key="sp", use_container_width=True):
                     store.set_products(cid, [p.strip() for p in prods.splitlines()
                                              if p.strip()])
-                    st.toast("清单已保存，可增减后重新校验")
+                    st.toast("清单已保存")
                     st.rerun()
-                if sc2.button("🤖 自动校验选品是否在池", key="gc_auto",
-                              use_container_width=True,
-                              help="从选品清单提取商品ID，逐个查 GMC 池（KR-YOUTUBE），"
-                                   "在池=通过，不在=不通过"):
-                    _auto_gmc_check(cid, c)
 
     elif step == 2:
         with st.container():
@@ -1884,31 +1878,41 @@ def _refresh_videos_granular(closed_recs, force=False):
 
 
 def _aggregate_kols(recs, vrows_data):
-    """按网红聚合：播放/点赞/成交/GMV 求和，报价换算美金，ROI=GMV/报价(美金)。
-    返回 [{cid, name, views, likes, orders, gmv, price(韩币), price_usd, roi}]"""
+    """按网红聚合（四象限/KPI 数据源，与网红维度同口径）：
+    播放/点赞=视频加总；订单/GMV=商品子表加总（新导入的商品数据）；
+    报价换算美金；ROI=GMV($)/报价($)；CPM=报价($)/播放×1000。
+    返回 [{cid, name, views, likes, orders, gmv, price, price_usd, roi, cpm}]"""
     agg = {}
-    for r, v in vrows_data:
-        a = agg.setdefault(r["collab_id"], {
-            "cid": r["collab_id"], "name": r["name"], "views": 0, "likes": 0,
-            "orders": 0, "gmv": 0.0, "price": float(r.get("price") or 0)})
-        if v is not None:
-            a["views"] += int(v.get("views") or 0)
-            a["likes"] += int(v.get("likes") or 0)
-            a["orders"] += int(v.get("orders") or 0)
-            a["gmv"] += float(v.get("gmv") or 0)
-        else:
-            a["views"] += int(r.get("video_views") or 0)
-            a["likes"] += int(r.get("video_likes") or 0)
-            a["orders"] += int(r.get("orders") or 0)
-            a["gmv"] += float(r.get("gmv") or 0)
-    for a in agg.values():
-        a["price_usd"] = round(_krw_to_usd(a["price"]), 2)
-        a["roi"] = round(a["gmv"] / a["price_usd"], 2) if a["price_usd"] else 0
+    for r in recs:
+        vids = r.get("videos") or []
+        prods = r.get("products") or []
+        tot_views = sum(int(v.get("views") or 0) for v in vids)
+        tot_likes = sum(int(v.get("likes") or 0) for v in vids)
+        tot_orders = sum(float(p.get("orders") or 0) for p in prods)
+        tot_gmv = sum(float(p.get("gmv") or 0) for p in prods)
+        # 老数据兜底：无视频子表/商品子表时用主记录指标
+        if not vids:
+            tot_views = int(r.get("video_views") or 0)
+            tot_likes = int(r.get("video_likes") or 0)
+        if not prods:
+            tot_orders = float(r.get("orders") or 0)
+            tot_gmv = float(r.get("gmv") or 0)
+        price = float(r.get("price") or 0)
+        price_usd = _krw_to_usd(price)
+        agg[r["collab_id"]] = {
+            "cid": r["collab_id"], "name": r["name"],
+            "views": tot_views, "likes": tot_likes,
+            "orders": int(tot_orders), "gmv": tot_gmv,
+            "price": price, "price_usd": round(price_usd, 2),
+            "roi": round(tot_gmv / price_usd, 2) if price_usd else 0,
+            "cpm": round(price_usd / tot_views * 1000, 2)
+            if (price_usd and tot_views) else 0,
+        }
     return list(agg.values())
 
 
 def _render_kpi(kols, vrows_data):
-    """KPI 大数字卡：声量侧 + GMV 侧"""
+    """KPI 大数字卡（10项）：声量侧 + GMV侧 + 成本侧"""
     tot_views = sum(a["views"] for a in kols)
     tot_likes = sum(a["likes"] for a in kols)
     eng = (tot_likes / tot_views * 100) if tot_views else 0
@@ -1916,17 +1920,20 @@ def _render_kpi(kols, vrows_data):
     tot_orders = sum(a["orders"] for a in kols)
     tot_cost = sum(a["price_usd"] for a in kols)  # 美金口径（韩币已换算）
     roi = (tot_gmv / tot_cost) if tot_cost else 0
+    cpm = (tot_cost / tot_views * 1000) if tot_views else 0
     st.markdown(T.stats_row([
         ("🔊 总声量（播放）", f"{tot_views:,}", "c-pink"),
         ("❤️ 总点赞", f"{tot_likes:,}", "c-purple"),
-        ("💰 总GMV", f"{tot_gmv:,.0f}", "c-green"),
+        ("💰 总GMV($)", f"{tot_gmv:,.0f}", "c-green"),
         ("🛒 总成交", f"{tot_orders:,}", "c-amber"),
+        ("💵 总报价花费($)", f"{tot_cost:,.0f}", "c-purple"),
     ]), unsafe_allow_html=True)
     st.markdown(T.stats_row([
         ("✨ 平均互动率", f"{eng:.1f}%", "c-pink"),
         ("📈 整体ROI", f"{roi:.2f}", "c-green"),
+        ("🎯 整体CPM($/千次播放)", f"{cpm:.2f}", "c-amber"),
         ("👥 闭环网红数", str(len(kols)), "c-purple"),
-        ("🎬 视频总数", str(len(vrows_data)), "c-amber"),
+        ("🎬 视频总数", str(len(vrows_data)), "c-pink"),
     ], narrow=True), unsafe_allow_html=True)
 
 
@@ -1996,7 +2003,9 @@ border:1px solid #f1e4e8;border-radius:14px">
 
 
 def _render_issue_list(kols):
-    """问题清单：自动列出需要处理的网红 + 建议动作"""
+    """问题清单：自动列出需要处理的网红 + 建议动作。
+    用自然高度表格（st.markdown）而非固定高度 iframe——
+    建议文字长会换行，固定高度会裁掉底部行（曾导致清单显示不全）"""
     issues = []
     for a in kols:
         if a["views"] == 0:
@@ -2014,9 +2023,9 @@ def _render_issue_list(kols):
              f'<span class="num">{a["views"]:,}</span>',
              f'<span class="num">{a["gmv"]:,.0f}</span>',
              esc(msg)] for lv, a, msg in issues]
-    T.component_html(T.table(["级别", "网红", "播放", "GMV", "问题与建议"],
-                             rows, wrap=False),
-                     height=52 + len(rows) * 36)
+    # wrap=True：外框 div 自然撑高，不裁行
+    st.markdown(T.table(["级别", "网红", "播放", "GMV($)", "问题与建议"],
+                        rows, wrap=True), unsafe_allow_html=True)
 
 
 # ============================ 数据健康检查 ============================
@@ -2379,9 +2388,9 @@ def _build_kol_dim(recs):
     return rows
 
 
-def _dim_filter_bar(df, key, filters, search_cols):
-    """通用筛选条：下拉筛选 + 关键词搜索，返回过滤后的 DataFrame"""
-    cols = st.columns(len(filters) + 1)
+def _dim_filter_bar(df, key, filters, search_cols, sort_cols):
+    """通用筛选条：下拉筛选 + 排序 + 关键词搜索，返回过滤排序后的 DataFrame"""
+    cols = st.columns(len(filters) + 2)
     out = df
     for i, (label, field) in enumerate(filters):
         opts = ["全部"] + sorted({str(v) for v in df[field] if str(v).strip()})
@@ -2389,7 +2398,13 @@ def _dim_filter_bar(df, key, filters, search_cols):
             sel = st.selectbox(label, opts, key=f"flt_{key}_{field}")
             if sel != "全部":
                 out = out[out[field] == sel]
-    with cols[-1]:
+    with cols[len(filters)]:
+        sopts = [f"{c} ↓" for c in sort_cols] + [f"{c} ↑" for c in sort_cols]
+        ssel = st.selectbox("排序", sopts, key=f"sort_{key}")
+        scol = ssel[:-2]
+        out = out.sort_values(scol, ascending=ssel.endswith("↑"),
+                              kind="mergesort")
+    with cols[len(filters) + 1]:
         q = st.text_input("🔍 搜索", key=f"q_{key}", placeholder="输入名称关键词")
         if q.strip():
             mask = None
@@ -2399,6 +2414,13 @@ def _dim_filter_bar(df, key, filters, search_cols):
             if mask is not None:
                 out = out[mask]
     return out
+
+
+def _kol_link(cid, name):
+    """网红名 → 可点击跳转履约详情页的链接"""
+    return (f'<a data-nav="?detail={quote(str(cid), safe="")}&from=analysis" '
+            f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
+            f'{esc(name)}</a>')
 
 
 def page_analysis():
@@ -2468,91 +2490,13 @@ def page_analysis():
                     unsafe_allow_html=True)
         return
 
-    # ===== 五 Tab：视频维度 / 商品维度 / 网红维度 / 四象限 / 数据健康 =====
-    tab_video, tab_prod, tab_kol, tab_dash, tab_health = st.tabs(
-        ["📹 视频维度", "🛍 商品维度", "👤 网红维度", "🎯 四象限", "🩺 数据健康"])
+    # ===== 五 Tab：四象限 / 网红维度 / 视频维度 / 商品维度 / 数据健康 =====
+    tab_dash, tab_kol, tab_video, tab_prod, tab_health = st.tabs(
+        ["🎯 四象限", "👤 网红维度", "📹 视频维度", "🛍 商品维度", "🩺 数据健康"])
 
     closed_recs = [r for r in recs if r.get("is_closed")]
 
-    # ---- 📹 视频维度：一条视频一行（筛选+排序+搜索） ----
-    with tab_video:
-        st.caption("一条视频一行 · 仅已闭环 · 点击列头可排序 · "
-                   "点击/订单 = 网红全部商品总和 ÷ 视频数（均摊）；"
-                   "GMV($) = 按挂品均摊；CPM($) = 报价($) ÷ 播放 × 1000")
-        vdim = pd.DataFrame(_build_video_dim(closed_recs))
-        if vdim.empty:
-            st.markdown(T.empty_hint("暂无已闭环视频数据"),
-                        unsafe_allow_html=True)
-        else:
-            fdf = _dim_filter_bar(vdim, "vd",
-                                  [("月份", "月份"), ("视频类型", "视频类型"),
-                                   ("能否二次利用", "能否二次利用")],
-                                  ["网红"])
-            st.dataframe(
-                fdf.drop(columns=["_cid"]), hide_index=True,
-                use_container_width=True, height=min(560, 60 + 36 * (len(fdf) + 1)),
-                column_config={
-                    "视频链接": st.column_config.LinkColumn("视频链接↗",
-                                                           display_text="视频↗"),
-                    "网红": st.column_config.TextColumn("网红", width="medium"),
-                })
-            st.markdown(T.foot("金额单位均为美元($) · 报价($) = 韩币报价 ÷ "
-                               f"汇率{_usd_rate():,.0f} · 播放为0时CPM显示0"),
-                        unsafe_allow_html=True)
-
-    # ---- 🛍 商品维度：一个商品一行（筛选+排序+搜索） ----
-    with tab_prod:
-        st.caption("一个商品一行 · 多网红选同一商品时合并一行（名字并列）· "
-                   "选品清单有、但报表无数据的商品显示0 · 点击列头可排序")
-        pdim = pd.DataFrame(_build_prod_dim(closed_recs))
-        if pdim.empty:
-            st.markdown(T.empty_hint("暂无商品数据：请先在分析模块顶部上传"
-                                     "「表现最好的链接商品」CSV"),
-                        unsafe_allow_html=True)
-        else:
-            tot_g = pdim["销售额($)"].sum()
-            tot_o = int(pdim["订单数"].sum())
-            st.markdown(T.stats_row([
-                ("商品数", f"{len(pdim):,}", "c-pink"),
-                ("销售额合计($)", f"{tot_g:,.0f}", "c-green"),
-                ("订单合计", f"{tot_o:,}", "c-purple"),
-            ]), unsafe_allow_html=True)
-            fdf = _dim_filter_bar(pdim, "pd", [("商品类目", "商品类目")],
-                                  ["网红", "商品名称", "商品ID"])
-            st.dataframe(
-                fdf.drop(columns=["_names"]), hide_index=True,
-                use_container_width=True, height=min(560, 60 + 36 * (len(fdf) + 1)),
-                column_config={
-                    "商品链接": st.column_config.LinkColumn("商品链接↗",
-                                                           display_text="商品↗"),
-                })
-            st.markdown(T.foot("点击率(%) = 点击 ÷ 展示 × 100 · "
-                               "视频转化率(%) = 订单 ÷ 视频观看次数 × 100 · "
-                               "商品转化率(%) = 订单 ÷ 点击 × 100 · 金额单位为美元($)"),
-                        unsafe_allow_html=True)
-
-    # ---- 👤 网红维度：一位网红×月份一行（筛选+排序+搜索） ----
-    with tab_kol:
-        st.caption("一位网红×月份一行 · 仅已闭环 · 点击列头可排序 · "
-                   "互动率(%) = (点赞+评论) ÷ 播放 × 100 · "
-                   "ROI = 总GMV($) ÷ 报价($)")
-        kdim = pd.DataFrame(_build_kol_dim(closed_recs))
-        if kdim.empty:
-            st.markdown(T.empty_hint("暂无已闭环网红"),
-                        unsafe_allow_html=True)
-        else:
-            fdf = _dim_filter_bar(kdim, "kd",
-                                  [("月份", "月份"), ("内容垂类", "内容垂类"),
-                                   ("带货类目", "带货类目"), ("挖掘人", "挖掘人")],
-                                  ["网红"])
-            st.dataframe(
-                fdf.drop(columns=["_cid"]), hide_index=True,
-                use_container_width=True, height=min(560, 60 + 36 * (len(fdf) + 1)))
-            st.markdown(T.foot(f"报价($) = 韩币报价 ÷ 汇率{_usd_rate():,.0f} · "
-                               "金额为美元($) · 点击/订单/销售额/佣金 = 名下商品直接加总"),
-                        unsafe_allow_html=True)
-
-    # ---- 🎯 四象限：声量 × GMV（沿用原数据看板） ----
+    # ---- 🎯 四象限：KPI(10项) + 四象限 + 问题清单 + GMV Top ----
     with tab_dash:
         dash_recs = closed_recs
         if not dash_recs:
@@ -2582,7 +2526,150 @@ def page_analysis():
                 st.markdown(T.sub("💰 GMV Top10"), unsafe_allow_html=True)
                 st.bar_chart(df, horizontal=True, height=300,
                              color=["#dd8fa8"])
-            st.markdown(T.foot("仅统计已闭环网红 · 四象限分界线 = 全体播放/GMV 中位数"),
+            st.markdown(T.foot("仅统计已闭环网红 · 四象限分界线 = 全体播放/GMV 中位数 · "
+                               "GMV/订单来自商品子表（与网红维度同口径）"),
+                        unsafe_allow_html=True)
+
+    # ---- 👤 网红维度：一位网红×月份一行（汇总+筛选+排序+搜索+跳转） ----
+    with tab_kol:
+        st.caption("一位网红×月份一行 · 仅已闭环 · 点网红名进履约详情 · "
+                   "互动率(%) = (点赞+评论) ÷ 播放 × 100 · "
+                   "ROI = 总GMV($) ÷ 报价($)")
+        kdim = pd.DataFrame(_build_kol_dim(closed_recs))
+        if kdim.empty:
+            st.markdown(T.empty_hint("暂无已闭环网红"),
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(T.stats_row([
+                ("网红数", f"{len(kdim):,}", "c-pink"),
+                ("总播放", f"{int(kdim['总播放'].sum()):,}", "c-purple"),
+                ("总GMV($)", f"{kdim['总GMV($)'].sum():,.0f}", "c-green"),
+                ("总报价($)", f"{kdim['报价($)'].sum():,.0f}", "c-amber"),
+            ]), unsafe_allow_html=True)
+            fdf = _dim_filter_bar(kdim, "kd",
+                                  [("月份", "月份"), ("内容垂类", "内容垂类"),
+                                   ("带货类目", "带货类目"), ("挖掘人", "挖掘人")],
+                                  ["网红"],
+                                  ["总GMV($)", "总播放", "ROI", "总订单", "报价($)"])
+            krows = [[_kol_link(r["_cid"], r["网红"]),
+                      esc(r["挖掘人"] or "-"), esc(r["月份"] or "-"),
+                      esc(r["内容垂类"] or "-"), esc(r["带货类目"] or "-"),
+                      f'<span class="num">{r["视频数"]}</span>',
+                      f'<span class="num">{r["商品数"]}</span>',
+                      f'<span class="num">{r["总播放"]:,}</span>',
+                      f'<span class="num">{r["总点赞"]:,}</span>',
+                      f'<span class="num">{r["互动率(%)"]:.2f}%</span>',
+                      f'<span class="num">{r["总点击"]:,}</span>',
+                      f'<span class="num">{r["总订单"]:,}</span>',
+                      f'<span class="num"><b>{r["总GMV($)"]:,.0f}</b></span>',
+                      f'<span class="num">{r["总佣金($)"]:,.0f}</span>',
+                      f'<span class="num">{r["报价($)"]:,.0f}</span>',
+                      f'<span class="num"><b>{r["ROI"]:.2f}</b></span>']
+                     for _, r in fdf.iterrows()]
+            T.component_html(
+                T.table(["网红", "挖掘人", "月份", "内容垂类", "带货类目",
+                         "视频数", "商品数", "总播放", "总点赞", "互动率(%)",
+                         "总点击", "总订单", "总GMV($)", "总佣金($)",
+                         "报价($)", "ROI"], krows, wrap=False),
+                height=52 + len(krows) * 36)
+            st.markdown(T.foot(f"报价($) = 韩币报价 ÷ 汇率{_usd_rate():,.0f} · "
+                               "金额为美元($) · 点击/订单/销售额/佣金 = 名下商品直接加总"),
+                        unsafe_allow_html=True)
+
+    # ---- 📹 视频维度：一条视频一行（汇总+筛选+排序+搜索+跳转） ----
+    with tab_video:
+        st.caption("一条视频一行 · 仅已闭环 · 点网红名进履约详情 · "
+                   "点击/订单 = 网红全部商品总和 ÷ 视频数（均摊）；"
+                   "GMV($) = 按挂品均摊；CPM($) = 报价($) ÷ 播放 × 1000")
+        vdim = pd.DataFrame(_build_video_dim(closed_recs))
+        if vdim.empty:
+            st.markdown(T.empty_hint("暂无已闭环视频数据"),
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(T.stats_row([
+                ("视频数", f"{len(vdim):,}", "c-pink"),
+                ("总播放", f"{int(vdim['播放'].sum()):,}", "c-purple"),
+                ("总GMV($)", f"{vdim['GMV($)'].sum():,.0f}", "c-green"),
+                ("总订单", f"{int(vdim['订单'].sum()):,}", "c-amber"),
+            ]), unsafe_allow_html=True)
+            fdf = _dim_filter_bar(vdim, "vd",
+                                  [("月份", "月份"), ("视频类型", "视频类型"),
+                                   ("能否二次利用", "能否二次利用")],
+                                  ["网红"],
+                                  ["GMV($)", "播放", "订单", "CPM($/千次)"])
+            vrows = [[_kol_link(r["_cid"], r["网红"]),
+                      esc(r["月份"] or "-"),
+                      T.badge(r["视频类型"]),
+                      (f'<a class="yts-link" href="{esc(r["视频链接"])}" '
+                       f'target="_blank">视频↗</a>') if r["视频链接"] else "-",
+                      f'<span class="num">{r["挂品数"]}</span>',
+                      f'<span class="num">{r["播放"]:,}</span>',
+                      f'<span class="num">{r["点赞"]:,}</span>',
+                      f'<span class="num">{r["评论"]:,}</span>',
+                      f'<span class="num">{r["点击"]:,.1f}</span>',
+                      f'<span class="num">{r["订单"]:,.1f}</span>',
+                      f'<span class="num"><b>{r["GMV($)"]:,.0f}</b></span>',
+                      f'<span class="num">{r["报价($)"]:,.0f}</span>',
+                      f'<span class="num">{r["CPM($/千次)"]:.2f}</span>',
+                      esc(r["能否二次利用"] or "-")]
+                     for _, r in fdf.iterrows()]
+            T.component_html(
+                T.table(["网红", "月份", "类型", "视频", "挂品数", "播放", "点赞",
+                         "评论", "点击", "订单", "GMV($)", "报价($)",
+                         "CPM($/千次)", "能否二次利用"], vrows, wrap=False),
+                height=52 + len(vrows) * 36)
+            st.markdown(T.foot("金额单位均为美元($) · 报价($) = 韩币报价 ÷ "
+                               f"汇率{_usd_rate():,.0f} · 播放为0时CPM显示0"),
+                        unsafe_allow_html=True)
+
+    # ---- 🛍 商品维度：一个商品一行（汇总+筛选+排序+搜索） ----
+    with tab_prod:
+        st.caption("一个商品一行 · 多网红选同一商品时合并一行（名字并列）· "
+                   "选品清单有、但报表无数据的商品显示0")
+        pdim = pd.DataFrame(_build_prod_dim(closed_recs))
+        if pdim.empty:
+            st.markdown(T.empty_hint("暂无商品数据：请先在分析模块顶部上传"
+                                     "「表现最好的链接商品」CSV"),
+                        unsafe_allow_html=True)
+        else:
+            tot_g = pdim["销售额($)"].sum()
+            tot_o = int(pdim["订单数"].sum())
+            tot_c = int(pdim["点击次数"].sum())
+            st.markdown(T.stats_row([
+                ("商品数", f"{len(pdim):,}", "c-pink"),
+                ("销售额合计($)", f"{tot_g:,.0f}", "c-green"),
+                ("订单合计", f"{tot_o:,}", "c-purple"),
+                ("点击合计", f"{tot_c:,}", "c-amber"),
+            ]), unsafe_allow_html=True)
+            fdf = _dim_filter_bar(pdim, "pd", [("商品类目", "商品类目")],
+                                  ["网红", "商品名称", "商品ID"],
+                                  ["销售额($)", "订单数", "点击次数", "视频观看次数"])
+            prows = [[esc(r["网红"]),
+                      esc(r["商品名称"]),
+                      esc(r["商品ID"]),
+                      (f'<a class="yts-link" href="{esc(r["商品链接"])}" '
+                       f'target="_blank">商品↗</a>'),
+                      esc(r["商品类目"] or "-"),
+                      f'<span class="num">{r["视频观看次数"]:,}</span>',
+                      f'<span class="num">{r["展示次数"]:,}</span>',
+                      f'<span class="num">{r["点击次数"]:,}</span>',
+                      f'<span class="num">{r["点击率(%)"]:.2f}%</span>',
+                      f'<span class="num">{r["订单数"]:,}</span>',
+                      f'<span class="num">{r["视频转化率(%)"]:.2f}%</span>',
+                      f'<span class="num">{r["商品转化率(%)"]:.2f}%</span>',
+                      f'<span class="num"><b>{r["销售额($)"]:,.0f}</b></span>',
+                      f'<span class="num">{r["净销售额($)"]:,.0f}</span>',
+                      f'<span class="num">{r["佣金($)"]:,.0f}</span>']
+                     for _, r in fdf.iterrows()]
+            T.component_html(
+                T.table(["网红", "商品名称", "商品ID", "商品链接", "商品类目",
+                         "视频观看次数", "展示次数", "点击次数", "点击率(%)",
+                         "订单数", "视频转化率(%)", "商品转化率(%)",
+                         "销售额($)", "净销售额($)", "佣金($)"], prows, wrap=False),
+                height=52 + len(prows) * 36)
+            st.markdown(T.foot("点击率(%) = 点击 ÷ 展示 × 100 · "
+                               "视频转化率(%) = 订单 ÷ 视频观看次数 × 100 · "
+                               "商品转化率(%) = 订单 ÷ 点击 × 100 · 金额单位为美元($)"),
                         unsafe_allow_html=True)
 
     # ---- 🩺 数据健康：全量数据质量检查（不受月份筛选影响） ----
