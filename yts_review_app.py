@@ -22,6 +22,10 @@ st.markdown('<style>.bi-zh{color:#9a9aa0;font-size:12px;font-weight:500;}'
             '.bi-zh::before{content:" · ";}</style>',
             unsafe_allow_html=True)
 
+# ---- 访问密码门（数据安全加固 2026-08-25）：输对密码前不加载任何业务数据 ----
+from yts_auth import require_auth
+require_auth()
+
 store = get_yts_store()
 esc = html.escape
 

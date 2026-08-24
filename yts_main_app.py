@@ -26,6 +26,10 @@ st.set_page_config(page_title="YTS 全栈项目管理", page_icon="🎯", layout
                    initial_sidebar_state="collapsed")
 st.markdown(T.THEME_CSS, unsafe_allow_html=True)
 
+# ---- 访问密码门（数据安全加固 2026-08-25）：输对密码前不加载任何业务数据 ----
+from yts_auth import require_auth
+require_auth()
+
 store = get_yts_store()
 if getattr(store, "demo", False):
     st.error("⚠️ 未连接到宜搭数据库，当前显示演示数据。"
