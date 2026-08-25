@@ -492,14 +492,69 @@ document.addEventListener('click', function (e) {
     }
     hide();
 })();
+// ---- 自动撑高：内容加载后量出真实高度撑开 iframe ----
+// 修复「表格最后一行显示不全」：此前 iframe 高度是写死估算（行数×行高），
+// 一旦某行内容换行（邮箱列/操作按钮列最易超宽），实际高度超过估算，
+// 最后一行就被裁掉。components.html 渲染的是同源 iframe，因此直接改
+// 父页面里 iframe 元素及其 Streamlit 外层容器的高度，最可靠。
+(function () {
+    if (!document.getElementById('yts-autogrow')) return;  // 限高滚动区不撑开
+    var fe = window.frameElement;
+    if (!fe) return;
+    // 量「内容元素的真实底边」而非 body.scrollHeight——body 设了
+    // height:100%，撑高 iframe 会连带撑高 body，用 scrollHeight 会陷入
+    // 「越量越高」死循环；量子元素底边则与 iframe 高度无关。
+    // 用 getBoundingClientRect（相对视口）减去 body 顶边，基准最稳。
+    function contentH() {
+        var bodyTop = document.body.getBoundingClientRect().top;
+        var h = 0, kids = document.body.children;
+        for (var i = 0; i < kids.length; i++) {
+            var el = kids[i];
+            var r = el.getBoundingClientRect();
+            if (r.height === 0 && r.width === 0) continue;  // style/script/隐藏标记
+            var b = r.bottom - bodyTop;
+            var cs = window.getComputedStyle(el);
+            b += parseFloat(cs.marginBottom || '0') || 0;
+            if (b > h) h = b;
+        }
+        return h;
+    }
+    var last = 0;
+    function fit() {
+        var h = contentH();
+        if (h <= last || h < 20) return;   // 没变高就不重复改
+        last = h;
+        var want = h + 4;
+        fe.style.height = want + 'px';
+        // Streamlit 外层容器也按 iframe 高度裁剪，需同步撑开
+        var el = fe.parentElement;
+        while (el && el !== window.parent.document.body) {
+            if (el.style && el.style.height) {
+                var cur = parseInt(el.style.height, 10);
+                if (cur && cur < want) el.style.height = want + 'px';
+            }
+            el = el.parentElement;
+        }
+    }
+    fit();
+    setTimeout(fit, 300);    // 字体/图片晚加载，补测
+    setTimeout(fit, 1200);
+    if (window.ResizeObserver) {
+        new ResizeObserver(fit).observe(document.body);
+    }
+})();
 </script>
 """
 
 
-def component_html(body: str, height: int) -> None:
+def component_html(body: str, height: int, grow: bool = True) -> None:
     import streamlit.components.v1 as components
     # 注意：必须用 components.v1.html，不能用 st.iframe——
     # 表格/流程条里的点击靶隐藏、data-nav 跳转依赖 iframe 与父页面的
     # 同源脚本通信；st.iframe 在线上环境该通信不生效（曾导致 mark 按钮裸露）。
     # components.v1.html 的弃用警告在移除前不影响功能，届时再迁移。
-    components.html(f"<style>{COMP_CSS}</style>{body}{COMP_JS}", height=height)
+    # grow=True（默认）：加载后自动撑高到内容真实高度，表格最后一行不裁剪；
+    # grow=False：保持 height 限高、内部滚动（用于卡片墙等故意限高的区域）。
+    marker = '<div id="yts-autogrow" style="display:none"></div>' if grow else ''
+    components.html(f"<style>{COMP_CSS}</style>{marker}{body}{COMP_JS}",
+                    height=height)

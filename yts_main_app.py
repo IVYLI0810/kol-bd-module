@@ -530,7 +530,7 @@ def page_dig():
         T.component_html(
             T.table(["昵称", "垂类", "粉丝数", "挖掘人", "邮箱", "操作"],
                     trows, wrap=False),
-            height=48 + len(trows) * 38)
+            height=68 + len(trows) * 38)
         # 紧跟 iframe 的隐藏点击靶：JS 会隐藏它们，点表格里的标记链接
         # 时"按下"对应按钮 → 轻量 rerun（不整页跳转，消除点击卡顿）
         def _mark_cb(iid, act):
@@ -887,7 +887,8 @@ def page_activity():
                 full = 36 + len(rows) * 80
                 with col:
                     # 卡片少的月份按内容撑开；多的封顶 520px，内部滚动不裁剪
-                    T.component_html(html, height=min(full, 520))
+                    # grow=False：卡片墙故意限高滚动，不参与自动撑高
+                    T.component_html(html, height=min(full, 520), grow=False)
 
 
 # ============================ 履约详情 ============================
@@ -2123,7 +2124,7 @@ def _render_health(all_recs):
             ])
         T.component_html(
             T.table(["网红", "负责人", "归属月份", "缺失项"], trows, wrap=False),
-            height=52 + len(trows) * 36)
+            height=72 + len(trows) * 36)
 
 
 def _export_analysis_bytes(kdim, vdim, pdim, month_sel):
@@ -2651,7 +2652,7 @@ def page_analysis():
                          "视频数", "商品数", "总播放", "总点赞", "互动率(%)",
                          "总点击", "总订单", "总GMV($)", "总佣金($)",
                          "报价($)", "ROI"], krows, wrap=False),
-                height=52 + len(krows) * 36)
+                height=72 + len(krows) * 36)
             st.markdown(T.foot(f"报价($) = 韩币报价 ÷ 汇率{_usd_rate():,.0f} · "
                                "金额为美元($) · 网红维度 = 名下视频数据聚合"
                                "（播放/点击/订单/GMV 均为视频加总）· "
@@ -2701,7 +2702,7 @@ def page_analysis():
                          "评论", "点击", "订单", "GMV($)", "视频转化率(%)",
                          "报价($)", "CPM($/千次)", "能否二次利用"], vrows,
                         wrap=False),
-                height=52 + len(vrows) * 36)
+                height=72 + len(vrows) * 36)
             st.markdown(T.foot("金额单位均为美元($) · 报价($) = 韩币报价 ÷ "
                                f"汇率{_usd_rate():,.0f} · "
                                "视频转化率(%) = 订单(CSV) ÷ 播放(API) × 100 · "
@@ -2751,7 +2752,7 @@ def page_analysis():
                          "视频观看次数", "展示次数", "点击次数", "点击率(%)",
                          "订单数", "视频转化率(%)", "商品转化率(%)",
                          "销售额($)", "净销售额($)", "佣金($)"], prows, wrap=False),
-                height=52 + len(prows) * 36)
+                height=72 + len(prows) * 36)
             st.markdown(T.foot("点击率(%) = 点击 ÷ 展示 × 100 · "
                                "视频转化率(%) = 订单 ÷ 视频观看次数 × 100 · "
                                "商品转化率(%) = 订单 ÷ 点击 × 100 · 金额单位为美元($)"),
