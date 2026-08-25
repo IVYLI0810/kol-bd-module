@@ -2126,13 +2126,6 @@ def _render_health(all_recs):
             height=52 + len(trows) * 36)
 
 
-def _export_mapping_bytes():
-    """导出「网红×视频×商品」映射表（2个sheet），供离线匹配 CSV 用"""
-    import yts_product_match as PM
-    sel, vids = PM.build_mapping_records(store.list_all())
-    return PM.mapping_to_excel_bytes(sel, vids)
-
-
 def _export_analysis_bytes(kdim, vdim, pdim, month_sel):
     """导出分析结果 xlsx：看板摘要 + 网红/视频/商品三维度明细（当前月份口径）"""
     from openpyxl import Workbook
@@ -2210,71 +2203,9 @@ def _snapshot_data(reason: str):
 
 
 def _import_matched_xlsx(xlsx_file):
-    """上传离线匹配后的「导入表」：按 channel_id 直接写宜搭。
-    每个网红合并为 1 次写入（商品子表+视频子表+主记录指标），带进度条"""
-    import yts_product_match as PM
-    try:
-        data = PM.parse_import_excel(xlsx_file.read())
-    except ValueError as e:
-        st.error(str(e))
-        return
-    if not data:
-        st.error("导入表里没有有效数据行，请确认文件正确")
-        return
-    rec_by_cid = {r["collab_id"]: r for r in store.list_all()}
-    # 旧映射表里是裸频道ID（无#月份）：同频道多条时按商品重合度挑目标行
-    bare_map = {}
-    for r in rec_by_cid.values():
-        bare_map.setdefault(r.get("channel_id") or "", []).append(r)
-
-    def _pick_rec(cid, g):
-        rec = rec_by_cid.get(cid)
-        if rec or "#" in cid:
-            return rec
-        cands = bare_map.get(cid) or []
-        if not cands:
-            return None
-        if len(cands) == 1:
-            return cands[0]
-        gpids = {str(p.get("pid") or "") for p in g["products"]}
-
-        def _score(r):
-            rpids = {PM.norm_pid(u) for u in r.get("product_list") or []}
-            return (len(gpids & rpids), r.get("plan_month") or "")
-        return max(cands, key=_score)
-
-    prog = st.progress(0.0, text="正在写入宜搭…")
-    # ---- 数据安全：写入前自动备份当前数据快照（保留最近5次，可回滚）----
-    _snapshot_data("导入商品/视频数据")
-    hit, n_prod = 0, 0
-    for i, (cid, g) in enumerate(data.items()):
-        prog.progress(i / len(data), text=f"正在写入（{i + 1}/{len(data)}）")
-        rec = _pick_rec(cid, g)
-        if not rec:
-            continue
-        cid = rec["collab_id"]  # 后续写入统一走复合身份
-        patch = {"products": g["products"]}
-        if g["videos_patch"] and rec.get("videos"):
-            patch["videos"] = PM.apply_video_patch(rec["videos"],
-                                                   g["videos_patch"])
-        clicks, orders, gmv = g["summary"]
-        patch.update({
-            "product_views": int(clicks), "ctr": 0.0,
-            "orders": int(orders),
-            "conversion_rate": round(orders / clicks * 100, 2) if clicks else 0.0,
-            "gmv": float(gmv),
-        })
-        ctrs = [p.get("ctr") or 0 for p in g["products"]]
-        if ctrs:
-            patch["ctr"] = round(sum(ctrs) / len(ctrs), 2)
-        store._upd(cid, patch)  # 单次 HTTP 写入
-        hit += 1
-        n_prod += len(g["products"])
-    prog.progress(1.0, text="完成")
-    if hit == 0:
-        st.warning("没有写入任何数据：导入表里的网红在系统中不存在")
-        return
-    st.toast(f"✅ 已更新 {hit} 位网红、{n_prod} 个商品的效果数据")
+    """【已废弃】旧离线匹配流程的写入函数，保留空壳仅为防止外部残留引用报错。
+    新流程见 yts_csv_import.run_direct_import（一键直导）。"""
+    st.error("该导入方式已下线：请改用分析模块顶部的「📥 一键导入数据」")
 
 
 # ============================ 分析模块 · 五维度构建 ============================
@@ -2302,6 +2233,8 @@ def _build_video_dim(recs):
             cpm = float(v.get("cpm") or 0)
             if not cpm and price_usd and views:
                 cpm = round(price_usd / views * 1000, 2)
+            # 视频转化率 = 订单(CSV) ÷ 播放(API) × 100（播放为0记0）
+            v_cvr = round(orders / views * 100, 2) if views else 0
             rows.append({
                 "网红": r["name"], "_cid": r["collab_id"],
                 "月份": r.get("plan_month") or "",
@@ -2312,6 +2245,7 @@ def _build_video_dim(recs):
                 "评论": int(v.get("comments") or 0),
                 "点击": int(clicks), "订单": int(orders),
                 "GMV($)": round(gmv, 2),
+                "视频转化率(%)": v_cvr,
                 "报价($)": round(price_usd, 2),
                 "CPM($/千次)": round(cpm, 2),
                 "能否二次利用": r.get("settlement") or "",
@@ -2382,10 +2316,9 @@ def _build_kol_dim(recs):
     """👤 网红维度：一位网红×月份一行。口径（定稿）：
     播放/点赞/评论/点击/订单/GMV = 名下【视频子表】聚合（网红是视频的聚合）；
     互动率=(点赞+评论)÷播放；ROI=总GMV($)÷报价($)。
-    佣金：视频子表无此字段，暂从商品子表取（仅这一列）。"""
+    佣金 = 固定报价($)，不随视频数加总（一个网红的佣金是固定的）。"""
     rows = []
     for r in recs:
-        prods = r.get("products") or []
         vids = r.get("videos") or []
         tot_views = sum(int(v.get("views") or 0) for v in vids)
         tot_likes = sum(int(v.get("likes") or 0) for v in vids)
@@ -2395,8 +2328,9 @@ def _build_kol_dim(recs):
         tot_clicks = sum(float(v.get("clicks") or 0) for v in vids)
         tot_orders = sum(float(v.get("orders") or 0) for v in vids)
         tot_gmv = sum(float(v.get("gmv") or 0) for v in vids)
-        tot_comm = sum(float(p.get("commission") or 0) for p in prods)
         price_usd = _krw_to_usd(r.get("price"))
+        # 佣金 = 固定报价($)，不加总（一个网红的佣金固定，不管发几条视频）
+        tot_comm = price_usd
         n_prod = len([p for p in (r.get("product_list") or []) if str(p).strip()])
         rows.append({
             "网红": r["name"], "_cid": r["collab_id"],
@@ -2500,9 +2434,8 @@ def page_analysis():
     pdim = pd.DataFrame(_build_prod_dim(closed_recs))
 
     # ---- 顶栏：月份在左、操作控件靠右（一行紧凑排布，释放页面空间） ----
-    xlsx_up = None
     if is_owner:
-        tb = st.columns([2.0, 0.8, 1.0, 1.25, 1.1], vertical_alignment="center")
+        tb = st.columns([2.0, 0.8, 1.1], vertical_alignment="center")
     else:
         tb = st.columns([3.6, 1.1], vertical_alignment="center")
     with tb[0]:
@@ -2511,22 +2444,10 @@ def page_analysis():
     if is_owner:
         with tb[1]:
             if st.button("🔄 一键刷新", key="force_refresh_btn",
-                         help="无视24小时缓存，按视频粒度重新抓取播放/点赞/评论，"
-                              "并按各视频关联商品拉取点击/CTR/成交/GMV（近30天）"):
+                         help="无视24小时缓存，按视频粒度重新抓取播放/点赞/评论"
+                              "（不导入CSV数据，仅刷新YouTube互动数据）"):
                 st.session_state["force_refresh"] = True
                 st.rerun()
-        with tb[2]:
-            st.download_button(
-                "📤 映射表", data=_export_mapping_bytes(),
-                file_name=f"YTS映射表_{datetime.now():%Y%m%d}.xlsx",
-                key="ana_map_export", use_container_width=True,
-                help="① 导出系统里的选品和视频挂品清单，发给助手离线匹配 "
-                     "YouTube Shopping 全量数据")
-        with tb[3]:
-            xlsx_up = st.file_uploader(
-                "② 上传匹配后的导入表（xlsx）", type=["xlsx"],
-                key="ana_matched_up", label_visibility="collapsed",
-                help="② 上传助手匹配生成的「YTS商品导入表」，快速写入宜搭")
     with tb[-1]:
         st.download_button(
             "📊 导出分析结果",
@@ -2534,17 +2455,125 @@ def page_analysis():
             file_name=f"YTS分析结果_{_sel}_{datetime.now():%Y%m%d}.xlsx",
             key="ana_result_export", use_container_width=True,
             help="导出当前月份口径：看板摘要 + 网红/视频/商品三维度明细（xlsx）")
-    if xlsx_up is not None:
-        # 防重复循环：file_uploader 在每次 rerun 都会返回同一文件，
-        # 用内容hash去重——相同内容只导入一次，避免反复写宜搭
-        import hashlib
-        raw = xlsx_up.getvalue()
-        fhash = hashlib.md5(raw).hexdigest()
-        if st.session_state.get("ana_imported_hash") != fhash:
-            import io as _io
-            _import_matched_xlsx(_io.BytesIO(raw))
-            st.session_state["ana_imported_hash"] = fhash
-            st.rerun()
+
+    # ---- 📥 一键直导：上传2个YouTube后台原始CSV，网站自动完成全部处理 ----
+    content_up = None
+    product_up = None
+    if is_owner:
+        with st.expander("📥 一键导入数据（热门内容CSV + 链接商品CSV）",
+                         expanded=False):
+            st.caption(
+                "上传 YouTube Shopping 后台导出的两个原始 CSV，网站自动完成：\n"
+                "① 调 YouTube API **强制重抓**所有已登记视频的播放/点赞/评论 → "
+                "② 热门内容CSV 按视频链接匹配写入 点击/订单/GMV → "
+                "③ 链接商品CSV 按SKU ID匹配写入商品数据 → "
+                "④ 自动计算 CPM/视频转化率/网红聚合 → 导入完直接呈现完整数据。\n\n"
+                "**视频维度**=热门内容CSV真实数据（不均摊）；"
+                "**网红维度**=视频维度聚合（佣金=固定报价，不加总）；"
+                "**商品维度**=链接商品CSV。三个维度各自独立。")
+            up1, up2 = st.columns(2)
+            with up1:
+                content_up = st.file_uploader(
+                    "① 热门内容 CSV（视频维度数据源）", type=["csv"],
+                    key="ana_content_csv",
+                    help="YouTube Shopping 后台 → 内容 → 热门内容 导出")
+            with up2:
+                product_up = st.file_uploader(
+                    "② 链接商品 CSV（商品维度数据源）", type=["csv"],
+                    key="ana_product_csv",
+                    help="YouTube Shopping 后台 → 商品 → 表现最好的链接商品 导出")
+            can_run = bool(closed_recs) and (content_up is not None
+                                             or product_up is not None)
+            if not closed_recs:
+                st.info("暂无已闭环网红，无需导入")
+            elif st.button("🚀 一键导入（抓API + 匹配 + 计算 + 写入）",
+                           type="primary", use_container_width=True,
+                           disabled=not can_run, key="ana_direct_import_btn"):
+                st.session_state["ana_do_import"] = True
+                st.rerun()
+
+    # 执行一键导入（按钮触发，避免 file_uploader 每次 rerun 重复执行）
+    if st.session_state.pop("ana_do_import", False):
+        import yts_csv_import as CI
+        _snapshot_data("一键直导CSV数据")
+        prog = st.progress(0.0, text="准备导入…")
+
+        def _pcb(txt, done, total):
+            prog.progress(done / total if total else 0.0, text=txt)
+
+        try:
+            report = CI.run_direct_import(
+                content_up.getvalue() if content_up is not None else None,
+                product_up.getvalue() if product_up is not None else None,
+                closed_recs, store, progress_cb=_pcb)
+            st.session_state["ana_import_report"] = report
+            store._invalidate()  # 清缓存，下方表格立即呈现新数据
+        except Exception as e:
+            st.error(f"导入失败：{e}")
+        finally:
+            prog.empty()
+        st.rerun()
+
+    # ---- 导入结果报告（含三维度未匹配清单） ----
+    rep = st.session_state.get("ana_import_report")
+    if rep:
+        with st.container():
+            st.markdown(T.sub("📋 上次导入结果"), unsafe_allow_html=True)
+            if not rep.get("has_api_key"):
+                st.warning("未配置 YOUTUBE_API_KEY：本次未抓取播放/点赞/评论，"
+                           "仅导入了CSV数据。请到 Secrets 配置后重新导入。")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("API抓取成功", f"{rep['api_ok']} 条视频")
+            c2.metric("视频匹配成功", f"{rep['video_matched']} 条")
+            c3.metric("商品匹配成功", f"{rep['prod_matched']} 个")
+            c4.metric("写入网红数", f"{rep['written_kols']} 位")
+            # 三维度未匹配清单
+            miss_tabs = st.tabs(["📹 视频未匹配", "🛍 商品未匹配",
+                                 "🔌 API抓取失败"])
+            with miss_tabs[0]:
+                if not rep.get("content_provided"):
+                    st.info("本次未上传热门内容CSV，未处理视频维度数据。")
+                else:
+                    vu = rep.get("video_unmatched") or []
+                    if vu:
+                        st.caption(f"以下 {len(vu)} 条已登记视频在「热门内容CSV」中"
+                                   "没有找到对应数据（可能未产生购物行为/时间段外）：")
+                        for nm, url in vu[:50]:
+                            st.text(f"· {nm}：{url}")
+                        if len(vu) > 50:
+                            st.caption(f"…共 {len(vu)} 条，仅显示前50")
+                    else:
+                        st.success("全部视频均已在热门内容CSV中匹配到数据 ✅")
+            with miss_tabs[1]:
+                if not rep.get("product_provided"):
+                    st.info("本次未上传链接商品CSV，未处理商品维度数据。")
+                else:
+                    pu = rep.get("prod_unmatched") or []
+                    if pu:
+                        st.caption(f"以下 {len(pu)} 个选品商品在「链接商品CSV」中"
+                                   "没有找到（可能无销售数据/时间段外）：")
+                        for nm, pid in pu[:50]:
+                            st.text(f"· {nm}：商品ID {pid}")
+                        if len(pu) > 50:
+                            st.caption(f"…共 {len(pu)} 个，仅显示前50")
+                    else:
+                        st.success("全部选品商品均已在链接商品CSV中匹配到数据 ✅")
+            with miss_tabs[2]:
+                af = rep.get("api_fail") or []
+                if af:
+                    st.caption(f"以下 {len(af)} 条视频 API 抓取失败"
+                               "（保持原播放/点赞/评论不变）：")
+                    for nm, url in af[:50]:
+                        st.text(f"· {nm}：{url}")
+                else:
+                    st.success("全部视频 API 抓取成功 ✅")
+            if rep.get("kol_empty"):
+                st.warning("以下网红的所有视频均未匹配到内容数据"
+                           "（网红维度GMV将为0）："
+                           + "、".join(rep["kol_empty"]))
+            if st.button("✖ 收起报告", key="ana_dismiss_report"):
+                st.session_state.pop("ana_import_report", None)
+                st.rerun()
     if not is_owner and closed_recs:
         st.caption("📊 视频与商品数据由负责人统一更新；如需刷新请联系艾薇李。"
                    "下方为最新已同步的数据。")
@@ -2625,7 +2654,9 @@ def page_analysis():
                 height=52 + len(krows) * 36)
             st.markdown(T.foot(f"报价($) = 韩币报价 ÷ 汇率{_usd_rate():,.0f} · "
                                "金额为美元($) · 网红维度 = 名下视频数据聚合"
-                               "（播放/点击/订单/GMV 均为视频加总；佣金暂取商品）"),
+                               "（播放/点击/订单/GMV 均为视频加总）· "
+                               "佣金 = 固定报价($)，不随视频数加总 · "
+                               "ROI = 总GMV($) ÷ 报价($)"),
                         unsafe_allow_html=True)
 
     # ---- 📹 视频维度：一条视频一行（汇总+筛选+排序+搜索+跳转） ----
@@ -2660,17 +2691,21 @@ def page_analysis():
                       f'<span class="num">{r["点击"]:,.1f}</span>',
                       f'<span class="num">{r["订单"]:,.1f}</span>',
                       f'<span class="num"><b>{r["GMV($)"]:,.0f}</b></span>',
+                      f'<span class="num">{r["视频转化率(%)"]:.2f}%</span>',
                       f'<span class="num">{r["报价($)"]:,.0f}</span>',
                       f'<span class="num">{r["CPM($/千次)"]:.2f}</span>',
                       esc(r["能否二次利用"] or "-")]
                      for _, r in fdf.iterrows()]
             T.component_html(
                 T.table(["网红", "月份", "类型", "视频", "挂品数", "播放", "点赞",
-                         "评论", "点击", "订单", "GMV($)", "报价($)",
-                         "CPM($/千次)", "能否二次利用"], vrows, wrap=False),
+                         "评论", "点击", "订单", "GMV($)", "视频转化率(%)",
+                         "报价($)", "CPM($/千次)", "能否二次利用"], vrows,
+                        wrap=False),
                 height=52 + len(vrows) * 36)
             st.markdown(T.foot("金额单位均为美元($) · 报价($) = 韩币报价 ÷ "
-                               f"汇率{_usd_rate():,.0f} · 播放为0时CPM显示0"),
+                               f"汇率{_usd_rate():,.0f} · "
+                               "视频转化率(%) = 订单(CSV) ÷ 播放(API) × 100 · "
+                               "CPM($) = 报价($) ÷ 播放 × 1000"),
                         unsafe_allow_html=True)
 
     # ---- 🛍 商品维度：一个商品一行（汇总+筛选+排序+搜索） ----
