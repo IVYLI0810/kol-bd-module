@@ -46,6 +46,7 @@ C_PASS = "통과 여부 是否通过"
 C_REASON = "반려 사유 驳回原因"
 C_AD_NEED = "광고 필요 여부 是否需要投放"
 C_AD_DONE = "광고 완료 여부 是否投放"
+C_AD_VIDEO = "영상 링크 视频链接"
 
 # 状态 → 带 emoji 的显示文案（让待审核/已审核一眼可辨）
 _STATUS_EMOJI = {
@@ -331,6 +332,7 @@ with tab_ad:
 
     ad_df = pd.DataFrame([{
         C_NAME: r["name"], C_HOME: r["channel_url"],
+        C_AD_VIDEO: r.get("video_urls", ""),
         C_AD_NEED: r["ad_needed"], C_AD_DONE: r["ad_done"],
         "collab_id": r["collab_id"],
     } for r in ad_rows])
@@ -355,10 +357,11 @@ with tab_ad:
             ad_df, key="ad_grid", hide_index=True, use_container_width=True,
             height=min(560, 80 + 38 * (len(ad_df) + 1)),
             # 主键列不显示（新版 streamlit 已删 hidden 参数，column_order 新旧通用）
-            column_order=[C_NAME, C_HOME, C_AD_NEED, C_AD_DONE],
+            column_order=[C_NAME, C_HOME, C_AD_VIDEO, C_AD_NEED, C_AD_DONE],
             column_config={
                 C_NAME: st.column_config.TextColumn("크리에이터 网红", disabled=True, width="medium"),
                 C_HOME: st.column_config.LinkColumn("홈페이지 主页", disabled=True, width="medium"),
+                C_AD_VIDEO: st.column_config.TextColumn("영상 링크 视频链接", disabled=True, width="large"),
                 C_AD_NEED: st.column_config.TextColumn("광고 필요? 需要投放?", disabled=True, width="small"),
                 C_AD_DONE: st.column_config.TextColumn("광고 완료? 已投放? (Y)", width="small"),
             })

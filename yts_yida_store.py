@@ -1068,16 +1068,27 @@ class YTSStore:
     def list_ad_table(self):
         """投放模块表格行：标记了「需要投放」或「已投放」的网红。
         是否需要投放由主站闭环时选择；是否投放在本表格回填。
-        审核站以主站为准：主站取消合作/流回/淘汰的（无归属月份且未闭环）不显示。"""
-        rows = [{
-            "collab_id": c["collab_id"],
-            "name": c["name"],
-            "channel_url": c["channel_url"],
-            "ad_needed": "Y" if c["ad_needed"] else "",
-            "ad_done": "Y" if c["ad_done"] else "",
-        } for c in (self._to_collab(r) for r in self._all())
-            if (c["ad_needed"] or c["ad_done"])
-            and (c["plan_month"] or c["is_closed"])]
+        审核站以主站为准：主站取消合作/流回/淘汰的（无归属月份且未闭环）不显示。
+        视频维度：带出视频子表里的链接（无子表时回退主 video_url），供投放定位素材。"""
+        rows = []
+        for c in (self._to_collab(r) for r in self._all()):
+            if not ((c["ad_needed"] or c["ad_done"])
+                    and (c["plan_month"] or c["is_closed"])):
+                continue
+            # 视频链接：优先视频子表，逐行取 video_url；无子表回退主记录 video_url
+            vids = c.get("videos") or []
+            vurls = [(v.get("video_url") or "").strip() for v in vids
+                     if (v.get("video_url") or "").strip()]
+            if not vurls and c.get("video_url"):
+                vurls = [c["video_url"]]
+            rows.append({
+                "collab_id": c["collab_id"],
+                "name": c["name"],
+                "channel_url": c["channel_url"],
+                "video_urls": "\n".join(vurls),
+                "ad_needed": "Y" if c["ad_needed"] else "",
+                "ad_done": "Y" if c["ad_done"] else "",
+            })
         # 待投放（需投但未投）排最前
         rows.sort(key=lambda x: (0 if x["ad_needed"] and not x["ad_done"] else 1,
                                  x["name"]))
