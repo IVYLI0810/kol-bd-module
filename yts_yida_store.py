@@ -1069,18 +1069,25 @@ class YTSStore:
         """投放模块表格行：标记了「需要投放」或「已投放」的网红。
         是否需要投放由主站闭环时选择；是否投放在本表格回填。
         审核站以主站为准：主站取消合作/流回/淘汰的（无归属月份且未闭环）不显示。
-        视频维度：带出视频子表里的链接（无子表时回退主 video_url），供投放定位素材。"""
+        视频维度：汇总该网红全部视频链接（视频子表 + 审核视频 + 复审视频），
+        去重后供投放定位素材——任一来源有链接就不会为空。"""
         rows = []
         for c in (self._to_collab(r) for r in self._all()):
             if not ((c["ad_needed"] or c["ad_done"])
                     and (c["plan_month"] or c["is_closed"])):
                 continue
-            # 视频链接：优先视频子表，逐行取 video_url；无子表回退主记录 video_url
-            vids = c.get("videos") or []
-            vurls = [(v.get("video_url") or "").strip() for v in vids
-                     if (v.get("video_url") or "").strip()]
-            if not vurls and c.get("video_url"):
-                vurls = [c["video_url"]]
+            # 视频链接：三个来源合并去重（保持出现顺序）
+            # 1) 视频子表逐行 video_url  2) 主记录审核视频 video_url
+            # 3) 复审视频 recheck_video_url
+            vurls = []
+            for v in (c.get("videos") or []):
+                u = (v.get("video_url") or "").strip()
+                if u and u not in vurls:
+                    vurls.append(u)
+            for u in (c.get("video_url") or "", c.get("recheck_video_url") or ""):
+                u = u.strip()
+                if u and u not in vurls:
+                    vurls.append(u)
             rows.append({
                 "collab_id": c["collab_id"],
                 "name": c["name"],
