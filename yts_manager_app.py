@@ -7,12 +7,14 @@
   - 按组员分组，一览每位网红的阶段（已发邮件/洽谈中/履约中+进度/已闭环）
   - 字段：头像(点击跳主页) / 双垂类 / 粉丝数 / 月份 / 报价($) /
           近10条视频均播 / 近10条中位播
-  - 已闭环网红：合作视频逐条跳转按钮
+  - 已闭环网红：合作视频逐条跳转按钮 + CPM/ROI（宜搭视频子表现算，分析页同口径）
+          + 商品跳转按钮（悬停看商品名+GMV）
   - 筛选：按阶段 + 按组员
   - 近10条数据：YouTube API 抓取（每人3配额单位），7天缓存，可手动强刷
 """
 import html
 import os
+import re
 import time
 from datetime import datetime
 
@@ -138,6 +140,53 @@ def _fmt_num(n) -> str:
     if n >= 10000:
         return f"{n/10000:.1f}万"
     return f"{n:,}"
+
+
+# ============================ CPM / ROI（与分析页同口径） ============================
+def _kol_metrics(c) -> dict:
+    """指标全部来自宜搭记录本身（视频子表加总），口径与分析页一致：
+    ROI = 总GMV($) ÷ 报价($)；CPM = 报价($) ÷ 总播放 × 1000。
+    无视频子表的老数据回退主记录指标。"""
+    vids = c.get("videos") or []
+    tot_views = sum(int(v.get("views") or 0) for v in vids)
+    tot_gmv = sum(float(v.get("gmv") or 0) for v in vids)
+    if not vids:  # 老数据兜底
+        tot_views = int(c.get("video_views") or 0)
+        tot_gmv = float(c.get("gmv") or 0)
+    price_usd = float(c.get("price") or 0) / USD_RATE
+    return {
+        "views": tot_views,
+        "gmv": tot_gmv,
+        "price_usd": price_usd,
+        "cpm": round(price_usd / tot_views * 1000, 2)
+        if (price_usd and tot_views) else 0,
+        "roi": round(tot_gmv / price_usd, 2) if price_usd else 0,
+    }
+
+
+def _product_links(c) -> list:
+    """商品跳转按钮：优先商品子表（有GMV可悬停展示），
+    无子表时回退解析选品清单里的商品链接。返回 [(url, 悬停说明)] 去重。"""
+    out = []
+    for p in (c.get("products") or []):
+        pid = str(p.get("pid") or "").strip()
+        if not pid:
+            continue
+        gmv = float(p.get("gmv") or 0)
+        tip = (p.get("name") or pid) + (f" · GMV ${gmv:,.0f}" if gmv else "")
+        out.append((f"https://ko.aliexpress.com/item/{pid}.html", tip))
+    if not out:
+        for line in str(c.get("product_list") or "").splitlines():
+            m = re.search(r"/item/(\d+)", line)
+            if m:
+                out.append((f"https://ko.aliexpress.com/item/{m.group(1)}.html",
+                            line.strip()))
+    seen, res = set(), []
+    for u, t in out:
+        if u not in seen:
+            seen.add(u)
+            res.append((u, t))
+    return res
 
 
 # ============================ 数据装载 ============================
@@ -300,6 +349,15 @@ def _row_cells(r) -> list:
     price_cell = (f"${price_krw/USD_RATE:,.0f}"
                   f'<div style="font-size:10px;color:#b0b0b5">'
                   f'₩{price_krw:,.0f}</div>' if price_krw else "-")
+    # CPM / ROI（宜搭视频子表现算，口径同分析页）
+    m = _kol_metrics(c)
+    cpm_cell = (f'<span title="报价 ${m["price_usd"]:,.0f} ÷ 总播放 '
+                f'{m["views"]:,} × 1000">{m["cpm"]:.2f}</span>'
+                if m["cpm"] else "-")
+    roi_show = m["roi"] or (stage == "已闭环" and m["price_usd"] > 0)
+    roi_cell = (f'<span title="总GMV ${m["gmv"]:,.0f} ÷ 报价 '
+                f'${m["price_usd"]:,.0f}">{m["roi"]:.2f}</span>'
+                if roi_show else "-")
     # 近10条
     avg = _fmt_num(rec10.get("avg")) if rec10 else "-"
     med = _fmt_num(rec10.get("median")) if rec10 else "-"
@@ -314,17 +372,31 @@ def _row_cells(r) -> list:
             for i, v in enumerate(vids, 1))
     else:
         vid_cell = '<span style="color:#c7c7cc">-</span>'
+    # 商品链接（每个商品一个跳转按钮，悬停看商品名+GMV）
+    plinks = _product_links(c)
+    if plinks:
+        prod_cell = " ".join(
+            f'<a href="{esc(u)}" target="_blank" title="{esc(t)}" '
+            f'style="display:inline-block;padding:2px 8px;margin:1px 3px 1px 0;'
+            f'background:#f0f0f5;border-radius:10px;font-size:11px;'
+            f'text-decoration:none;color:#1d1d1f">🛍 {i}</a>'
+            for i, (u, t) in enumerate(plinks, 1))
+    else:
+        prod_cell = '<span style="color:#c7c7cc">-</span>'
     return [name_cell, stage_cell, esc(cat),
             f"<span class='num'>{_fmt_num(c.get('followers'))}</span>",
             esc(str(c.get("plan_month") or "-")),
             f"<span class='num'>{price_cell}</span>",
+            f"<span class='num'>{cpm_cell}</span>",
+            f"<span class='num'>{roi_cell}</span>",
             f"<span class='num'>{avg}</span>",
             f"<span class='num'>{med}</span>",
-            vid_cell]
+            vid_cell, prod_cell]
 
 
 HEADERS = ["网红（点头像跳主页）", "阶段/进度", "双垂类", "粉丝数", "月份",
-           "报价", "近10条均播", "近10条中位播", "合作视频"]
+           "报价", "CPM($)", "ROI", "近10条均播", "近10条中位播",
+           "合作视频", "商品链接"]
 
 if not visible:
     st.markdown(T.empty_hint("当前筛选条件下没有网红"), unsafe_allow_html=True)
@@ -349,4 +421,6 @@ else:
 
 st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
 st.caption("📌 近10条数据 7 天自动缓存；「强刷近10条」可立即拉最新。"
-           "报价按 ₩1 = $1/1538 折算。")
+           "报价按 ₩1 = $1/1538 折算。CPM/ROI 与分析页同口径："
+           "ROI = 总GMV($) ÷ 报价($)，CPM = 报价($) ÷ 播放 × 1000，"
+           "鼠标悬停数字可看计算明细；🛍 按钮点击跳商品页，悬停看商品名+GMV。")
