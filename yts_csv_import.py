@@ -35,24 +35,26 @@ def _vid(url: str) -> str:
 # 解析两个原始 CSV
 # ---------------------------------------------------------------------------
 def parse_content_csv(data, wanted_ids=None):
-    """解析「热门内容」CSV → {videoId: {clicks, orders, gmv, title}}
+    """解析「热门内容 / 인기 페이지」CSV → {videoId: {clicks, orders, gmv, title}}
 
-    只保留 needed（系统已登记）的视频，21万行大文件也只挑出相关的几十行。
-    表头动态定位（前5行里找含「内容网址」的行）。
+    只保留 wanted_ids（系统已登记）的视频，24万行大文件也只挑出相关的几十行。
+    表头动态定位，兼容中文/韩文表头（韩文映射由 PC.KR2ZH 提供，2026-09-02）。
     """
-    if isinstance(data, bytes):
-        text = data.decode("utf-8-sig", errors="replace")
-    else:
-        text = data
-    lines = text.splitlines()
-    header_idx = None
-    for i, l in enumerate(lines[:5]):
-        if "内容网址" in l:
-            header_idx = i
-            break
+    lines = PC._decode(data).splitlines()
+    header_idx, head = PC._find_header(lines, "content")
     if header_idx is None:
         return {}
-    reader = csv.DictReader(io.StringIO("\n".join(lines[header_idx:])))
+    have = {PC.CANON_FIELDS[h] for h in head if h in PC.CANON_FIELDS}
+
+    def _opt(row, col):
+        """列存在→取数值；列不存在→None（不污染成0）。
+        col 传规范中文列名，内部转成字段名再与 have 比对。"""
+        if PC.CANON_FIELDS.get(col) not in have:
+            return None
+        return PC._f(row.get(col))
+
+    reader = csv.DictReader(io.StringIO("\n".join(
+        PC._rewrite_header(lines, header_idx))))
     out = {}
     for row in reader:
         vid = _vid(row.get("内容网址") or "")
@@ -61,9 +63,9 @@ def parse_content_csv(data, wanted_ids=None):
         if wanted_ids is not None and vid not in wanted_ids:
             continue
         out[vid] = {
-            "clicks": PC._f(row.get("点击次数")),
-            "orders": PC._f(row.get("订单数")),
-            "gmv": PC._f(row.get("销售总额")),
+            "clicks": _opt(row, "点击次数"),
+            "orders": _opt(row, "订单数"),
+            "gmv": _opt(row, "销售总额"),
             "title": (row.get("内容标题") or "").strip()[:60],
         }
     return out
@@ -112,6 +114,13 @@ def run_direct_import(content_bytes, product_bytes, closed_recs, store,
     has_api_key = bool(YT.get_key())
     content_provided = content_bytes is not None
     product_provided = product_bytes is not None
+    # 探测报表实际给了哪些列（韩文/中文都兼容），缺列时页面会提示用户
+    _PROD_COL_LABELS = (("展示次数", "impressions"), ("点击次数", "clicks"),
+                        ("视频观看次数", "video_views"), ("转化率", "cvr"))
+    prod_cols = (PC.detect_product_columns(product_bytes)
+                 if product_provided else set())
+    prod_missing = [label for label, field in _PROD_COL_LABELS
+                    if field not in prod_cols] if product_provided else []
     report = {
         "api_ok": 0, "api_fail": [],
         "video_matched": 0, "video_unmatched": [],
@@ -120,6 +129,10 @@ def run_direct_import(content_bytes, product_bytes, closed_recs, store,
         "has_api_key": has_api_key,
         "content_provided": content_provided,
         "product_provided": product_provided,
+        "prod_cols": prod_cols,
+        "prod_missing": prod_missing,
+        "product_rows": len(product_map),
+        "content_rows": len(content_map),
     }
 
     total = len(closed_recs)
@@ -151,9 +164,11 @@ def run_direct_import(content_bytes, product_bytes, closed_recs, store,
             # ② 热门内容CSV 匹配 点击/订单/GMV（整行真实数据，不均摊）
             hit = content_map.get(vid) if vid else None
             if hit:
-                v["clicks"] = round(hit["clicks"], 2)
-                v["orders"] = round(hit["orders"], 2)
-                v["gmv"] = round(hit["gmv"], 2)
+                # 报表缺列时值为 None → 保留宜搭原有值，不用 None/0 覆盖
+                for k, col in (("clicks", "clicks"), ("orders", "orders"),
+                               ("gmv", "gmv")):
+                    if hit.get(col) is not None:
+                        v[k] = round(hit[col], 2)
                 # ③ CPM = 报价($) ÷ 播放(API) × 1000（播放为0记0）
                 views = int(v.get("views") or 0)
                 v["cpm"] = round(price_usd / views * 1000, 2) \
@@ -170,9 +185,11 @@ def run_direct_import(content_bytes, product_bytes, closed_recs, store,
         # ---------------- 商品维度 ----------------
         new_products = []
         seen_pids = set()
-        # 保留已有的商品类目（手动维护的字段，导入不覆盖成空）
-        existing_cat = {str(p.get("pid") or ""): p.get("p_category") or ""
-                        for p in r.get("products") or []}
+        # 保留宜搭已有整行（类目等手动字段 + 报表本次缺列的指标）
+        # 2026-09-02：「최다 판매 제품」只有6列，无 展示/点击/视频观看/转化率，
+        # 若直接写0会把这些指标的历史真实值全部刷没，故缺列时沿用旧值。
+        existing = {str(p.get("pid") or ""): dict(p)
+                    for p in r.get("products") or []}
         for item in r.get("product_list") or []:
             pid = PC._norm_pid(item)
             if not pid or pid in seen_pids:
@@ -183,21 +200,28 @@ def run_direct_import(content_bytes, product_bytes, closed_recs, store,
                 if product_provided:
                     report["prod_unmatched"].append((r["name"], pid))
                 continue
-            imp = d["impressions"]
-            clicks = d["clicks"]
-            vv = d["video_views"]
-            od = d["orders"]
+            old = existing.get(pid) or {}
+
+            def _keep(field, dec=2):
+                """CSV给了新值→用新值；CSV缺列(None)→沿用旧值；都没有→0"""
+                nv = d.get(field)
+                if nv is not None:
+                    return round(nv, dec) if dec else int(nv)
+                return old.get(field, 0) or 0
+
             new_products.append({
-                "pid": pid, "name": d["name"],
-                "p_category": existing_cat.get(pid, ""),
+                "pid": pid, "name": d["name"] or old.get("name", ""),
+                "p_category": old.get("p_category", ""),
                 "gmv": round(d["gmv"], 2),
                 "net_sales": round(d["net_sales"], 2),
                 "commission": round(d["commission"], 2),
-                "video_views": int(vv), "impressions": int(imp),
-                "clicks": int(clicks), "orders": int(od),
-                "cvr": round(d["cvr"], 4),
-                "ctr": round(clicks / imp * 100, 2) if imp else 0.0,
-                "video_cvr": round(od / vv * 100, 2) if vv else 0.0,
+                "video_views": _keep("video_views", 0),
+                "impressions": _keep("impressions", 0),
+                "clicks": _keep("clicks", 0),
+                "orders": _keep("orders", 0),
+                "cvr": _keep("cvr", 4),
+                "ctr": _keep("ctr"),
+                "video_cvr": _keep("video_cvr"),
             })
             report["prod_matched"] += 1
 

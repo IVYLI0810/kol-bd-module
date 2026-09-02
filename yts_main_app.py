@@ -2523,6 +2523,14 @@ def page_analysis():
             if not rep.get("has_api_key"):
                 st.warning("未配置 YOUTUBE_API_KEY：本次未抓取播放/点赞/评论，"
                            "仅导入了CSV数据。请到 Secrets 配置后重新导入。")
+            _miss_cols = rep.get("prod_missing") or []
+            if _miss_cols:
+                st.error(
+                    f"⚠️ 本次上传的商品报表缺少 {'、'.join(_miss_cols)} "
+                    f"列（可能是「최다 판매 제품 / 销量最高产品」这类精简报表）。\n\n"
+                    f"为防止把这些指标的历史真实值刷成 0，**缺列的指标已保留原值未改动**。"
+                    f"如需更新它们，请改导出「**表现最好的链接商品**」报表"
+                    f"（含 12 列：视频观看次数/展示次数/点击次数/转化率 等）后重新导入。")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("API抓取成功", f"{rep['api_ok']} 条视频")
             c2.metric("视频匹配成功", f"{rep['video_matched']} 条")
