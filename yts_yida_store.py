@@ -541,8 +541,8 @@ class YTSStore:
 
         新增：补基础信息并标记已发邮件；
         已存在：补空标记 + 粉丝量以挖掘站最新值覆盖、双垂类以挖掘站最新值
-        全覆盖（内容垂类/带货垂类，库里有值就对齐）、邮箱仅空缺时补，
-        已有进度一律不动。
+        全覆盖（内容垂类/带货垂类，库里有值就对齐）、挖掘人以挖掘站
+        discovered_by 为准覆盖对齐、邮箱仅空缺时补，其余进度一律不动。
         """
         rows = R.fetch_emailed_channels(force=force)
         by_cid = {}
@@ -594,6 +594,14 @@ class YTSStore:
                     if not (cur.get("email") or "").strip() \
                             and (x.get("emails") or "").strip():
                         patch["email"] = x["emails"].strip()
+                    # 挖掘人以挖掘站为准：finder 改了认领人，这里覆盖对齐
+                    new_rec = (x.get("discovered_by") or "").strip()
+                    cur_rec = (cur.get("recruiter") or "").strip()
+                    if new_rec and new_rec != cur_rec:
+                        same_person = bool(cur_rec) \
+                            and R.match_name(new_rec, [cur_rec]) == cur_rec
+                        if not same_person:
+                            patch["recruiter"] = new_rec
                     if not patch:
                         continue
                     inst = cur.get("form_instance_id") or ""
@@ -615,8 +623,9 @@ class YTSStore:
                         limit: int = 0) -> dict:
         """全量同步挖掘站基础信息：粉丝量以挖掘站最新值覆盖更新
         （挖掘站>0 且与宜搭不同就写，保持新鲜）；双垂类以挖掘站为准
-        全覆盖（库里有值就对齐，新版口径唯一来源）；频道名/邮箱
-        属人工维护字段，仅空缺时补，已有值一律不动；进度类字段一律不动。
+        全覆盖（库里有值就对齐，新版口径唯一来源）；挖掘人以挖掘站
+        discovered_by 为准覆盖对齐（finder 是认领人唯一来源）；频道名/邮箱
+        属人工维护字段，仅空缺时补，已有值一律不动；其余进度类字段一律不动。
         limit>0 时本轮最多写 limit 条（自动同步限速；按钮全量传 0）。"""
         rows = R.fetch_all_channels(force=force)
         if not rows:
@@ -657,6 +666,15 @@ class YTSStore:
             if not (rec.get("email") or "").strip() \
                     and (m.get("emails") or "").strip():
                 patch["email"] = m["emails"].strip()
+            # 挖掘人以挖掘站为准：finder 改了认领人，这里覆盖对齐
+            # （同一人不同写法用 match_name 判等，避免无谓写入）
+            new_rec = (m.get("discovered_by") or "").strip()
+            cur_rec = (rec.get("recruiter") or "").strip()
+            if new_rec and new_rec != cur_rec:
+                same_person = bool(cur_rec) \
+                    and R.match_name(new_rec, [cur_rec]) == cur_rec
+                if not same_person:
+                    patch["recruiter"] = new_rec
             if not patch:
                 continue
             if limit and updated >= limit:
