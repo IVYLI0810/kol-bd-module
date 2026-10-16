@@ -387,6 +387,7 @@ def page_dig():
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
         if st.button("🔄 同步挖掘站", key="btn_sync_dig", use_container_width=True,
                      help="把挖掘站基础信息刷进宜搭；粉丝量以挖掘站最新值覆盖更新，"
+                          "挖掘人以挖掘站认领人为准覆盖对齐，"
                           "邮箱仅空缺时补齐，不覆盖已有值"):
             st.session_state["dig_sync_ts"] = 0
             st.session_state["dig_force"] = True
