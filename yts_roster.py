@@ -88,7 +88,8 @@ def fetch_all_channels(force: bool = False) -> list:
         while True:
             r = requests.get(f"{SUPABASE_URL}/rest/v1/influencers",
                              params={"select": "channel_id,channel_name,channel_url,"
-                                               "category,content_category,subscribers,emails",
+                                               "category,content_category,subscribers,"
+                                               "discovered_by,emails",
                                      "offset": off, "limit": 500},
                              headers={"apikey": SUPABASE_KEY,
                                       "Authorization": f"Bearer {SUPABASE_KEY}"},
