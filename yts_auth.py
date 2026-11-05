@@ -1,10 +1,3 @@
-
-
-yts_auth.py
-· 文本
-
-
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """YTS 网站统一访问密码门（2026-08-26 修复：一次登录全站有效）
