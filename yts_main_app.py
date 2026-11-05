@@ -283,6 +283,12 @@ def flow_import_panel():
             if auto_m:
                 st.warning(f"「{rec['channel_name']}」没填归属月份，已按进度自动补为"
                            f"「{auto_m}」以便流入履约；月份不对可到履约详情里改")
+            # 填了归属月份但除月份外无任何实际进度 → 视为仍在洽谈，没据此升级履约中
+            drop_m = rec.pop("_plan_dropped", "")
+            if drop_m:
+                st.info(f"「{rec['channel_name']}」填了归属月份「{drop_m}」，但还没有"
+                        "Guideline/合同/下单/拍摄/上传等实际进度，已按「洽谈中」导入"
+                        "（不会误进履约中）；确认合作后到详情页填归属月份即可升级")
             # 一个单元格多条链接 → 已拆成多条视频行
             split_n = rec.pop("_split_n", 0)
             if split_n:
@@ -914,19 +920,32 @@ def page_activity():
             cols = st.columns(3)
             for col, m in zip(cols, months[i:i + 3]):
                 rows = [x for x in open_fuls if x["plan_month"] == m]
-                html = T.month_tag(m)
+                cards_html = ""
                 for ci, c in enumerate(rows):
                     # nav_index=ci → 卡片走 #detail=<列内序号>，由本 iframe 后的隐藏
                     # 按钮完成会话内跳转，不再整页刷新
-                    html += T.name_card(c, _current_node(c), nav_index=ci)
+                    cards_html += T.name_card(c, _current_node(c), nav_index=ci)
                 cids = [c["collab_id"] for c in rows]
                 # 卡片固定 64px 高 + 上下 margin 16px = 80px/卡；
-                # 月份标签约 32px；公式贴合实际，避免底部积空白
-                full = 36 + len(rows) * 80
+                # 月份标签约 36px；公式贴合实际，避免底部积空白
+                _cap = 520
+                card_area = min(len(rows) * 80, _cap)
+                full = 36 + card_area
                 with col:
-                    # 卡片少的月份按内容撑开；多的封顶 520px，内部滚动不裁剪
-                    # grow=False：卡片墙故意限高滚动，不参与自动撑高
-                    T.component_html(html, height=min(full, 520), grow=False)
+                    # 卡片多的月份：给卡片区套一个「固定高 + 内部滚动」的容器 div。
+                    # 之前靠 iframe body 自身 overflow-y:auto 滚动，线上滚不动；
+                    # 改成显式滚动盒，独立于 iframe scrolling 属性能正常滚动。
+                    box_css = ('<style>.yts-scroll{max-height:' + str(_cap)
+                               + 'px;overflow-y:auto;overflow-x:hidden;'
+                               'scrollbar-width:thin;scrollbar-color:#d9a7b8 #f6eef1;}'
+                               '.yts-scroll::-webkit-scrollbar{width:10px;}'
+                               '.yts-scroll::-webkit-scrollbar-thumb{background:#d9a7b8;'
+                               'border-radius:6px;border:2px solid #f6eef1;}'
+                               '.yts-scroll::-webkit-scrollbar-track{background:#f6eef1;}}</style>')
+                    body = (T.month_tag(m) + '<div class="yts-scroll">'
+                            + cards_html + '</div>')
+                    T.component_html(box_css + body,
+                                     height=full + 10, grow=False)
                     # 隐藏点击靶：数量/顺序须与本列 iframe 内 #detail 链接一致
                     _detail_targets(cids, "activity", f"actdet_{i}_{m}_")
 
