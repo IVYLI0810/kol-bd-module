@@ -107,15 +107,13 @@ def page_home():
                          center=True),
                 unsafe_allow_html=True)
     pool = store.list_pool()
-    negs = store.list_negotiating()
-    fuls = store.list_fulfilling()
-    closed = [c for c in fuls if c["is_closed"]]
     pending = store.list_pending_reviews()
+    _sc = store.count_stages()
     st.markdown(T.stats_row([
         ("挖掘池", len(pool), "c-pink"),
-        ("洽谈中", len(negs), "c-amber"),
-        ("履约中", len(fuls) - len(closed), "c-purple"),
-        ("已闭环", len(closed), "c-green"),
+        ("洽谈中", _sc["洽谈中"], "c-amber"),
+        ("履约中", _sc["履约中"], "c-purple"),
+        ("已闭环", _sc["已闭环"], "c-green"),
     ]), unsafe_allow_html=True)
 
     entries = [
