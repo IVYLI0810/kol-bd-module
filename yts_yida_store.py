@@ -1276,6 +1276,52 @@ class YTSStore:
                 continue
         return n
 
+    # ---------------- B：误判履约 → 洽谈 一键退回（迁移） ----------------
+    def demote_preview(self):
+        """列出被误判「履约中」的记录：填了归属月份、已升履约，但除月份外
+        无任何实际履约动作（Guideline/合同/GMC/下单收货/拍摄/视频/审核/产出数据），
+        且未闭环。这类多半是团队把「归属月份」当固定列整列预填导致。
+        返回 (safe, conflict)：
+          safe —— 可安全退回（清月份+置洽谈中，该行变该频道唯一裸记录）
+          conflict —— 同频道已存在「无月份」裸记录，清月份会撞身份 → 跳过并提示
+        与主站导入逻辑共用 yts_import_flow.has_fulfillment 同一把尺子。"""
+        from yts_import_flow import has_fulfillment
+        rows = list(self._all())
+        bare_cids = {r.get("channel_id") for r in rows
+                     if not str(r.get("plan_month") or "").strip()}
+        safe, conflict = [], []
+        for r in rows:
+            pm = str(r.get("plan_month") or "").strip()
+            if not pm or (r.get("stage") or "") == "已完成" \
+                    or has_fulfillment(r):
+                continue
+            item = {"collab_id": _ident(r),
+                    "channel_id": r.get("channel_id") or "",
+                    "form_instance_id": r.get("form_instance_id") or "",
+                    "name": r.get("channel_name") or r.get("channel_id") or "?",
+                    "plan_month": pm}
+            (conflict if r.get("channel_id") in bare_cids else safe).append(item)
+        return safe, conflict
+
+    def demote_false_fulfilling(self):
+        """执行退回：对 safe 候选逐条清掉归属月份 + 状态置「洽谈中」
+        （单条 update_instance，按 form_instance_id 精确写，不碰同频道其他月份行）。
+        身份冲突项(conflict)跳过。返回 (退回条数, 可退回总数)。"""
+        safe, _ = self.demote_preview()
+        n = 0
+        for it in safe:
+            fid = it["form_instance_id"]
+            if not fid:
+                continue
+            try:
+                self.db.update_instance(fid, {"stage": "洽谈中"},
+                                        clear_fields=["plan_month"])
+                n += 1
+            except Exception:
+                continue
+        self._invalidate()
+        return n, len(safe)
+
     # 步骤回退：把对应字段写回"未完成"值（均为宜搭表单已有选项或清空）
     STEP_UNDO = {
         0: lambda: ({"plan_month": ""}, ["plan_month"]),          # 确认合作
