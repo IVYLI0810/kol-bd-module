@@ -461,27 +461,37 @@ class YTSStore:
         self._upd(inf_id, {"stage": "已发邮件"})
 
     def sync_yt_subscribers(self, ids: list) -> int:
-        """补频道粉丝数：对给定记录逐个抓 YouTube 主页数据（缓存7天），
-        粉丝数>0 时写回宜搭。返回成功条数。未配 key/抓取失败跳过。
-        粉丝数是频道级数据：同一频道多个月份行一起更新。"""
+        """补频道粉丝数：对给定记录逐个抓 YouTube 真实粉丝数写回宜搭。
+        未配 key/抓取失败跳过。粉丝数是频道级数据：同一频道多个月份行一起更新。
+        - 真实UC id：走 channels.list（fetch_stats，缓存7天）。
+        - 占位ID（导入时云端没反查到UC，如 HDL_ 开头）：按频道链接里的 @handle
+          用 API 的 forHandle 反查真实粉丝数（fetch_stats_by_handle），
+          这样用你接入的 key 也能补齐这类记录。"""
         import yts_yt_stats as YT
         if not YT.get_key():
             return 0
+        rows = self._all()
         n = 0
         seen = set()
         for ident in ids:
             cid = _split(ident)[0]
-            if not str(cid).startswith("UC") or cid in seen:
+            if not cid or cid in seen:
                 continue
             seen.add(cid)
-            stats = YT.fetch_stats(cid)
-            if not stats:
-                continue
-            sub = int(stats.get("subscribers") or 0)
+            sub = 0
+            if str(cid).startswith("UC"):
+                sub = int((YT.fetch_stats(cid) or {}).get("subscribers") or 0)
+            else:
+                # 占位ID：用频道链接的 @handle 反查
+                url = next((r.get("channel_url") for r in rows
+                            if r.get("channel_id") == cid), "")
+                handle = YT.handle_from_url(url) or YT.handle_from_url(cid)
+                if handle:
+                    sub = int((YT.fetch_stats_by_handle(handle)
+                               or {}).get("subscribers") or 0)
             if sub <= 0:
                 continue
-            # 该频道的所有月份行都更新
-            for r in self._all():
+            for r in rows:
                 if r.get("channel_id") == cid:
                     self._patch(_ident(r), {"subscribers": sub})
                     self.db.update(cid, {"subscribers": sub},
