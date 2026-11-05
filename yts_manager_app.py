@@ -189,6 +189,39 @@ def _product_links(c) -> list:
     return res
 
 
+def recruiter_overview_rows(rows) -> list:
+    """组员维度概览：每位组员一行——总数 / 各阶段 / 逾期 / 平均CPM·ROI。
+    逾期 = 履约中且已过提交截止日仍未闭环。CPM/ROI 只对有数据的行取均值。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    agg = {}
+    for r in rows:
+        c = r["c"]
+        g = (c.get("recruiter") or "").strip() or "（未分配）"
+        a = agg.setdefault(g, {
+            "g": g, "total": 0, "已发邮件": 0, "洽谈中": 0,
+            "履约中": 0, "已闭环": 0, "逾期": 0, "_cpm": [], "_roi": []})
+        a["total"] += 1
+        st_ = r["stage"]
+        if st_ in a:
+            a[st_] += 1
+        if st_ == "履约中":
+            dl = str(c.get("submit_deadline") or "")[:10]
+            if dl and dl < today and not c.get("is_closed"):
+                a["逾期"] += 1
+        m = _kol_metrics(c)
+        if m["cpm"]:
+            a["_cpm"].append(m["cpm"])
+        if m["roi"]:
+            a["_roi"].append(m["roi"])
+    out = []
+    for a in agg.values():
+        a["avg_cpm"] = round(sum(a["_cpm"]) / len(a["_cpm"]), 2) if a["_cpm"] else 0
+        a["avg_roi"] = round(sum(a["_roi"]) / len(a["_roi"]), 2) if a["_roi"] else 0
+        out.append(a)
+    out.sort(key=lambda x: -x["total"])
+    return out
+
+
 # ============================ 数据装载 ============================
 def _norm_pool(c) -> dict:
     """挖掘池卡片 → 与履约记录同构的字段名（channel_id/channel_url/...）"""
@@ -289,6 +322,35 @@ st.markdown(T.stats_row([
     ("✅ 已闭环", stage_cnt["已闭环"], "c-green"),
 ]), unsafe_allow_html=True)
 
+# 组员概览（管理每个人）
+st.markdown(T.sub("👥 组员概览"), unsafe_allow_html=True)
+_ov = recruiter_overview_rows(rows)
+if not _ov:
+    st.markdown(T.empty_hint("暂无组员数据"), unsafe_allow_html=True)
+else:
+    _ov_head = ["组员", "总数", "已发邮件", "洽谈中", "履约中", "已闭环",
+                "⚠️ 逾期", "均CPM($)", "均ROI"]
+    _ov_cells = []
+    for a in _ov:
+        over = a["逾期"]
+        over_cell = (f'<span class="num" style="color:#c0392b;font-weight:700">{over}</span>'
+                     if over else '<span class="num" style="color:#c7c7cc">0</span>')
+        _ov_cells.append([
+            f"<b>{esc(a['g'])}</b>",
+            f"<span class='num'>{a['total']}</span>",
+            f"<span class='num'>{a['已发邮件']}</span>",
+            f"<span class='num'>{a['洽谈中']}</span>",
+            f"<span class='num'>{a['履约中']}</span>",
+            f"<span class='num'>{a['已闭环']}</span>",
+            over_cell,
+            f"<span class='num'>{a['avg_cpm']:.2f}</span>" if a["avg_cpm"]
+            else "<span class='num' style='color:#c7c7cc'>-</span>",
+            f"<span class='num'>{a['avg_roi']:.2f}</span>" if a["avg_roi"]
+            else "<span class='num' style='color:#c7c7cc'>-</span>",
+        ])
+    T.component_html(T.table(_ov_head, _ov_cells, wrap=False),
+                     height=96 + len(_ov) * 44, grow=False)
+
 # ============================ 近10条：自动补抓 ============================
 visible = rows
 if stage_filter != "全部":
@@ -333,15 +395,23 @@ def _row_cells(r) -> list:
     home = c.get("channel_url") or (f"https://www.youtube.com/channel/{cid}"
                                     if cid else "")
     name = esc(c.get("name") or cid or "-")
-    # 头像（近10条抓取时顺带拿到）
+    # 头像（近10条抓取时顺带拿到）；缩略图被墙/拉不到时用名字首字彩色圆兜底
     rec10 = REC10_CACHE.get(cid) or {}
     avatar = rec10.get("avatar") or c.get("avatar") or ""
-    av_html = (f'<img src="{esc(avatar)}" style="width:30px;height:30px;'
-               f'border-radius:50%;vertical-align:middle;margin-right:8px">'
-               if avatar else
-               '<span style="display:inline-block;width:30px;height:30px;'
-               'border-radius:50%;background:#e8e8ed;vertical-align:middle;'
-               'margin-right:8px"></span>')
+    raw_name = (c.get("name") or cid or "?").strip()
+    letter = esc(raw_name[0]) if raw_name else "?"
+    _pal = ["#d98cab", "#c2507a", "#7a5fd0", "#3f9ec9",
+            "#1a7f4b", "#c98a3f", "#8a6db5", "#b56d8a"]
+    _col = _pal[sum(ord(ch) for ch in raw_name) % len(_pal)]
+    av_html = (
+        f'<span style="position:relative;display:inline-flex;align-items:center;'
+        f'justify-content:center;width:30px;height:30px;border-radius:50%;'
+        f'vertical-align:middle;margin-right:8px;background:{_col};color:#fff;'
+        f'font-weight:700;font-size:14px;overflow:hidden">{letter}'
+        + (f'<img src="{esc(avatar)}" onerror="this.remove()" '
+           f'style="position:absolute;inset:0;width:30px;height:30px;'
+           f'border-radius:50%;object-fit:cover">' if avatar else '')
+        + '</span>')
     name_cell = (f'<a href="{esc(home)}" target="_blank" '
                  f'style="text-decoration:none;color:inherit">{av_html}'
                  f'<b>{name}</b></a>' if home else f"{av_html}<b>{name}</b>")
@@ -522,8 +592,10 @@ else:
                 ops_cell = '<span style="color:#c7c7cc">-</span>'
             rc.append(ops_cell)
             cells.append(rc)
-        T.component_html(T.table(HEADERS_OPS, cells, wrap=False),
-                         height=72 + len(grp) * 46)
+        _sticky = ('<style>.yts-table th{position:sticky;top:0;z-index:3;'
+                   'background:#fff;box-shadow:0 1px 0 #f0e4e8}</style>')
+        T.component_html(_sticky + T.table(HEADERS_OPS, cells, wrap=False),
+                         height=min(96 + len(grp) * 66, 560), grow=False)
         _op_targets(entries, gi)
 
 st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
