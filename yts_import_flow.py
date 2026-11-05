@@ -126,6 +126,30 @@ def yn(v) -> bool:
     return str(v or "").strip().lower() in ("y", "yes", "是", "1", "true", "✅")
 
 
+# ---- 「实际履约进度」判定：A(导入) 与 B(管理站退回迁移) 共用同一把尺子 ----
+# 光填了「归属月份」不代表已确认合作——团队进度表常把归属月份当固定列整列预填。
+# 必须有归属月份之外的实际动作（发Guideline/签合同/GMC/下单收货/拍摄/上传视频/
+# 送审/已产出播放成交GMV数据）才算履约中，否则仍视为洽谈中。
+_FULFILL_KEYS = ("guideline_status", "contract_status", "gmc_status",
+                 "order_status", "shoot_status", "video_link",
+                 "audit_status", "recheck_video_url")
+_FULFILL_NUMS = ("video_views", "video_likes", "video_comments",
+                 "product_views", "orders", "gmv")
+
+
+def has_fulfillment(rec: dict) -> bool:
+    """记录里是否存在「归属月份」之外的实际履约动作。"""
+    if any(str(rec.get(k) or "").strip() for k in _FULFILL_KEYS):
+        return True
+    for k in _FULFILL_NUMS:
+        try:
+            if rec.get(k) and float(rec[k]) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
 # 系统只认两种拍摄状态：拍摄中 / 已完成。
 # 团队进度表里常见写法的对照（含「待上传」这类=拍摄已完成、等传视频）
 _SHOOT_DONE = ("已完成", "完成", "拍摄完成", "拍完", "待上传", "已上传",
@@ -456,10 +480,15 @@ def derive_record(raw: dict, channel_id: str) -> dict:
             else f"{NOW_YEAR}-{datetime.now().month:02d}"
         rec["plan_month"] = auto
         rec["_plan_auto"] = auto
+    # A（治本）：归属月份填了，但除月份外没有任何实际履约动作、也没闭环 →
+    # 团队常把归属月份当固定列整列预填，此时不能据此升级履约中。清掉月份，
+    # 让它按「洽谈中(Y)」留在洽谈栏；记 _plan_dropped 供导入预览提示核对。
+    if rec.get("plan_month") and not closed_flag and not has_fulfillment(rec):
+        rec["_plan_dropped"] = rec.pop("plan_month")
     if closed_flag:
         rec["stage"] = "已完成"
     elif rec.get("plan_month"):
         rec["stage"] = "已确认"
     if raw.get("notes"):
-        rec["notes"] = str(raw["notes"]).strip()
+        rec["notes"] = str(raw.get("notes")).strip()
     return rec
