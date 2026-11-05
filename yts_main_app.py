@@ -65,8 +65,43 @@ def home_btn():
         go("home")
 
 
+# ---- 会话内跳转详情：卡片/表格链接(#detail) 按下这里的隐藏原生按钮，不整页刷新 ----
+def _open_detail(cid, frm):
+    # 作为 on_click 回调运行：这里不要调用 st.rerun()（回调内为 no-op 且会告警），
+    # Streamlit 在回调结束后会自动 rerun，路由据此渲染详情页。
+    st.session_state["detail_from"] = frm
+    st.session_state["page"] = "detail"
+    st.session_state["collab_id"] = cid
+
+
+def _detail_targets(cids, frm, key_prefix):
+    """紧跟在某个 iframe 组件之后渲染 len(cids) 个隐藏原生按钮，顺序与该 iframe 内
+    的 #detail 链接一一对应；yts_theme 的 JS 会隐藏这些按钮，并在点卡片/表行时
+    「按下」对应按钮 → 会话内轻量 rerun 打开详情（不再整页刷新、不回顶、不重连）。"""
+    for i, cid in enumerate(cids):
+        st.button(f"·", key=f"{key_prefix}{i}",
+                  on_click=_open_detail, args=(cid, frm))
+
+
+# ---- 常驻顶部导航条：首页/挖掘/活动/分析 一点直达（会话内切换，不刷新） ----
+def render_nav():
+    cur = st.session_state.get("page", "home")
+    hi = "activity" if cur == "detail" else cur
+    pages = [("home", "🏠 首页"), ("dig", "🔍 挖掘"),
+             ("activity", "📋 活动"), ("analysis", "📊 分析")]
+    cols = st.columns([1, 1, 1, 1, 5])
+    for i, (pg, label) in enumerate(pages):
+        active = (pg == hi)
+        if cols[i].button(label, key=f"nav_{pg}",
+                          type="primary" if active else "secondary",
+                          use_container_width=True, disabled=active):
+            go(pg)
+    st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
+
+
 # ============================ 首页 ============================
 def page_home():
+    render_nav()
     st.markdown(T.header("YTS 全栈项目管理",
                          "网红全生命周期管理 · 挖掘 → 合作 → 履约 → 审核 → 数据",
                          center=True),
@@ -376,7 +411,7 @@ def _fix_zero_subscribers():
 
 
 def page_dig():
-    home_btn()
+    render_nav()
     h1, h2, h3 = st.columns([4, 1, 1])
     with h1:
         st.markdown(T.header("挖掘模块",
@@ -729,7 +764,7 @@ def _export_all_data():
 
 
 def page_activity():
-    home_btn()
+    render_nav()
     # 审核状态快速同步（写入就反馈）：审核站与主站是两个进程、缓存不通，
     # 这里每次打开活动模块就把「待审核/已驳回待复审」的记录逐条直查宜搭
     # （通常只有几条，1-2秒），审核站的驳回/通过几秒内即可见，无需手动刷新
@@ -880,9 +915,11 @@ def page_activity():
             for col, m in zip(cols, months[i:i + 3]):
                 rows = [x for x in open_fuls if x["plan_month"] == m]
                 html = T.month_tag(m)
-                for c in rows:
-                    html += T.name_card(c, _current_node(c),
-                                        nav_extra="&from=activity")
+                for ci, c in enumerate(rows):
+                    # nav_index=ci → 卡片走 #detail=<列内序号>，由本 iframe 后的隐藏
+                    # 按钮完成会话内跳转，不再整页刷新
+                    html += T.name_card(c, _current_node(c), nav_index=ci)
+                cids = [c["collab_id"] for c in rows]
                 # 卡片固定 64px 高 + 上下 margin 16px = 80px/卡；
                 # 月份标签约 32px；公式贴合实际，避免底部积空白
                 full = 36 + len(rows) * 80
@@ -890,6 +927,8 @@ def page_activity():
                     # 卡片少的月份按内容撑开；多的封顶 520px，内部滚动不裁剪
                     # grow=False：卡片墙故意限高滚动，不参与自动撑高
                     T.component_html(html, height=min(full, 520), grow=False)
+                    # 隐藏点击靶：数量/顺序须与本列 iframe 内 #detail 链接一致
+                    _detail_targets(cids, "activity", f"actdet_{i}_{m}_")
 
 
 # ============================ 履约详情 ============================
@@ -2082,8 +2121,8 @@ def _data_health(all_recs):
     ]
 
 
-def _health_name_link(r):
-    return (f'<a data-nav="?detail={quote(str(r["collab_id"]), safe="")}&from=analysis" '
+def _health_name_link(r, idx):
+    return (f'<a data-nav="#detail={idx}" '
             f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
             f'{esc(r["name"])}</a>'
             + (' <span class="closed-tag">已闭环</span>' if r.get("is_closed") else ""))
@@ -2105,7 +2144,7 @@ def _render_health(all_recs):
                                  "闭环视频/商品/数据都齐了"),
                     unsafe_allow_html=True)
         return
-    for c in checks:
+    for chk, c in enumerate(checks):
         rows, st_fn = c["rows"], c["status"]
         head = f'{c["icon"]} {c["title"]}（{len(rows)} 人）'
         st.markdown(T.sub(head), unsafe_allow_html=True)
@@ -2114,11 +2153,12 @@ def _render_health(all_recs):
                         unsafe_allow_html=True)
             continue
         st.caption(f'{c["hint"]} · 建议：{c["fix"]}')
-        trows = []
-        for r in sorted(rows, key=lambda x: (x.get("plan_month") or "",
-                                             x.get("name") or "")):
+        trows, h_cids = [], []
+        for idx, r in enumerate(sorted(rows, key=lambda x: (x.get("plan_month") or "",
+                                                            x.get("name") or ""))):
+            h_cids.append(r["collab_id"])
             trows.append([
-                _health_name_link(r),
+                _health_name_link(r, idx),
                 esc(r.get("recruiter") or "-"),
                 esc(r.get("plan_month") or "-"),
                 f'<span class="num">{esc(st_fn(r))}</span>',
@@ -2126,6 +2166,7 @@ def _render_health(all_recs):
         T.component_html(
             T.table(["网红", "负责人", "归属月份", "缺失项"], trows, wrap=False),
             height=72 + len(trows) * 36)
+        _detail_targets(h_cids, "analysis", f"hth_{chk}_")
 
 
 def _export_analysis_bytes(kdim, vdim, pdim, month_sel):
@@ -2380,15 +2421,16 @@ def _dim_filter_bar(df, key, filters, search_cols, sort_cols):
     return out
 
 
-def _kol_link(cid, name):
-    """网红名 → 可点击跳转履约详情页的链接"""
-    return (f'<a data-nav="?detail={quote(str(cid), safe="")}&from=analysis" '
+def _kol_link(cid, name, idx):
+    """网红名 → 会话内跳转履约详情：#detail=<行内序号>，由表格 iframe 之后的隐藏
+    按钮按下完成跳转（不整页刷新）；cid 由对应隐藏按钮携带。"""
+    return (f'<a data-nav="#detail={idx}" '
             f'style="color:#d76a8c;font-weight:700;text-decoration:none">'
             f'{esc(name)}</a>')
 
 
 def page_analysis():
-    home_btn()
+    render_nav()
     st.markdown(T.header("分析模块", "数据看板（声量×GMV 四象限）+ 全量数据 + 商品维度 + 数据健康"),
                 unsafe_allow_html=True)
     recs = [r for r in store.list_all() if r.get("plan_month") or r.get("is_closed")]
@@ -2641,27 +2683,30 @@ def page_analysis():
                                    ("带货类目", "带货类目"), ("挖掘人", "挖掘人")],
                                   ["网红"],
                                   ["总GMV($)", "总播放", "ROI", "总订单", "报价($)"])
-            krows = [[_kol_link(r["_cid"], r["网红"]),
-                      esc(r["挖掘人"] or "-"), esc(r["月份"] or "-"),
-                      esc(r["内容垂类"] or "-"), esc(r["带货类目"] or "-"),
-                      f'<span class="num">{r["视频数"]}</span>',
-                      f'<span class="num">{r["商品数"]}</span>',
-                      f'<span class="num">{r["总播放"]:,}</span>',
-                      f'<span class="num">{r["总点赞"]:,}</span>',
-                      f'<span class="num">{r["互动率(%)"]:.2f}%</span>',
-                      f'<span class="num">{r["总点击"]:,}</span>',
-                      f'<span class="num">{r["总订单"]:,}</span>',
-                      f'<span class="num"><b>{r["总GMV($)"]:,.0f}</b></span>',
-                      f'<span class="num">{r["总佣金($)"]:,.0f}</span>',
-                      f'<span class="num">{r["报价($)"]:,.0f}</span>',
-                      f'<span class="num"><b>{r["ROI"]:.2f}</b></span>']
-                     for _, r in fdf.iterrows()]
+            krows, k_cids = [], []
+            for idx, (_, r) in enumerate(fdf.iterrows()):
+                k_cids.append(r["_cid"])
+                krows.append([_kol_link(r["_cid"], r["网红"], idx),
+                              esc(r["挖掘人"] or "-"), esc(r["月份"] or "-"),
+                              esc(r["内容垂类"] or "-"), esc(r["带货类目"] or "-"),
+                              f'<span class="num">{r["视频数"]}</span>',
+                              f'<span class="num">{r["商品数"]}</span>',
+                              f'<span class="num">{r["总播放"]:,}</span>',
+                              f'<span class="num">{r["总点赞"]:,}</span>',
+                              f'<span class="num">{r["互动率(%)"]:.2f}%</span>',
+                              f'<span class="num">{r["总点击"]:,}</span>',
+                              f'<span class="num">{r["总订单"]:,}</span>',
+                              f'<span class="num"><b>{r["总GMV($)"]:,.0f}</b></span>',
+                              f'<span class="num">{r["总佣金($)"]:,.0f}</span>',
+                              f'<span class="num">{r["报价($)"]:,.0f}</span>',
+                              f'<span class="num"><b>{r["ROI"]:.2f}</b></span>'])
             T.component_html(
                 T.table(["网红", "挖掘人", "月份", "内容垂类", "带货类目",
                          "视频数", "商品数", "总播放", "总点赞", "互动率(%)",
                          "总点击", "总订单", "总GMV($)", "总佣金($)",
                          "报价($)", "ROI"], krows, wrap=False),
                 height=72 + len(krows) * 36)
+            _detail_targets(k_cids, "analysis", "kd_dim_")
             st.markdown(T.foot(f"报价($) = 韩币报价 ÷ 汇率{_usd_rate():,.0f} · "
                                "金额为美元($) · 网红维度 = 名下视频数据聚合"
                                "（播放/点击/订单/GMV 均为视频加总）· "
@@ -2689,29 +2734,32 @@ def page_analysis():
                                    ("能否二次利用", "能否二次利用")],
                                   ["网红"],
                                   ["GMV($)", "播放", "订单", "CPM($/千次)"])
-            vrows = [[_kol_link(r["_cid"], r["网红"]),
-                      esc(r["月份"] or "-"),
-                      T.badge(r["视频类型"]),
-                      (f'<a class="yts-link" href="{esc(r["视频链接"])}" '
-                       f'target="_blank">视频↗</a>') if r["视频链接"] else "-",
-                      f'<span class="num">{r["挂品数"]}</span>',
-                      f'<span class="num">{r["播放"]:,}</span>',
-                      f'<span class="num">{r["点赞"]:,}</span>',
-                      f'<span class="num">{r["评论"]:,}</span>',
-                      f'<span class="num">{r["点击"]:,.1f}</span>',
-                      f'<span class="num">{r["订单"]:,.1f}</span>',
-                      f'<span class="num"><b>{r["GMV($)"]:,.0f}</b></span>',
-                      f'<span class="num">{r["视频转化率(%)"]:.2f}%</span>',
-                      f'<span class="num">{r["报价($)"]:,.0f}</span>',
-                      f'<span class="num">{r["CPM($/千次)"]:.2f}</span>',
-                      esc(r["能否二次利用"] or "-")]
-                     for _, r in fdf.iterrows()]
+            vrows, v_cids = [], []
+            for idx, (_, r) in enumerate(fdf.iterrows()):
+                v_cids.append(r["_cid"])
+                vrows.append([_kol_link(r["_cid"], r["网红"], idx),
+                              esc(r["月份"] or "-"),
+                              T.badge(r["视频类型"]),
+                              (f'<a class="yts-link" href="{esc(r["视频链接"])}" '
+                               f'target="_blank">视频↗</a>') if r["视频链接"] else "-",
+                              f'<span class="num">{r["挂品数"]}</span>',
+                              f'<span class="num">{r["播放"]:,}</span>',
+                              f'<span class="num">{r["点赞"]:,}</span>',
+                              f'<span class="num">{r["评论"]:,}</span>',
+                              f'<span class="num">{r["点击"]:,.1f}</span>',
+                              f'<span class="num">{r["订单"]:,.1f}</span>',
+                              f'<span class="num"><b>{r["GMV($)"]:,.0f}</b></span>',
+                              f'<span class="num">{r["视频转化率(%)"]:.2f}%</span>',
+                              f'<span class="num">{r["报价($)"]:,.0f}</span>',
+                              f'<span class="num">{r["CPM($/千次)"]:.2f}</span>',
+                              esc(r["能否二次利用"] or "-")])
             T.component_html(
                 T.table(["网红", "月份", "类型", "视频", "挂品数", "播放", "点赞",
                          "评论", "点击", "订单", "GMV($)", "视频转化率(%)",
                          "报价($)", "CPM($/千次)", "能否二次利用"], vrows,
                         wrap=False),
                 height=72 + len(vrows) * 36)
+            _detail_targets(v_cids, "analysis", "vd_dim_")
             st.markdown(T.foot("金额单位均为美元($) · 报价($) = 韩币报价 ÷ "
                                f"汇率{_usd_rate():,.0f} · "
                                "视频转化率(%) = 订单(CSV) ÷ 播放(API) × 100 · "
