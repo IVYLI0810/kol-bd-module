@@ -1,3 +1,10 @@
+
+
+yts_auth.py
+· 文本
+
+
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """YTS 网站统一访问密码门（2026-08-26 修复：一次登录全站有效）
@@ -17,12 +24,17 @@
   履约详情（整页跳转）、手动刷新、Streamlit 断连重连，都不用再输。
 - 未配置 SITE_PASSWORD：允许进入，但顶部显示醒目警告。
 
-实现（为什么以前要重复输密码）：
-旧版登录态只存在 st.session_state 里，而点进详情页是整页刷新
-（window.location.href 跳转），Streamlit 会话重建 → session_state 清空
-→ 又要输一遍。现在登录成功后把验证凭证写入浏览器 Cookie（整页刷新
-不丢），每次进入先从 Cookie 恢复登录态。
-Cookie 值 = 密码的 HMAC 签名（改密码后旧 Cookie 自动失效）。
+实现（为什么以前跳到详情页要重复输密码）：
+点进详情页是整页刷新（window.location.href 跳转），Streamlit 会话重建 →
+session_state 清空。旧版只把登录态写进浏览器 Cookie，而 Cloud 环境下
+components.html 在 sandbox iframe 里写 Cookie 经常不生效，于是整页刷新后
+Cookie 读不到 → 又弹一次密码框。现在登录凭证走「双通道」并存：
+  ① 浏览器 Cookie（同域刷新兜底）
+  ② URL 查询参数 k=<签名凭证>（整页跳转 100% 不丢——yts_theme 的跳转脚本
+     会合并保留现有 URL 参数，k 自然被带到每一页）
+每次进入依次校验：session → URL 参数 k → Cookie，任一命中即免密放行；
+任一命中后都会把凭证补写回 Cookie 与 URL，保证后续整页跳转都不再询问。
+凭证值 = 密码的 HMAC 签名（不存明文；改密码后旧的 Cookie 与 URL 参数自动失效）。
 """
 import hashlib
 import hmac
@@ -32,6 +44,7 @@ import streamlit as st
 
 COOKIE_NAME = "yts_auth"
 COOKIE_MAX_AGE = 30 * 24 * 3600  # 30 天
+AUTH_QUERY_KEY = "k"  # URL 查询参数名：整页跳转时携带登录凭证（最可靠的免密通道）
 
 
 def _get_password() -> str:
@@ -74,6 +87,24 @@ def _write_cookie(token: str) -> None:
     components.html(js, height=0)
 
 
+def _read_query_token() -> str:
+    """读取 URL 查询参数里携带的登录凭证（读不到返回 ''）"""
+    try:
+        return str(st.query_params.get(AUTH_QUERY_KEY, "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _put_auth_in_url(token: str) -> None:
+    """把登录凭证写进 URL 查询参数，整页跳转时由 yts_theme 的参数合并逻辑自动带到
+    每一页；值不变时 Streamlit 不会重复触发 rerun，安全幂等。"""
+    try:
+        if str(st.query_params.get(AUTH_QUERY_KEY, "")) != token:
+            st.query_params[AUTH_QUERY_KEY] = token
+    except Exception:
+        pass
+
+
 def require_auth():
     """统一密码门。输对密码前不渲染任何业务内容。"""
     pwd = _get_password()
@@ -90,13 +121,21 @@ def require_auth():
     if st.session_state.get("yts_authed") is True:
         return
 
-    # ② 会话没验证过、但浏览器 Cookie 里有有效凭证（整页刷新/重连后）
-    #    → 恢复登录态，免密放行
-    if _read_cookie_token() == token:
+    # ② URL 查询参数携带有效凭证（整页跳转/详情页免密的最可靠通道）
+    #    → 恢复登录态，并把凭证补写回 Cookie，双通道保持一致
+    if _read_query_token() == token:
         st.session_state["yts_authed"] = True
+        _write_cookie(token)
         return
 
-    # ③ 登录界面
+    # ③ 浏览器 Cookie 里有有效凭证（同域刷新/断连重连后）
+    #    → 恢复登录态，并把凭证补写回 URL，后续整页跳转继续免密
+    if _read_cookie_token() == token:
+        st.session_state["yts_authed"] = True
+        _put_auth_in_url(token)
+        return
+
+    # ④ 登录界面
     st.markdown(
         "<div style='max-width:380px;margin:80px auto 0;text-align:center'>"
         "<div style='font-size:40px'>🔒</div>"
@@ -115,7 +154,8 @@ def require_auth():
                      use_container_width=True, key="yts_auth_btn"):
             if entered == pwd:
                 st.session_state["yts_authed"] = True
-                _write_cookie(token)  # 写入Cookie：整页刷新/详情页跳转后免密
+                _write_cookie(token)          # Cookie：同域刷新兜底
+                _put_auth_in_url(token)        # URL：整页跳转/详情页免密（关键）
                 st.rerun()
             else:
                 st.error("密码错误，请重试")
