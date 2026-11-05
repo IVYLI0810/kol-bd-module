@@ -310,15 +310,22 @@ def steps_bar(steps: list, selected: int = None, nav_id: str = None) -> str:
     return html + "</div>"
 
 
-def name_card(c: dict, node: str, nav_extra: str = "") -> str:
-    """履约右栏卡片：整卡可点 → ?detail=；固定高度，文本超长省略，
+def name_card(c: dict, node: str, nav_extra: str = "", nav_index: int = None) -> str:
+    """履约右栏卡片：整卡可点进详情。
+    nav_index 给定 → 走 #detail=<idx>：由 iframe JS「按下」紧跟本 iframe 的隐藏
+    原生按钮完成会话内跳转（不整页刷新，消除白屏+回顶+重连）；
+    nav_index 为 None → 退回旧的 ?detail= 整页跳转（兜底/深链用）。
     徽章与进度点始终可见"""
     from urllib.parse import quote
     closed = c.get("is_closed")
     cls = "ycard closed" if closed else "ycard"
     tag = ' <span class="closed-tag">已闭环</span>' if closed else ""
+    if nav_index is None:
+        nav = f'?detail={quote(str(c["collab_id"]), safe="")}{nav_extra}'
+    else:
+        nav = f'#detail={nav_index}'
     return (f'<a class="{cls}" '
-            f'data-nav="?detail={quote(str(c["collab_id"]), safe="")}{nav_extra}">'
+            f'data-nav="{nav}">'
             f'<span class="nm">{c["name"]}{tag}</span>'
             f'<span class="mt"><span class="mt-txt">{c.get("category") or "-"} · '
             f'{c.get("followers", 0):,} 粉丝</span>{badge(node)} '
@@ -439,6 +446,15 @@ document.addEventListener('click', function (e) {
         if (mb[mi]) mb[mi].click();
         return;
     }
+    if (nav.indexOf('#detail=') === 0) {
+        // 点进网红履约详情：走隐藏按钮 → 会话内轻量 rerun，不整页刷新
+        // （消除白屏 / 回顶 / Streamlit 重连，这是「自动刷新」感的真正来源）
+        var di = parseInt(nav.slice(8), 10);
+        var dcnt = document.querySelectorAll('[data-nav^="#detail="]').length;
+        var db = followingButtons(window.frameElement, dcnt);
+        if (db[di]) db[di].click();
+        return;
+    }
     if (nav.indexOf('#open=') === 0) {
         // 外链（网红YouTube主页等）：sandbox iframe 自己开不了新标签，
         // 向父页面注入脚本用顶层上下文 window.open
@@ -464,12 +480,13 @@ document.addEventListener('click', function (e) {
 });
 (function () {
     // 隐藏紧跟本 iframe 的点击靶按钮：流程条固定 8 个，
-    // 挖掘页标记按钮数量 = 页内 #mark= 链接数
+    // 挖掘标记 / 网红详情跳转按钮数量 = 页内 #mark= 与 #detail= 链接数之和
     var fe = window.frameElement;
     if (!fe) return;
     var n = 0;
     if (document.querySelector('.ystep')) { n = 8; }
-    else { n = document.querySelectorAll('[data-nav^="#mark="]').length; }
+    else { n = document.querySelectorAll(
+              '[data-nav^="#mark="],[data-nav^="#detail="]').length; }
     if (!n) return;
     var tries = 0;
     function hide() {
