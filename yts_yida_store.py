@@ -1226,6 +1226,56 @@ class YTSStore:
             self._cache.pop("one:" + collab_id, None)
         return ok
 
+    def delete_record(self, collab_id) -> bool:
+        """精确删除单条（频道×月份）记录——真删宜搭，不可恢复。
+        管理看板弹窗「删除此行」用：只删身份串命中的那一行，
+        同频道其他月份记录不受影响（复用 remove_record 的按实例ID精确删除）。"""
+        return self.remove_record(collab_id)
+
+    def channel_rows(self, channel_id) -> list:
+        """某网红(频道)在宜搭的全部月份行摘要，供管理看板「🔍 全部月份」
+        弹窗逐条查看/删除。走当前缓存(_all)，删除后就地移除对应行，
+        弹窗重开即时反映最新剩余行。"""
+        out = []
+        for r in self._all():
+            if (r.get("channel_id") or "") != channel_id:
+                continue
+            c = self._to_collab(r)
+            out.append({
+                "collab_id": c["collab_id"],
+                "month": (str(c.get("plan_month") or "").strip()
+                          or "（无月份 · 挖掘中）"),
+                "stage": (c.get("stage") or c.get("status") or "-"),
+                "has_instance": bool(c.get("form_instance_id")),
+            })
+        out.sort(key=lambda x: x["month"])
+        return out
+
+    def remove_channel(self, channel_id) -> int:
+        """彻底删除某网红(频道)在宜搭的全部月份记录——真删，不可恢复。
+        返回成功删除的行数。按 form_instance_id 逐行精确删除；删除后就地
+        从全量缓存移除对应行，避免整表失效拖慢所有人。
+        看板按「网红」去重只显示一张卡，「🗑 删除网红」即清空该频道所有合作记录，
+        与主站/审核站「该网红消失」的预期一致。"""
+        n = 0
+        for r in list(self._all()):
+            if (r.get("channel_id") or "") != channel_id:
+                continue
+            inst = r.get("form_instance_id") or ""
+            if not inst:
+                continue
+            try:
+                if self.db.delete_instance(inst):
+                    n += 1
+                    hit = self._cache.get("all")
+                    if hit is not None:
+                        hit[1][:] = [x for x in hit[1]
+                                     if (x.get("form_instance_id") or "") != inst]
+                    self._cache.pop("one:" + _ident(r), None)
+            except Exception:
+                continue
+        return n
+
     # 步骤回退：把对应字段写回"未完成"值（均为宜搭表单已有选项或清空）
     STEP_UNDO = {
         0: lambda: ({"plan_month": ""}, ["plan_month"]),          # 确认合作
