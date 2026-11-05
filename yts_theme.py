@@ -369,6 +369,8 @@ a.act-y {background: #fdf3d3; color: #a07a00;}
 a.act-y:hover {background: #fae9b3;}
 a.act-b {background: #ddebfb; color: #2b6cb0;}
 a.act-b:hover {background: #c8def5;}
+a.act-del {background: #fdecec; color: #c0392b;}
+a.act-del:hover {background: #fbd4d4;}
 .yts-steps {display: flex; margin: 6px 4px 4px 4px;}
 a.ystep {flex: 1; display: flex; flex-direction: column; align-items: center;
     position: relative; min-width: 0; text-decoration: none; cursor: pointer;}
@@ -455,6 +457,15 @@ document.addEventListener('click', function (e) {
         if (db[di]) db[di].click();
         return;
     }
+    if (nav.indexOf('#op=') === 0) {
+        // 管理看板行内操作（🔍全部月份 / 🗑删除网红）：同样走隐藏按钮
+        // → 会话内轻量 rerun 打开弹窗，不整页刷新
+        var oi = parseInt(nav.slice(4), 10);
+        var ocnt = document.querySelectorAll('[data-nav^="#op="]').length;
+        var ob = followingButtons(window.frameElement, ocnt);
+        if (ob[oi]) ob[oi].click();
+        return;
+    }
     if (nav.indexOf('#open=') === 0) {
         // 外链（网红YouTube主页等）：sandbox iframe 自己开不了新标签，
         // 向父页面注入脚本用顶层上下文 window.open
@@ -486,7 +497,7 @@ document.addEventListener('click', function (e) {
     var n = 0;
     if (document.querySelector('.ystep')) { n = 8; }
     else { n = document.querySelectorAll(
-              '[data-nav^="#mark="],[data-nav^="#detail="]').length; }
+              '[data-nav^="#mark="],[data-nav^="#detail="],[data-nav^="#op="]').length; }
     if (!n) return;
     var tries = 0;
     function hide() {
