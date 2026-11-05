@@ -635,10 +635,23 @@ else:
                 ops_cell = '<span style="color:#c7c7cc">-</span>'
             rc.append(ops_cell)
             cells.append(rc)
-        _sticky = ('<style>.yts-table th{position:sticky;top:0;z-index:3;'
-                   'background:#fff;box-shadow:0 1px 0 #f0e4e8}</style>')
-        T.component_html(_sticky + T.table(HEADERS_OPS, cells, wrap=False),
-                         height=min(96 + len(grp) * 66, 560), grow=False)
+        # 长列表可滚动：给表格套一个「固定高 + 内部滚动」的容器 div。
+        # 之前靠 iframe body 自身 overflow-y:auto 滚动，线上不生效（滚不动），
+        # 改成显式滚动盒：div 有硬 max-height + overflow-y:auto，独立于 iframe
+        # 的 scrolling 属性能正常滚动，表头 sticky 相对滚动盒吸顶。
+        _cap = 600
+        _box_css = ('<style>.yts-scroll{max-height:' + str(_cap) + 'px;'
+                    'overflow-y:auto;overflow-x:hidden;border-radius:14px;'
+                    'scrollbar-width:thin;scrollbar-color:#d9a7b8 #f6eef1;}'
+                    '.yts-scroll::-webkit-scrollbar{width:10px;}'
+                    '.yts-scroll::-webkit-scrollbar-thumb{background:#d9a7b8;'
+                    'border-radius:6px;border:2px solid #f6eef1;}'
+                    '.yts-scroll::-webkit-scrollbar-track{background:#f6eef1;}'
+                    '.yts-scroll th{position:sticky;top:0;z-index:3;'
+                    'background:#fff;box-shadow:0 1px 0 #f0e4e8}</style>')
+        _box = (_box_css + '<div class="yts-scroll">'
+                + T.table(HEADERS_OPS, cells, wrap=False) + '</div>')
+        T.component_html(_box, height=_cap + 10, grow=False)
         _op_targets(entries, gi)
 
 st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
