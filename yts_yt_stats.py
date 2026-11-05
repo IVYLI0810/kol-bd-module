@@ -120,6 +120,49 @@ def cached(channel_id: str) -> dict | None:
     return None
 
 
+def handle_from_url(url: str) -> str:
+    """从任意频道链接/别名里取出可反查的标识：优先 UC 频道ID（大小写敏感，
+    原样保留），其次 @handle，再次 /c/ /user/ 形式。取不到返回 ''。"""
+    s = str(url or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"(UC[\w\-]{20,})", s)          # 真 UC id：原样保留大小写
+    if m:
+        return m.group(1)
+    m = re.search(r"youtube\.com/@([\w.\-]+)", s, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"youtube\.com/(?:channel/|c/|user/)([\w.\-]+)", s, re.I)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def fetch_stats_by_handle(handle: str) -> dict | None:
+    """按 @handle（或 UC id）用官方 API 反查频道：返回
+    {subscribers, channel_id}；无 key / 查不到 / 失败返回 None。
+    用于补「只有占位ID、没有真实UC id」的记录——channels.list 的
+    forHandle 参数支持直接按 handle 查，无需先知道 UC id。"""
+    h = str(handle or "").strip().lstrip("@")
+    if not h or not get_key():
+        return None
+    params = {"part": "statistics"}
+    if h.lower().startswith("uc") and len(h) >= 20:
+        params["id"] = h
+    else:
+        params["forHandle"] = h
+    try:
+        data = _get("channels", params)
+        items = data.get("items") or []
+        if not items:
+            return None
+        st = items[0].get("statistics") or {}
+        return {"subscribers": int(st.get("subscriberCount") or 0),
+                "channel_id": items[0].get("id") or ""}
+    except Exception:
+        return None
+
+
 def fetch_stats(channel_id: str) -> dict | None:
     """{subscribers, total_views, long_views, short_views, ts}；无key/失败=None"""
     if not channel_id or not channel_id.startswith("UC"):
