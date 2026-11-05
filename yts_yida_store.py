@@ -201,10 +201,31 @@ class YTSStore:
 
     def import_flow(self, rec: dict):
         """流程导入：按 channel_id upsert，写完就地更新缓存（不整表失效，
-        避免一人导入触发全员重拉）"""
+        避免一人导入触发全员重拉）。
+
+        导入后强制以文档「负责人」为准：同频道其它月份/裸记录行的旧挖掘人
+        （如历史同步写进去的）一并覆盖，否则看板按频道去重会取到旧行显示错人。"""
         r = self.db.add(rec)
-        self._upsert_cached(r or rec)
-        return r
+        saved = r or rec
+        self._upsert_cached(saved)
+        try:
+            recr = str(saved.get("recruiter") or "").strip()
+            cid = saved.get("channel_id")
+            if recr and cid:
+                month = str(saved.get("plan_month") or "").strip()
+                if self.db.force_channel_recruiter(cid, recr, skip_month=month):
+                    self._propagate_recruiter(cid, recr)
+        except Exception:
+            pass  # 强制归属人失败不能阻断导入本身
+        return saved
+
+    def _propagate_recruiter(self, channel_id, recruiter):
+        """把某频道在全量缓存里所有行的 recruiter 同步为文档值（配合
+        force_channel_recruiter，避免本会话仍看到旧挖掘人而误判没生效）。"""
+        rows = self._cache.get("all", (0, []))[1]
+        for r in rows:
+            if r.get("channel_id") == channel_id:
+                r["recruiter"] = recruiter
 
     def _patch(self, collab_id, patch):
         """写成功后就地更新缓存，避免每次操作都全量重拉（4-5 秒）。
@@ -522,6 +543,40 @@ class YTSStore:
         return self._dedup_identity(
             [c for c in (self._to_collab(r) for r in self._all())
              if c["status"] == "履约中"])
+
+    # 阶段优先级：同一频道多条月份记录只算一次，取最高阶段
+    _STAGE_PRIO = {"已闭环": 4, "履约中": 3, "洽谈中": 2, "已发邮件": 1}
+
+    def count_stages(self):
+        """按「网红(频道)」去重统计各阶段人数——主站首页与管理看板共用这一个
+        口径，保证两处「洽谈中/履约中/已闭环」数字永远一致。
+
+        历史坑：主站首页原先用 len(list_negotiating/list_fulfilling) 直接数
+        「记录条数」，而同一网红可能同时有裸洽谈行 + 某月履约行，既被算进洽谈
+        又被算进履约；看板则按频道去重取最高阶段。两边口径不同 → 数字对不上。
+        这里统一成「一人一阶段(取最高)」：已闭环 > 履约中 > 洽谈中 > 已发邮件。"""
+        best = {}  # channel_id -> stage
+
+        def consider(cid, stage):
+            if not cid:
+                return
+            p = self._STAGE_PRIO.get(stage, 0)
+            if cid not in best or self._STAGE_PRIO.get(best[cid], 0) < p:
+                best[cid] = stage
+
+        for c in self.list_fulfilling():
+            consider(c.get("channel_id"),
+                     "已闭环" if c.get("is_closed") else "履约中")
+        for c in self.list_negotiating():
+            consider(c.get("channel_id"), "洽谈中")
+        for c in self.list_pool():
+            if c.get("emailed"):
+                consider(c.get("id"), "已发邮件")
+
+        out = {"已发邮件": 0, "洽谈中": 0, "履约中": 0, "已闭环": 0}
+        for stage in best.values():
+            out[stage] = out.get(stage, 0) + 1
+        return out
 
     def list_all(self):
         """全部记录（含指标字段），分析看板用"""
