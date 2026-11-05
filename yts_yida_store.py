@@ -500,13 +500,28 @@ class YTSStore:
         return n
 
     # ---------------- 活动模块 ----------------
+    def _dedup_identity(self, collabs):
+        """按记录身份(collab_id)去重：同一频道出现多条「无月份裸记录」
+        （取消合作/退回时清月份与已有裸记录撞身份所致）时只保留最近更新的一条，
+        避免活动页渲染出重复卡片并触发 StreamlitDuplicateElementKey 崩溃。"""
+        out = {}
+        for c in collabs:
+            k = c["collab_id"]
+            prev = out.get(k)
+            if prev is None or (c.get("follow_time") or "") >= \
+                    (prev.get("follow_time") or ""):
+                out[k] = c
+        return list(out.values())
+
     def list_negotiating(self):
-        return [c for c in (self._to_collab(r) for r in self._all())
-                if c["status"] == "洽谈中"]
+        return self._dedup_identity(
+            [c for c in (self._to_collab(r) for r in self._all())
+             if c["status"] == "洽谈中"])
 
     def list_fulfilling(self):
-        return [c for c in (self._to_collab(r) for r in self._all())
-                if c["status"] == "履约中"]
+        return self._dedup_identity(
+            [c for c in (self._to_collab(r) for r in self._all())
+             if c["status"] == "履约中"])
 
     def list_all(self):
         """全部记录（含指标字段），分析看板用"""
@@ -1194,13 +1209,31 @@ class YTSStore:
             self._upd(collab_id, patch, clear_fields=["ad_auth"])
 
     # ---------------- 反向操作：回退 / 取消 / 流回 / 淘汰 ----------------
+    def _bare_sibling_exists(self, collab_id) -> bool:
+        """该频道是否已存在「另一条」无月份裸记录（身份不同于当前行）。
+        取消合作/退回会清月份→变裸记录，若已有裸记录就会撞身份产生重复行。"""
+        cid, _ = _split(collab_id)
+        return any(_ident(r) != collab_id
+                   and (r.get("channel_id") or "") == cid
+                   and not str(r.get("plan_month") or "").strip()
+                   for r in self._all())
+
     def cancel_collab(self, collab_id):
-        """取消合作：退回洽谈中（清空上线月份，进度保留）"""
+        """取消合作：退回洽谈中（清空上线月份，进度保留）。
+        若该频道已有另一条无月份裸记录，直接删掉本月份行，避免退回后
+        同一频道出现两条裸洽谈记录（会撞身份、活动页崩溃）。"""
+        if self._bare_sibling_exists(collab_id):
+            self.remove_record(collab_id)
+            return
         self._upd(collab_id, {"plan_month": "", "stage": "洽谈中"},
                   clear_fields=["plan_month"])
 
     def back_to_pool(self, collab_id):
-        """流回挖掘库：退回挖掘池（清空月份+洽谈标记，保留已发邮件标记）"""
+        """流回挖掘库：退回挖掘池（清空月份+洽谈标记，保留已发邮件标记）。
+        同样先查是否已有裸记录，避免清月后与已有裸记录重复。"""
+        if self._bare_sibling_exists(collab_id):
+            self.remove_record(collab_id)
+            return
         self._upd(collab_id, {"plan_month": "", "stage": ""},
                   clear_fields=["plan_month", "stage"])
 
