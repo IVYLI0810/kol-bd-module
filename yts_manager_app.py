@@ -210,9 +210,12 @@ def _norm_pool(c) -> dict:
 _PRIO = {"已闭环": 4, "履约中": 3, "洽谈中": 2, "已发邮件": 1}
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def load_all():
-    """四阶段全量记录（宜搭），5分钟缓存。
+    """四阶段全量记录（宜搭）。
+    不再加 st.cache_data：管理看板是独立于主站的另一个 Streamlit 进程，
+    自己再叠一层 5 分钟缓存会让「主站刚改、看板还显示旧」翻倍恶化。
+    直接走 YidaStore 的缓存（stale-while-revalidate），最新性交给
+    页面顶部「🔄 重新同步」按钮手动强制回源，看到的变化即时可见。
     同一频道可能同时在挖掘池(已发邮件)和活动(履约中)，按阶段优先级去重。"""
     pool = store.list_pool()                      # 挖掘池（含已发邮件标记）
     negs = store.list_negotiating()               # 洽谈中
@@ -253,7 +256,7 @@ st.markdown(T.header("管理看板",
                      f"数据时间 {datetime.now().strftime('%m-%d %H:%M')}"),
             unsafe_allow_html=True)
 
-f1, f2, f3 = st.columns([2.4, 1.8, 1.4])
+f1, f2, f3, f4 = st.columns([2.2, 1.55, 1.3, 1.3])
 with f1:
     stage_filter = st.pills("阶段筛选", ["全部"] + STAGES, default="全部",
                             key="mgr_stage")
@@ -261,7 +264,14 @@ with f2:
     member_filter = st.selectbox("组员筛选", ["全部组员"] + members, key="mgr_member")
 with f3:
     st.markdown('<div style="height:4px"></div>', unsafe_allow_html=True)
-    if st.button("🔄 强刷近10条", key="mgr_force10", use_container_width=True,
+    if st.button("🔄 重新同步", key="mgr_resync", use_container_width=True,
+                 help="强制从宜搭重新拉取全部数据：主站/审核站刚改动后点这里，"
+                      "看板立即反映最新阶段与记录（不受缓存时间影响）"):
+        store._invalidate()
+        st.rerun()
+with f4:
+    st.markdown('<div style="height:4px"></div>', unsafe_allow_html=True)
+    if st.button("🎬 强刷近10条", key="mgr_force10", use_container_width=True,
                  help="无视7天缓存，重新调 YouTube API 抓全部网红的最新10条视频"
                       "（每人约3配额单位）"):
         st.session_state["mgr_force10_ts"] = time.time()
@@ -310,7 +320,7 @@ if need:
             bar.progress(int(i * 100 / len(need)),
                          text=f"正在抓取近10条视频数据 {i}/{len(need)}…")
         bar.empty()
-        load_all.clear()
+        store._soft_invalidate()  # 让宜搭缓存过期→下次渲染后台刷新（近10条抓取可能回写粉丝数等）
 
 # ============================ 表格渲染 ============================
 REC10_CACHE = CS._load_cache()  # 整页只读一次缓存文件
@@ -397,6 +407,84 @@ def _row_cells(r) -> list:
 HEADERS = ["网红（点头像跳主页）", "阶段/进度", "双垂类", "粉丝数", "月份",
            "报价", "CPM($)", "ROI", "近10条均播", "近10条中位播",
            "合作视频", "商品链接"]
+HEADERS_OPS = HEADERS + ["操作"]
+
+
+# ============================ 行内操作（查看全部月份 / 删除网红） ============================
+def _set_pending(kind, cid, name):
+    """隐藏按钮 on_click 回调：只写 session_state，不调 st.rerun()
+    （回调里 st.rerun 是 no-op 且告警）；回调结束后 Streamlit 自动 rerun，
+    页面底部的分发块据此弹出对应对话框。"""
+    st.session_state["mgr_pending"] = (kind, cid, name)
+
+
+def _op_targets(entries, gi):
+    """为一组表格的每个操作链接渲染一个「隐形」原生按钮（点击靶子）。
+    顺序必须与表格里 #op=<idx> 的 idx 完全一致：iframe 内 JS 用
+    followingButtons(本iframe, 靶子数) 找到紧跟其后的前 N 个 <button> 并按下
+    第 idx 个。按钮加载后被 COMP_JS 隐藏，只作触发用。"""
+    for i, (kind, cid, name) in enumerate(entries):
+        st.button(f"op{gi}-{i}", key=f"mop_{gi}_{i}",
+                  on_click=_set_pending, args=(kind, cid, name))
+
+
+@st.dialog("🔍 该网红在宜搭的全部月份记录", width="large")
+def _info_dialog(cid, name):
+    recs = store.channel_rows(cid)
+    st.markdown(f"**{esc(name)}**　<span style='color:#86868b'>频道ID "
+                f"`{esc(cid)}`</span>", unsafe_allow_html=True)
+    if not recs:
+        st.success("该网红在宜搭已无月份记录。")
+    else:
+        st.caption(f"共 {len(recs)} 条月份记录。看板按「网红」去重只显示 1 张卡"
+                   "（取其最高阶段），主站按月份逐条列，故两边条数口径不同；"
+                   "这里可逐条精确删除某个月份的记录。")
+        for rr in recs:
+            c1, c2 = st.columns([4.4, 1])
+            with c1:
+                st.markdown(f"📅 **{esc(rr['month'])}**"
+                            f"　—　阶段：{esc(rr['stage'])}")
+            with c2:
+                if rr["has_instance"]:
+                    if st.button("🗑 删除此行",
+                                 key=f"dl_{cid}_{rr['collab_id']}",
+                                 use_container_width=True):
+                        ok = store.delete_record(rr["collab_id"])
+                        st.toast(("已删除 " if ok else "未删除（无实例）")
+                                 + f"{name} · {rr['month']}")
+                        st.rerun()  # 弹窗保持打开，重开显示剩余行
+                else:
+                    st.caption("无实例ID")
+    if st.button("关闭", key=f"close_info_{cid}", use_container_width=True):
+        st.session_state["mgr_pending"] = None
+        st.rerun()
+
+
+@st.dialog("⚠️ 彻底删除该网红", width="compact")
+def _delall_dialog(cid, name):
+    recs = store.channel_rows(cid)
+    st.markdown(f"将从**宜搭彻底删除**网红「**{esc(name)}**」的**全部**合作记录。")
+    if recs:
+        st.caption(f"将一并删除以下 {len(recs)} 条月份记录：")
+        for rr in recs:
+            st.markdown(f"· {esc(rr['month'])}（{esc(rr['stage'])}）")
+    else:
+        st.info("该网红在宜搭已无可删除的月份记录。")
+    st.error("此操作不可恢复：宜搭表单数据同步删除，主站与审核站也不再显示该网红。")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("取消", key=f"cx_del_{cid}", use_container_width=True):
+            st.session_state["mgr_pending"] = None
+            st.rerun()
+    with c2:
+        if st.button("确认彻底删除", key=f"ok_del_{cid}", type="primary",
+                     use_container_width=True):
+            n = store.remove_channel(cid)
+            st.session_state["mgr_pending"] = None
+            st.toast(f"已彻底删除 {name}（{n} 条记录）" if n
+                     else f"{name}：无可删除的宜搭记录")
+            st.rerun()
+
 
 if not visible:
     st.markdown(T.empty_hint("当前筛选条件下没有网红"), unsafe_allow_html=True)
@@ -407,7 +495,7 @@ else:
         g = (r["c"].get("recruiter") or "").strip() or "（未分配）"
         groups.setdefault(g, []).append(r)
     order = {s: i for i, s in enumerate(STAGES)}
-    for g in sorted(groups, key=lambda x: -len(groups[x])):
+    for gi, g in enumerate(sorted(groups, key=lambda x: -len(groups[x]))):
         grp = sorted(groups[g], key=lambda r: order.get(r["stage"], 9))
         g_cnt = {s: sum(1 for r in grp if r["stage"] == s) for s in STAGES}
         summary = " · ".join(f"{s} {n}" for s, n in g_cnt.items() if n)
@@ -415,12 +503,45 @@ else:
                           f'<span style="font-size:12px;color:#86868b;'
                           f'font-weight:500">{summary}</span>'),
                     unsafe_allow_html=True)
-        T.component_html(T.table(HEADERS, [_row_cells(r) for r in grp],
-                                 wrap=False),
+        entries, cells = [], []
+        for r in grp:
+            rc = _row_cells(r)
+            c = r["c"]
+            cid = (c.get("channel_id") or c.get("influencer_id")
+                   or str(c.get("collab_id") or "").split("#")[0])
+            nm = c.get("name") or c.get("channel_name") or cid or "-"
+            if cid:
+                ii = len(entries)
+                entries.append(("info", cid, nm))
+                di = len(entries)
+                entries.append(("delall", cid, nm))
+                ops_cell = (f'<a class="act" data-nav="#op={ii}">🔍 全部月份</a> '
+                            f'<a class="act act-del" '
+                            f'data-nav="#op={di}">🗑 删除网红</a>')
+            else:
+                ops_cell = '<span style="color:#c7c7cc">-</span>'
+            rc.append(ops_cell)
+            cells.append(rc)
+        T.component_html(T.table(HEADERS_OPS, cells, wrap=False),
                          height=72 + len(grp) * 46)
+        _op_targets(entries, gi)
 
 st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
-st.caption("📌 近10条数据 7 天自动缓存；「强刷近10条」可立即拉最新。"
+st.caption("📌 数据口径：本看板按「网红」去重（一位网红一张卡，取其最高阶段），"
+           "主站按「合作记录」逐月列，故两边条数可能不同——点每行「🔍 全部月份」"
+           "可查看该网红的所有月份记录。本看板与主站是两个独立服务、各自缓存，"
+           "主站/审核站刚改动后点顶部「🔄 重新同步」即可让看板立即反映最新。")
+st.caption("🎬 近10条数据 7 天自动缓存；「强刷近10条」可立即拉最新。"
            "报价按 ₩1 = $1/1538 折算。CPM/ROI 与分析页同口径："
            "ROI = 总GMV($) ÷ 报价($)，CPM = 报价($) ÷ 播放 × 1000，"
-           "鼠标悬停数字可看计算明细；🛍 按钮点击跳商品页，悬停看商品名+GMV。")
+           "鼠标悬停数字可看计算明细；🛍 按钮点击跳商品页，悬停看商品名+GMV。"
+           "「🗑 删除网红」会从宜搭彻底删除该网红全部记录，二次确认后不可恢复。")
+
+# ============================ 弹窗分发（隐藏按钮触发后打开） ============================
+_pending = st.session_state.get("mgr_pending")
+if _pending:
+    _pk, _pcid, _pname = _pending
+    if _pk == "info":
+        _info_dialog(_pcid, _pname)
+    elif _pk == "delall":
+        _delall_dialog(_pcid, _pname)
