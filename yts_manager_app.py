@@ -289,7 +289,7 @@ st.markdown(T.header("管理看板",
                      f"数据时间 {datetime.now().strftime('%m-%d %H:%M')}"),
             unsafe_allow_html=True)
 
-f1, f2, f3, f4 = st.columns([2.2, 1.55, 1.3, 1.3])
+f1, f2, f3, f4, f5 = st.columns([2.2, 1.45, 1.1, 1.1, 1.35])
 with f1:
     stage_filter = st.pills("阶段筛选", ["全部"] + STAGES, default="全部",
                             key="mgr_stage")
@@ -309,6 +309,13 @@ with f4:
                       "（每人约3配额单位）"):
         st.session_state["mgr_force10_ts"] = time.time()
         st.session_state["mgr_force10"] = True
+        st.rerun()
+with f5:
+    st.markdown('<div style="height:4px"></div>', unsafe_allow_html=True)
+    if st.button("🧹 误判履约→洽谈退回", key="mgr_demote", use_container_width=True,
+                 help="把「只填了归属月份、却没有任何实际进度」的网红从履约中退回洽谈中"
+                      "（团队进度表常把归属月份整列预填导致误升级）。点开后先预览再确认。"):
+        st.session_state["mgr_demote_ask"] = True
         st.rerun()
 
 # 汇总卡
@@ -556,6 +563,42 @@ def _delall_dialog(cid, name):
             st.rerun()
 
 
+@st.dialog("🧹 误判履约 → 洽谈 一键退回", width="large")
+def _demote_dialog():
+    safe, conflict = store.demote_preview()
+    if not safe and not conflict:
+        st.info("没有需要退回的记录——当前所有「履约中」都有实际进度"
+                "（Guideline/合同/下单/拍摄/视频/审核等），或没有只凭归属月份误升的记录。")
+        if st.button("关闭", key="cx_demote_close", use_container_width=True):
+            st.session_state["mgr_demote_ask"] = None
+            st.rerun()
+        return
+    st.markdown(
+        f"检测到 **{len(safe)}** 条记录只填了「归属月份」、却没有任何实际履约进度，"
+        "多半是团队进度表把归属月份整列预填导致被误判成履约中。"
+        "点确认后，系统会**清空这些行的归属月份并退回洽谈中**（不动有进度的网红）。")
+    st.caption("将退回的记录（最多显示 30 条）：")
+    for it in safe[:30]:
+        st.markdown(f"· {esc(it['name'])}（归属月份 {esc(it['plan_month'])}）")
+    if len(safe) > 30:
+        st.caption(f"… 其余 {len(safe) - 30} 条一并退回")
+    if conflict:
+        st.warning(f"另有 {len(conflict)} 条同名网红已存在「无月份」洽谈记录，"
+                   "清月份会与之重复，已跳过——可在该网红的「🔍 全部月份」里自行处理。")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("取消", key="cx_demote", use_container_width=True):
+            st.session_state["mgr_demote_ask"] = None
+            st.rerun()
+    with c2:
+        if st.button(f"确认退回 {len(safe)} 条", key="ok_demote", type="primary",
+                     use_container_width=True, disabled=not safe):
+            n, _ = store.demote_false_fulfilling()
+            st.session_state["mgr_demote_ask"] = None
+            st.toast(f"已把 {n} 条误判记录退回洽谈中")
+            st.rerun()
+
+
 if not visible:
     st.markdown(T.empty_hint("当前筛选条件下没有网红"), unsafe_allow_html=True)
 else:
@@ -617,3 +660,6 @@ if _pending:
         _info_dialog(_pcid, _pname)
     elif _pk == "delall":
         _delall_dialog(_pcid, _pname)
+
+if st.session_state.get("mgr_demote_ask"):
+    _demote_dialog()
