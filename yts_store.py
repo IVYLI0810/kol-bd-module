@@ -625,6 +625,50 @@ class YTSStore:
                                if c["collab_id"] != collab_id]
         self._modify(fn)
 
+    # ---------------- 管理看板：真删除（demo 版，与宜搭版同接口） ----------------
+    def channel_rows(self, channel_id) -> list:
+        """某网红(频道)的全部合作记录摘要，供看板「🔍 全部月份」弹窗。
+        demo 每个网红仅一条合作记录（无月份后缀）。"""
+        out = []
+        for c in self._load()["collabs"]:
+            if c.get("collab_id") == channel_id or c.get("influencer_id") == channel_id:
+                out.append({
+                    "collab_id": c["collab_id"],
+                    "month": (str(c.get("plan_month") or "").strip()
+                              or "（无月份 · 洽谈中）"),
+                    "stage": (c.get("status") or c.get("stage") or "-"),
+                    "has_instance": True,
+                })
+        out.sort(key=lambda x: x["month"])
+        return out
+
+    def delete_record(self, collab_id) -> bool:
+        """删除单条合作记录（真删本地库）。返回是否删除。"""
+        ok = [False]
+
+        def fn(data):
+            before = len(data["collabs"])
+            data["collabs"] = [c for c in data["collabs"]
+                               if c["collab_id"] != collab_id]
+            ok[0] = len(data["collabs"]) < before
+        self._modify(fn)
+        return ok[0]
+
+    def remove_channel(self, channel_id) -> int:
+        """彻底删除某网红(频道)：合作记录 + 挖掘池条目一并移除，
+        主站/审核站/看板都不再显示该网红。返回删除的合作记录数。"""
+        n = [0]
+
+        def fn(data):
+            before = len(data["collabs"])
+            data["collabs"] = [c for c in data["collabs"]
+                               if c.get("collab_id") != channel_id
+                               and c.get("influencer_id") != channel_id]
+            n[0] = before - len(data["collabs"])
+            data["pool"] = [p for p in data["pool"] if p["id"] != channel_id]
+        self._modify(fn)
+        return n[0]
+
     STEP_UNDO = {
         0: {"plan_month": "", "status": "洽谈中"},
         1: {"branches": {"guideline": False, "contract": False, "gmc": False}},
