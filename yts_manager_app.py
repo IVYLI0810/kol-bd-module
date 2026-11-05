@@ -318,10 +318,8 @@ with f5:
         st.session_state["mgr_demote_ask"] = True
         st.rerun()
 
-# 汇总卡
-stage_cnt = {s: 0 for s in STAGES}
-for r in rows:
-    stage_cnt[r["stage"]] += 1
+# 汇总卡（与主站首页共用 store.count_stages 口径，两处数字必然一致）
+stage_cnt = store.count_stages()
 st.markdown(T.stats_row([
     ("📧 已发邮件", stage_cnt["已发邮件"], "c-gray"),
     ("💬 洽谈中", stage_cnt["洽谈中"], "c-amber"),
