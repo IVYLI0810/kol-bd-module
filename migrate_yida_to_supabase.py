@@ -166,7 +166,7 @@ def main():
         sys.exit("❌ 缺 SUPABASE_URL / SUPABASE_KEY")
     headers = {"apikey": scfg_key, "Authorization": f"Bearer {scfg_key}",
                "Content-Type": "application/json",
-               "Prefer": "return=minimal,merge=duplicates"}
+               "Prefer": "return=minimal,resolution=merge-duplicates"}
 
     print(f"[1/5] 拉宜搭全表 ...  (~10-20s，正常)")
     db = YidaBDDB(**ycfg)
@@ -210,6 +210,11 @@ def main():
             return
 
     print("[4/5] 分批 upsert ...")
+    # 按身份去重（后写覆盖先写），避免一批内重复主键触发 23505
+    dedup = {}
+    for r in rows:
+        dedup[(r["channel_id"], r["plan_month"])] = r
+    rows = list(dedup.values())
     total = len(rows)
     for i in range(0, total, args.batch):
         batch = rows[i:i + args.batch]
