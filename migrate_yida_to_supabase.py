@@ -67,33 +67,41 @@ def _supa_cfg():
     return url.rstrip("/"), key
 
 
-# 宜搭原始记录 → Supabase 行；只保留 schema 里存在的列，
-# 并把借用的遗留字段（ad_auth/status）拆成真正的布尔列
-_KEEP_COLS = {
-    "channel_id", "plan_month", "channel_name", "channel_url",
-    "category", "sales_category", "subscribers", "email", "recruiter",
-    "stage", "email_status",
-    "guideline_status", "contract_status", "gmc_status",
-    "product_list", "order_status", "shoot_status",
-    "submit_deadline", "submit_actual",
-    "video_link", "recheck_video_url", "audit_status",
-    "video_views", "video_likes", "video_comments", "total_views",
-    "product_link", "product_views", "ctr", "orders", "conversion_rate",
-    "gmv", "price",
-    "group_link", "settlement", "settlement_note", "notes",
-    "audit_log", "videos", "products",
-}
-_TEXT = {"channel_name", "channel_url", "category", "sales_category",
-         "email", "recruiter", "stage", "email_status",
-         "guideline_status", "contract_status", "gmc_status",
-         "product_list", "order_status", "shoot_status",
-         "submit_deadline", "submit_actual",
-         "video_link", "recheck_video_url", "audit_status",
-         "product_link", "group_link", "settlement", "settlement_note", "notes"}
+# collabs 全部「可写」列（排除 id/created_at/updated_at 三个库自动生成列）。
+# 每行都必须带齐这一整套 key、类型统一，否则 PostgREST 批量写入会报
+# PGRST102 "All object keys must match"（一批里各行字段集合必须完全一致）。
+_JSON = {"audit_log", "videos", "products"}
 _INT = {"subscribers", "price", "orders", "video_views", "video_likes",
         "video_comments", "product_views", "total_views"}
 _NUM = {"gmv", "ctr", "conversion_rate"}
-_JSON = {"audit_log", "videos", "products"}
+
+# 默认值模板：字段顺序 / 取值口径固定，保证每行 key 完全一致
+_DEFAULTS = {
+    # 身份
+    "channel_id": "", "plan_month": "",
+    # 频道基本信息
+    "channel_name": "", "channel_url": "", "category": "", "sales_category": "",
+    "subscribers": 0, "email": "", "recruiter": "",
+    # 流程闸门
+    "stage": "", "email_status": "",
+    # 三分支
+    "guideline_status": "", "contract_status": "", "gmc_status": "",
+    # 商品 / 下单 / 拍摄 / 交稿
+    "product_list": "", "order_status": "", "shoot_status": "",
+    "submit_deadline": "", "submit_actual": "",
+    # 视频 & 审核
+    "video_link": "", "recheck_video_url": "", "audit_status": "",
+    "video_views": 0, "video_likes": 0, "video_comments": 0, "total_views": 0,
+    # 商品效果
+    "product_link": "", "product_views": 0, "ctr": 0.0, "orders": 0,
+    "conversion_rate": 0.0, "gmv": 0.0, "price": 0,
+    # 其他
+    "group_link": "", "settlement": "", "settlement_note": "", "notes": "",
+    # 子表 JSONB
+    "audit_log": [], "videos": [], "products": [],
+    # 投放标记（由宜搭遗留 status/ad_auth 拆出）+ 软删
+    "ad_needed": False, "ad_done": False, "deleted": False,
+}
 
 
 def _s(v):
@@ -115,9 +123,13 @@ def _f(v):
 
 
 def convert(rec: dict) -> dict:
-    out = {}
+    """宜搭原始记录 → collabs 行。先铺一套全字段默认值，再覆盖 rec 里有的列，
+    保证输出行的 key 集合与类型对每一行都完全一致（修复 PGRST102）。
+    rec 里表没有的列（含遗留 status/ad_auth）自动丢弃。"""
+    out = {k: (list(v) if isinstance(v, list) else v)
+           for k, v in _DEFAULTS.items()}
     for k, v in rec.items():
-        if k not in _KEEP_COLS:
+        if k not in _DEFAULTS:
             continue
         if k in _JSON:
             out[k] = v if isinstance(v, list) else []
@@ -127,13 +139,9 @@ def convert(rec: dict) -> dict:
             out[k] = _f(v)
         else:
             out[k] = _s(v)
-    # 身份必备
-    out.setdefault("channel_id", _s(rec.get("channel_id")))
-    out.setdefault("plan_month", _s(rec.get("plan_month")))
-    # 遗留借用字段拆列
+    # 遗留借用字段拆成真正的布尔列
     out["ad_needed"] = (_s(rec.get("ad_auth")) == "Y")
     out["ad_done"] = (_s(rec.get("status")) == "Y")
-    out.setdefault("deleted", False)
     return out
 
 
