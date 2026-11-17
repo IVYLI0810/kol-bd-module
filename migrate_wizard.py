@@ -82,11 +82,19 @@ def _do_apply(batch: int = 100):
     if not rows:
         st.warning("请先做第①步演练预览。")
         return
+    # 按身份去重（后写覆盖先写）：同一条 (channel_id, plan_month) 若在宜搭里
+    # 出现多次，留最后一条。否则一批里出现重复主键，PostgREST upsert 会报
+    # 23505 / "cannot affect row a second time"。
+    dedup = {}
+    for r in rows:
+        dedup[(r["channel_id"], r["plan_month"])] = r
+    rows = list(dedup.values())
+
     url, key = _supa()
     headers = {
         "apikey": key, "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
-        "Prefer": "return=minimal,merge=duplicates",
+        "Prefer": "return=minimal,resolution=merge-duplicates",
     }
     bar = st.progress(0.0)
     status = st.empty()
