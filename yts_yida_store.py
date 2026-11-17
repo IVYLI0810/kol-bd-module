@@ -1444,11 +1444,22 @@ _STORE = None
 
 
 def get_yts_store():
-    """进程级单例：缓存跨 rerun 存活，避免每次刷新整页重拉宜搭（~10s）；
-    配置了 AK（环境变量或本地配置文件）→ 宜搭真实数据；否则回退本地 demo 数据"""
+    """进程级单例。开关优先级：
+    USE_SUPABASE_STORE=1 → 走 Supabase 共享库（Phase 1 换库后正式路径）
+    否则有宜搭 AK/SK     → 走宜搭（回退老路径，搬家灰度期用）
+    都没有               → 走本地 demo（无网/无凭证时的兜底）"""
     global _STORE
     if _STORE is not None:
         return _STORE
+    import os
+    if os.environ.get("USE_SUPABASE_STORE") == "1":
+        try:
+            from yts_supabase_store import YTSStore as SupaStore
+            _STORE = SupaStore()
+            return _STORE
+        except Exception:
+            # 初始化失败继续往下走，保证不炸站
+            pass
     cfg = _cfg()
     if cfg.get("access_key_id") and cfg.get("access_key_secret"):
         try:
