@@ -175,7 +175,7 @@ class YTSStore:
         out = self._req("POST", "collabs",
                         params={"on_conflict": "channel_id,plan_month"},
                         body=body,
-                        prefer="return=representation,merge=duplicates")
+                        prefer="return=representation,resolution=merge-duplicates")
         self._invalidate()
         return (out or [None])[0] or body
 
