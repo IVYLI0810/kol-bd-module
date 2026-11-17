@@ -29,6 +29,13 @@ st.markdown(T.THEME_CSS, unsafe_allow_html=True)
 from yts_auth import require_auth
 require_auth()
 
+# ===== 一次性搬家入口（Phase 1 · Yida→Supabase）：URL 加 ?migrate=1 打开 =====
+if st.query_params.get("migrate") == "1":
+    import migrate_wizard
+    migrate_wizard.render()
+    st.stop()
+# =====================================================================
+
 store = get_yts_store()
 if getattr(store, "demo", False):
     st.error("⚠️ 未连接到宜搭数据库，当前显示演示数据。"
