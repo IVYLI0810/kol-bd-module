@@ -151,26 +151,79 @@ def page_home():
 # ============================ 挖掘模块 ============================
 @st.dialog("➕ 新增网红", width="large")
 def dlg_add():
-    with st.form("add_form"):
-        a1, a2 = st.columns(2)
-        cid = a1.text_input("频道ID（必填）", placeholder="UC_xxx")
-        cname = a2.text_input("昵称（必填）")
-        b1, b2, b3 = st.columns(3)
-        cat = b1.text_input("内容垂类", placeholder="뷰티")
-        subs = b2.number_input("粉丝数", min_value=0, step=1000)
-        recruiter = b3.text_input("挖掘人（你的名字）")
-        email = st.text_input("联系邮箱")
-        if st.form_submit_button("💾 保存", type="primary", use_container_width=True):
-            if not cid.strip() or not cname.strip():
-                st.error("频道ID 和昵称为必填项")
-            else:
-                store.add_influencer({
-                    "channel_id": cid.strip(), "channel_name": cname.strip(),
-                    "category": cat.strip(), "subscribers": subs,
-                    "recruiter": recruiter.strip(), "email": email.strip(),
-                })
-                st.toast(f"{cname} 已加入挖掘池")
+    import yts_channel_lookup as LK
+    actor = _current_actor()
+    # 首次打开给每字段一个默认值（之后一律以 session_state 为准）
+    st.session_state.setdefault("add_raw", "")
+    st.session_state.setdefault("add_cid", "")
+    st.session_state.setdefault("add_name", "")
+    st.session_state.setdefault("add_cat", "")
+    st.session_state.setdefault("add_subs", 0)
+    st.session_state.setdefault("add_email", "")
+    st.session_state.setdefault("add_month", "")
+    if not st.session_state.get("add_rec"):
+        st.session_state["add_rec"] = actor
+    st.caption("贴频道主页链接点「🔎 自动识别」：自动带出最新粉丝数 / 昵称 / "
+               "你之前给这个频道标过的内容垂类，邮箱尽力抓取（抓不到就手填）。"
+               "挖掘人默认＝你当前选的名字；填了「归属月份」就直接开当月合作记录。")
+    raw = st.text_input("频道主页链接 / @handle / 频道ID", key="add_raw",
+                        placeholder="https://youtube.com/@xxx 或 UCxxxx")
+    if st.button("🔎 自动识别", key="add_lookup_btn", use_container_width=True):
+        if not raw.strip():
+            st.warning("先粘贴频道主页链接或频道ID")
+        else:
+            with st.spinner("正在反查频道信息…"):
+                r = LK.lookup(raw)
+            if r.get("ok"):
+                st.session_state["add_cid"] = r.get("channel_id", "")
+                st.session_state["add_name"] = r.get("name", "")
+                st.session_state["add_subs"] = int(r.get("subscribers") or 0)
+                if r.get("email"):
+                    st.session_state["add_email"] = r["email"]
+                try:
+                    pc = store.latest_category(r.get("channel_id") or raw)
+                except Exception:
+                    pc = ""
+                if pc:
+                    st.session_state["add_cat"] = pc
+                st.toast(f"已识别：{r.get('name','')}（粉丝 "
+                         f"{int(r.get('subscribers') or 0):,}）"
+                         + ("，邮箱已抓取" if r.get("email")
+                            else "，邮箱没抓到，请手填"))
                 st.rerun()
+            else:
+                st.warning("没抓到（检查链接是否正确 / YouTube API Key 是否已配），"
+                           "请手动填写。")
+    a1, a2 = st.columns(2)
+    cid = a1.text_input("频道ID（必填）", key="add_cid", placeholder="UC_xxx")
+    cname = a2.text_input("昵称（必填）", key="add_name")
+    b1, b2 = st.columns(2)
+    cat = b1.text_input("内容垂类", key="add_cat", placeholder="뷰티")
+    subs = b2.number_input("粉丝数", key="add_subs", min_value=0, step=1000)
+    d1, d2 = st.columns(2)
+    email = d1.text_input("联系邮箱", key="add_email")
+    month = d2.text_input("归属月份（选填，如 2026-11）", key="add_month",
+                          placeholder="留空＝只进挖掘池")
+    recruiter = st.text_input("挖掘人（你的名字）", key="add_rec")
+    if st.button("💾 保存", type="primary", use_container_width=True):
+        if not cid.strip() or not cname.strip():
+            st.error("频道ID 和昵称为必填项")
+        else:
+            rec = {
+                "channel_id": cid.strip(), "channel_name": cname.strip(),
+                "category": cat.strip(), "subscribers": int(subs),
+                "recruiter": (recruiter.strip() or actor),
+                "email": email.strip(), "plan_month": month.strip(),
+            }
+            if raw.strip().lower().startswith("http"):
+                rec["channel_url"] = raw.strip()
+            store.add_influencer(rec)
+            for _k in ("add_raw", "add_cid", "add_name", "add_cat",
+                       "add_subs", "add_email", "add_month", "add_rec"):
+                st.session_state.pop(_k, None)
+            st.toast(f"{cname} 已加入"
+                     + (f"（{month.strip()} 合作）" if month.strip() else "挖掘池"))
+            st.rerun()
 
 
 def _import_template_bytes() -> bytes:
@@ -479,6 +532,28 @@ def page_dig():
                         if basic.get("emails_filled") else ""))
     pool = store.list_pool()
 
+    # 我是谁：挖掘池里点「发邮件 / 洽谈」时，据此把归属覆盖成当前操作人
+    #（与活动页同一个名字，任一边选过另一边自动带入）
+    _roster_x = R.get_members()
+    _names_x = sorted({p.get("recruiter") for p in pool if p.get("recruiter")})
+    _opts_x = list(_roster_x) + [n for n in _names_x
+                                 if not R.match_name(n, _roster_x)]
+    _cur_x = _current_actor()
+    ax1, ax2 = st.columns([2, 3])
+    with ax1:
+        _sel_x = st.selectbox(
+            "🧑 我是谁（发邮件/洽谈的归属）",
+            (["（请选择）"] + _opts_x) if _opts_x else ["（暂无名单）"],
+            index=((["（请选择）"] + _opts_x).index(_cur_x) + 1)
+                  if _cur_x in _opts_x else 0,
+            key="dig_actor_sel")
+    with ax2:
+        _man_x = st.text_input("或直接输入你的名字", key="dig_actor_manual")
+    _dig_actor = (_man_x.strip()
+                  or (_sel_x if _sel_x not in ("（请选择）", "（暂无名单）") else ""))
+    if _dig_actor:
+        st.session_state["activity_recruiter"] = _dig_actor
+
     c1, c2, c3, c4, c5, c6 = st.columns([2.2, 1.1, 1.1, 1.9, 1.1, 1.1])
     q = c1.text_input("搜索昵称 / 频道ID", key="dig_q", placeholder="🔍 输入关键词")
     cats = sorted({p.get("category") for p in pool if p.get("category")})
@@ -580,13 +655,13 @@ def page_dig():
             height=68 + len(trows) * 38)
         # 紧跟 iframe 的隐藏点击靶：JS 会隐藏它们，点表格里的标记链接
         # 时"按下"对应按钮 → 轻量 rerun（不整页跳转，消除点击卡顿）
-        def _mark_cb(iid, act):
+        def _mark_cb(iid, act, actor=""):
             if act == "mail":
-                store.mark_emailed(iid)
-                st.toast("已标记「已发邮件」，待标记「洽谈中」后流入活动")
+                store.mark_emailed(iid, actor)
+                st.toast("已标记「已发邮件」，归属已记为当前操作人")
             elif act == "neg":
-                store.mark_negotiating(iid)
-                st.toast("已标记「洽谈中」，网红已流入活动模块")
+                store.mark_negotiating(iid, actor)
+                st.toast("已标记「洽谈中」，归属已记为当前操作人")
             elif act == "unmail":
                 store.unmark_emailed(iid)
                 st.toast("已取消「已发邮件」标记，回到未触达状态")
@@ -596,7 +671,7 @@ def page_dig():
 
         for i, (iid, act) in enumerate(mark_actions):
             st.button(f"mark{i}", key=f"digmark{i}",
-                      on_click=_mark_cb, args=(iid, act))
+                      on_click=_mark_cb, args=(iid, act, _dig_actor))
 
     p1, p2, p3 = st.columns([1, 3, 1])
     with p1:
@@ -809,6 +884,9 @@ def page_activity():
         if st.button(" 导出全量数据", key="btn_export_all",
                      use_container_width=True):
             _export_all_data()
+        if st.button("➕ 新增网红", key="btn_add_act",
+                     use_container_width=True):
+            dlg_add()
     if st.session_state.get("flow_import_open"):
         flow_import_panel()
     if st.session_state.get("product_import_open"):
@@ -1813,6 +1891,13 @@ def _is_data_owner() -> bool:
     name = st.session_state.get("activity_recruiter") \
         or st.query_params.get("rec") or ""
     return R.match_name(str(name), [DATA_OWNER]) == DATA_OWNER
+
+
+def _current_actor() -> str:
+    """当前操作人姓名：活动页/挖掘页共用同一身份（会话 activity_recruiter
+    或 URL ?rec=）。发邮件 / 推进洽谈时据此把归属覆盖成操作人。取不到返回 ''。"""
+    return (st.session_state.get("activity_recruiter")
+            or st.query_params.get("rec") or "").strip()
 
 
 def _refresh_videos_granular(closed_recs, force=False):
@@ -2866,14 +2951,14 @@ elif _qp.get("act") == "neg" and _qp.get("id"):
     _i = _qp.get("id")
     del st.query_params["act"]
     del st.query_params["id"]
-    store.mark_negotiating(_i)
+    store.mark_negotiating(_i, _current_actor())
     st.session_state.page = "dig"
     st.toast("已标记「洽谈中」，网红已流入活动模块")
 elif _qp.get("act") == "mail" and _qp.get("id"):
     _i = _qp.get("id")
     del st.query_params["act"]
     del st.query_params["id"]
-    store.mark_emailed(_i)
+    store.mark_emailed(_i, _current_actor())
     st.session_state.page = "dig"
     st.toast("已标记「已发邮件」，留在挖掘池，待标记「洽谈中」")
 
