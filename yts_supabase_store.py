@@ -380,6 +380,21 @@ class YTSStore:
             out.append(card)
         return out
 
+    def latest_category(self, channel_id):
+        """按频道ID反查历史内容垂类（供新增弹窗自动带出）：取该频道
+        所有未删行里最后一条非空 category（行按 id.asc，较新优先）。无则 ''。"""
+        cid = _split(channel_id)[0]
+        if not cid:
+            return ""
+        best = ""
+        for r in self._all():
+            if (r.get("channel_id") or "") != cid:
+                continue
+            c = (r.get("category") or "").strip()
+            if c:
+                best = c
+        return best
+
     def add_influencer(self, rec):
         rec = dict(rec or {})
         rec.setdefault("email_status", "")
@@ -404,18 +419,23 @@ class YTSStore:
         r = self._upsert_row(rec)
         return r or rec
 
-    def mark_emailed(self, inf_id):
+    def mark_emailed(self, inf_id, actor: str = ""):
         cid, month = _split(inf_id)
-        if not month:
-            # 挖掘期裸记录：若同频道已存在月份行，用第一条命中；否则就写裸行
-            return self._patch_row(cid, month,
-                                   {"email_status": "已发送", "stage": "已发邮件"})
-        return self._patch_row(cid, month,
-                               {"email_status": "已发送", "stage": "已发邮件"})
+        patch = {"email_status": "已发送", "stage": "已发邮件"}
+        # Phase 2：谁发邮件，归属当场覆盖成谁（不留历史）
+        a = (actor or "").strip()
+        if a:
+            patch["recruiter"] = a
+        return self._patch_row(cid, month, patch)
 
-    def mark_negotiating(self, inf_id):
+    def mark_negotiating(self, inf_id, actor: str = ""):
         cid, month = _split(inf_id)
-        return self._patch_row(cid, month, {"stage": "洽谈中"})
+        patch = {"stage": "洽谈中"}
+        # Phase 2：推进到洽谈（含拿到回复）同样覆盖归属为当前操作人
+        a = (actor or "").strip()
+        if a:
+            patch["recruiter"] = a
+        return self._patch_row(cid, month, patch)
 
     def unmark_emailed(self, inf_id):
         cid, month = _split(inf_id)
