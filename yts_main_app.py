@@ -48,6 +48,34 @@ if "page" not in st.session_state:
     st.session_state.page = "home"
 
 
+def _cache_key():
+    """UI 缓存键：本进程写库后 store 的写代次(_rev)变 → 立刻失效；
+    再叠加 2 秒分桶，保证队友在另一进程写的改动最坏约 2 秒后可见，
+    节奏与底层 store 缓存一致。"""
+    try:
+        rev = store.rev()
+    except Exception:
+        rev = 0
+    return (int(rev), int(time.time() // 2))
+
+
+@st.cache_data(show_spinner=False)
+def _lists_cached(_key):
+    """首页 / 活动页共用的重活列表：一次只算一遍。避免你每点一下，
+    就把整张表反复转换 + 反复重算各阶段统计（这是 YTS 卡顿的主因）。"""
+    return {
+        "pool": store.list_pool(),
+        "negotiating": store.list_negotiating(),
+        "fulfilling": store.list_fulfilling(),
+        "pending": store.list_pending_reviews(),
+        "stages": store.count_stages(),
+    }
+
+
+def get_lists():
+    return _lists_cached(_cache_key())
+
+
 def go(page, **kw):
     st.session_state.page = page
     st.session_state.update(kw)
@@ -113,9 +141,10 @@ def page_home():
                          "网红全生命周期管理 · 挖掘 → 合作 → 履约 → 审核 → 数据",
                          center=True),
                 unsafe_allow_html=True)
-    pool = store.list_pool()
-    pending = store.list_pending_reviews()
-    _sc = store.count_stages()
+    _L = get_lists()
+    pool = _L["pool"]
+    pending = _L["pending"]
+    _sc = _L["stages"]
     st.markdown(T.stats_row([
         ("挖掘池", len(pool), "c-pink"),
         ("洽谈中", _sc["洽谈中"], "c-amber"),
@@ -530,7 +559,7 @@ def page_dig():
                         if basic["updated"] else "")
                      + (f"（其中补邮箱 {basic['emails_filled']} 位）"
                         if basic.get("emails_filled") else ""))
-    pool = store.list_pool()
+    pool = get_lists()["pool"]
 
     # 我是谁：挖掘池里点「发邮件 / 洽谈」时，据此把归属覆盖成当前操作人
     #（与活动页同一个名字，任一边选过另一边自动带入）
@@ -900,7 +929,8 @@ def page_activity():
         st.session_state["act_push_ts"] = time.time()
         threading.Thread(target=store.push_back_introduced,
                          daemon=True).start()
-    data_names = sorted({p.get("recruiter") for p in store.list_pool()
+    _L = get_lists()
+    data_names = sorted({p.get("recruiter") for p in _L["pool"]
                          if p.get("recruiter")})
     recruiters = list(roster) + [n for n in data_names
                                  if not R.match_name(n, roster)]
@@ -932,8 +962,8 @@ def page_activity():
                 if (c.get("recruiter") or "") == filter_by
                 or R.match_name(c.get("recruiter"), [filter_by]) == filter_by]
 
-    negs = by_me(store.list_negotiating())
-    fuls = by_me(store.list_fulfilling())
+    negs = by_me(_L["negotiating"])
+    fuls = by_me(_L["fulfilling"])
     closed = [c for c in fuls if c["is_closed"]]
 
     with stats_col:
@@ -1143,7 +1173,7 @@ def page_detail(collab_id):
                  key="edit_btn"):
         st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
         st.rerun()
-    c = store.get_collab(collab_id, fresh=True)  # 直查宜搭：审核状态实时，免手动刷新
+        c = store.get_collab(collab_id)  # 读缓存（Supabase 近实时，写完自动失效），不再每次强刷全表
     if not c:
         st.error("未找到该合作记录")
         return
@@ -1156,6 +1186,35 @@ def page_detail(collab_id):
     st.markdown(T.header(f"履约详情 · {c['name']}",
                          f'挖掘人 {c.get("recruiter") or "-"}'),
                 unsafe_allow_html=True)
+
+    # ---- 我的在履约网红 · 快速切换（不用退回活动列表再点进来） ----
+    _actor = _current_actor()
+    if _actor:
+        def _mine(x):
+            _r = x.get("recruiter") or ""
+            return _r == _actor or R.match_name(_r, [_actor]) == _actor
+        _rail = [x for x in get_lists()["fulfilling"]
+                 if not x.get("is_closed") and _mine(x)]
+        if len(_rail) > 1:
+            _rail.sort(key=lambda x: ((x.get("plan_month") or ""),
+                                      (x.get("name") or "")))
+            st.markdown('<div style="font-size:12px;color:#86868b;'
+                        'margin:2px 0 8px">🚀 我的在履约网红 · 点名字直接切换'
+                        '（共 ' + str(len(_rail)) + ' 位）</div>',
+                        unsafe_allow_html=True)
+            _per_row = 5
+            for _b0 in range(0, len(_rail), _per_row):
+                _bcols = st.columns(_per_row)
+                for _bc, _bx in zip(_bcols, _rail[_b0:_b0 + _per_row]):
+                    _on = (_bx["collab_id"] == collab_id)
+                    if _bc.button(_bx.get("name") or _bx["collab_id"],
+                                  key=f"dsw_{collab_id}_{_bx['collab_id']}",
+                                  type="primary" if _on else "secondary",
+                                  disabled=_on, use_container_width=True):
+                        st.session_state["collab_id"] = _bx["collab_id"]
+                        st.session_state["detail_from"] = "detail"
+                        st.rerun()
+            st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
 
     price_on = bool(c.get("price"))
     st.markdown(T.stats_row([
