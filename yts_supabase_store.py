@@ -113,9 +113,10 @@ class YTSStore:
         self.h = {"apikey": self.key,
                   "Authorization": f"Bearer {self.key}",
                   "Content-Type": "application/json"}
-        self._all_cache = None  # (ts, rows)
+                self._all_cache = None  # (ts, rows)
         self.demo = False       # 主站用它区分提示语
         self.backend = "supabase"
+        self._rev = 0           # 写代次：每次写库自增，供 app 层缓存即时失效
 
     # ================================================== 底层 REST 小工具
     def _req(self, method, path, *, params=None, body=None, prefer=None,
@@ -136,13 +137,18 @@ class YTSStore:
         except Exception:
             return None
 
-    def _invalidate(self):
+        def _invalidate(self):
         with self._lock:
             self._all_cache = None
+            self._rev = getattr(self, "_rev", 0) + 1
 
     def _soft_invalidate(self):
         """同 _invalidate；Phase 1 保留同名方法给 apps 顶部按钮调用"""
         self._invalidate()
+
+    def rev(self) -> int:
+        """当前写代次：app 层缓存 key 用它，写完即变 → 缓存自动失效"""
+        return getattr(self, "_rev", 0)
 
     def _all(self, force: bool = False):
         """全表读；带 2s TTL 进程缓存"""
