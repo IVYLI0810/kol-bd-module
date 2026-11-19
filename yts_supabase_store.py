@@ -105,7 +105,7 @@ class YTSStore:
     2) 缓存大幅简化：Supabase 单表读 <500ms，全表 2s TTL 就够，写完立即失效。"""
 
     _lock = threading.RLock()
-    _CACHE_TTL = 2.0  # 秒；同进程 2s 内多次 _all() 只发一次 HTTP
+    _CACHE_TTL = 20.0  # 秒；同进程 20s 内多次 _all() 只发一次 HTTP（人点两下通常 >2s，旧值 2s 几乎每次都 miss → 卡；自己写库仍走 _rev 即时失效）
 
     def __init__(self, url=None, key=None):
         self.base = (url or _BASE).rstrip("/")
@@ -117,17 +117,19 @@ class YTSStore:
         self.demo = False       # 主站用它区分提示语
         self.backend = "supabase"
         self._rev = 0           # 写代次：每次写库自增，供 app 层缓存即时失效
+        self._sess = requests.Session()   # 连接复用：省掉每次请求重新 TLS 握手，冷启动也更快
+        self._sess.headers.update(self.h)
 
     # ================================================== 底层 REST 小工具
     def _req(self, method, path, *, params=None, body=None, prefer=None,
              timeout=15):
         url = f"{self.base}/rest/v1/{path}"
-        h = dict(self.h)
+        h = {}
         if prefer:
             h["Prefer"] = prefer
-        r = requests.request(method, url, params=params, headers=h,
-                             data=(json.dumps(body) if body is not None else None),
-                             timeout=timeout)
+        r = self._sess.request(method, url, params=params, headers=h,
+                               data=(json.dumps(body) if body is not None else None),
+                               timeout=timeout)
         if r.status_code >= 400:
             raise RuntimeError(f"Supabase {method} {path} -> {r.status_code}: {r.text[:250]}")
         if r.status_code == 204 or not r.content:
@@ -151,12 +153,12 @@ class YTSStore:
         return getattr(self, "_rev", 0)
 
     def _all(self, force: bool = False):
-        """全表读；带 2s TTL 进程缓存"""
+        """全表读；带 20s TTL 进程缓存；单请求最多 1000 行（现 896 行一次拿完，省一次往返）"""
         now = time.time()
         with self._lock:
             if not force and self._all_cache and now - self._all_cache[0] < self._CACHE_TTL:
                 return self._all_cache[1]
-        rows, off, limit = [], 0, 500
+        rows, off, limit = [], 0, 1000
         while True:
             page = self._req("GET", "collabs",
                              params={"select": "*",
