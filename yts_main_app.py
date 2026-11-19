@@ -49,13 +49,13 @@ if "page" not in st.session_state:
 
 def _cache_key():
     """UI 缓存键：本进程写库后 store 的写代次(_rev)变 → 立刻失效；
-    再叠加 2 秒分桶，保证队友在另一进程写的改动最坏约 2 秒后可见，
-    节奏与底层 store 缓存一致。"""
+    再叠加 20 秒分桶，保证队友在另一进程写的改动最坏约 20 秒后可见，
+    节奏与底层 store 缓存一致（自己保存仍即时刷新）。"""
     try:
         rev = store.rev()
     except Exception:
         rev = 0
-    return (int(rev), int(time.time() // 2))
+    return (int(rev), int(time.time() // 20))
 
 
 @st.cache_data(show_spinner=False)
