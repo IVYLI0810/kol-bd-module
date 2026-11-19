@@ -4,7 +4,4 @@ PySocks>=1.7.1  # requests 走 SOCKS 代理兜底所需（yts_yt_stats.py）
 pandas>=1.5.0
 openpyxl>=3.0.0
 python-docx>=0.8.11
-alibabacloud_aliding20230426>=2.57.0
-alibabacloud_tea_openapi>=0.4.5
-alibabacloud_tea_util>=0.3.15
 
