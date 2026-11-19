@@ -1488,8 +1488,8 @@ def _render_actions(cid, c, step):
                              ".wordprocessingml.document",
                         key="sdocx")
 
-                # （合同模块已下线：现由代理商联系网红签署，系统不再管理合同）
-                with st.expander(f"🛍 选品 + GMC 校验 · {_st_c}",
+            # （合同模块已下线：现由代理商联系网红签署，系统不再管理合同）
+            with st.expander(f"🛍 选品 + GMC 校验 · {_st_c}",
                              expanded=(_default_open == "c")):
                 prods = st.text_area("选品清单（每行一个链接）",
                                      value="\n".join(c["product_list"]), key="prods",
