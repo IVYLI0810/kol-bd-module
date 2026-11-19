@@ -113,7 +113,7 @@ class YTSStore:
         self.h = {"apikey": self.key,
                   "Authorization": f"Bearer {self.key}",
                   "Content-Type": "application/json"}
-                self._all_cache = None  # (ts, rows)
+        self._all_cache = None  # (ts, rows)
         self.demo = False       # 主站用它区分提示语
         self.backend = "supabase"
         self._rev = 0           # 写代次：每次写库自增，供 app 层缓存即时失效
@@ -137,7 +137,7 @@ class YTSStore:
         except Exception:
             return None
 
-        def _invalidate(self):
+    def _invalidate(self):
         with self._lock:
             self._all_cache = None
             self._rev = getattr(self, "_rev", 0) + 1
