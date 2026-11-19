@@ -1173,7 +1173,7 @@ def page_detail(collab_id):
                  key="edit_btn"):
         st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
         st.rerun()
-        c = store.get_collab(collab_id)  # 读缓存（Supabase 近实时，写完自动失效），不再每次强刷全表
+    c = store.get_collab(collab_id)  # 读缓存（Supabase 近实时，写完自动失效），不再每次强刷全表
     if not c:
         st.error("未找到该合作记录")
         return
