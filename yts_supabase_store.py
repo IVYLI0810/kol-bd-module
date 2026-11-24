@@ -409,6 +409,21 @@ class YTSStore:
         rec.setdefault("plan_month", "")
         return self._upsert_row(rec)
 
+    def set_recruiter(self, channel_id, recruiter):
+        """覆盖该频道的挖掘人 / 负责人：一条 PATCH 同时改该频道所有未删行
+        （含各月份合作记录 + 挖掘池裸行），保证挖掘池卡片与活动履约栏一致。
+        返回被更新的行数；空 channel_id / 空名字直接拒绝。"""
+        cid, _ = _split(channel_id)
+        name = (recruiter or "").strip()
+        if not cid or not name:
+            return 0
+        out = self._req("PATCH", "collabs",
+                        params={"channel_id": f"eq.{cid}", "deleted": "eq.false"},
+                        body={"recruiter": name},
+                        prefer="return=representation")
+        self._invalidate()
+        return len(out or [])
+
     def import_influencers(self, records):
         n = 0
         for rec in records or []:
