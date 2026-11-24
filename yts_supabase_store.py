@@ -698,6 +698,16 @@ class YTSStore:
         self._upd(collab_id, {"audit_status": "已通过"})
         return self._notify_result(collab_id, "已通过", note or "审核通过")
 
+    def skip_review(self, collab_id, note=""):
+        """跳过审核：运营直接判定审核通过，放行到「闭环」，无需审核站同学操作。
+        走与 review_pass 完全相同的通路（写 audit_status=已通过 → review_status→
+        已通过，解锁「审核 / 闭环」节点），只在审核日志里留一条「跳过审核」痕迹，
+        便于审核站与后续复盘追溯。"""
+        msg = note or "跳过审核（运营直接通过）"
+        self._add_audit(collab_id, "已通过", msg)
+        self._upd(collab_id, {"audit_status": "已通过"})
+        return self._notify_result(collab_id, "已通过", msg)
+
     def review_reject(self, collab_id, reason):
         self._add_audit(collab_id, "未通过", reason)
         self._upd(collab_id, {"audit_status": "未通过", "stage": "修改中"})
@@ -837,9 +847,22 @@ class YTSStore:
         self._upd(collab_id, patch)
 
     # ---------------- 反向：取消 / 流回 / 淘汰 ----------------
+    # 取消合作时要清空的履约/审核/结算进度字段（退回洽谈中 = 干净的重谈状态）
+    _CANCEL_CLEAR_TEXT = ("guideline_status", "contract_status", "gmc_status",
+                          "order_status", "shoot_status", "video_link",
+                          "recheck_video_url", "audit_status", "product_list",
+                          "settlement", "settlement_note",
+                          "submit_deadline", "submit_actual")
+    _CANCEL_CLEAR_JSON = ("audit_log", "videos", "products")
+    _CANCEL_CLEAR_NUM = ("price", "video_views", "video_likes", "video_comments",
+                         "product_views", "total_views", "ctr", "orders",
+                         "conversion_rate", "gmv")
+
     def cancel_collab(self, collab_id):
-        """取消合作：退回洽谈中、清空归属月份、进度字段保留。
-        主键含 plan_month，只能"删旧月份行 + 重建为裸行"。"""
+        """取消合作：退回洽谈中，并清空本次履约的全部进度
+        （Guideline/选品GMC/下单/收货/拍摄/视频/审核/结算/选品清单），
+        只保留网红基本信息与邮件/洽谈状态 —— 不再残留"半成品"记录。
+        主键含 plan_month，只能"删旧月份行 + 重建为干净裸行"。"""
         cid, month = _split(collab_id)
         if month:
             row = self._get(collab_id) or {}
@@ -849,10 +872,23 @@ class YTSStore:
                        if k not in ("id", "created_at", "updated_at", "plan_month")}
             payload["plan_month"] = ""
             payload["stage"] = "洽谈中"
+            for k in self._CANCEL_CLEAR_TEXT:
+                payload[k] = ""
+            for k in self._CANCEL_CLEAR_JSON:
+                payload[k] = []
+            for k in self._CANCEL_CLEAR_NUM:
+                payload[k] = 0
+            payload["ad_needed"] = False
+            payload["ad_done"] = False
             self._delete_row(cid, month)
             self._upsert_row({"channel_id": cid, **payload})
         else:
-            self._upd(collab_id, {"stage": "洽谈中"})
+            # 裸行：退回洽谈中并清空同样的进度字段
+            self._upd(collab_id, {"stage": "洽谈中", "ad_needed": False,
+                                  "ad_done": False},
+                      clear_fields=list(self._CANCEL_CLEAR_TEXT)
+                      + list(self._CANCEL_CLEAR_JSON)
+                      + list(self._CANCEL_CLEAR_NUM))
 
     def back_to_pool(self, collab_id):
         """流回挖掘库：删除该月份合作记录，网红留在挖掘池"""
