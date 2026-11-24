@@ -88,6 +88,39 @@ def get_lists():
     return _lists_cached(_cache_key())
 
 
+def _hard_refresh(expect_cid=None, tries=5, wait=0.35):
+    """写库后的强制刷新：既清 UI 层 @st.cache_data，也清 store 底层缓存，
+    再轮询确认新记录已经能从库里读到。
+
+    为什么需要轮询：Supabase 写入(DELETE+UPSERT)到下一次读取之间存在极短的
+    最终一致性延迟，偶尔第一次读还看不到刚写的行 → 你点完「确认合作」右栏
+    空一下，得再点刷新才出来。这里最多等约 1.7 秒直到看见为止，做到即时显示。
+    expect_cid 为空时只清缓存、不轮询。返回是否已确认看到新行。"""
+    try:
+        _lists_cached.clear()
+    except Exception:
+        pass
+    for _ in range(max(1, tries)):
+        try:
+            store._invalidate()
+        except Exception:
+            pass
+        if expect_cid is None:
+            return True
+        try:
+            ful = store.list_fulfilling()
+        except Exception:
+            ful = []
+        cid = str(expect_cid)
+        hit = any(str(f.get("channel_id", "")) == cid
+                  or str(f.get("collab_id", "")).split("#")[0] == cid
+                  for f in ful)
+        if hit:
+            return True
+        time.sleep(wait)
+    return False
+
+
 def go(page, **kw):
     st.session_state.page = page
     st.session_state.update(kw)
@@ -1021,12 +1054,11 @@ def page_activity():
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
         if st.button("🔄 刷新数据", key="btn_refresh_act",
                      use_container_width=True):
-            # 手动强制刷新：清底层缓存(会顶高写代次→_cache_key 变→列表重算)，
-            # 并把审核同步节流归零，下次渲染再顺带直查一次审核状态。
-            try:
-                store._invalidate()
-            except Exception:
-                pass
+            # 手动强制刷新：同时清 UI 缓存(@st.cache_data) 和底层 store 缓存
+            # (会顶高写代次→_cache_key 变→列表重算)，并把审核同步节流归零，
+            # 下次渲染再顺带直查一次审核状态。
+            with st.spinner("正在重新拉取最新数据…"):
+                _hard_refresh()
             st.session_state["act_sync_ts"] = 0
             flash("ok", "已重新拉取最新数据。")
             st.rerun()
@@ -1155,16 +1187,20 @@ def page_activity():
                               "填好后再次点击「确认合作」即可流入右栏履约。")
                         st.rerun()
                     else:
-                        store.confirm_collab(cid, month, price,
-                                             reusable=(reuse == "可二次利用"),
-                                             settle_note=note)
-                        try:
-                            store._invalidate()
-                        except Exception:
-                            pass
-                        flash("ok",
-                              f"✅ {c['name']} 已进入「{month}」履约栏。"
-                              "若右栏暂时没显示，点顶部「🔄 刷新数据」即可立刻看到。")
+                        with st.spinner("正在写入并刷新履约栏…"):
+                            store.confirm_collab(cid, month, price,
+                                                 reusable=(reuse == "可二次利用"),
+                                                 settle_note=note)
+                            seen = _hard_refresh(expect_cid=cid)
+                        st.session_state["act_sync_ts"] = 0
+                        if seen:
+                            flash("ok",
+                                  f"✅ {c['name']} 已进入「{month}」履约栏，"
+                                  "右栏现在就能看到。")
+                        else:
+                            flash("ok",
+                                  f"✅ {c['name']} 已确认并写入「{month}」履约栏。"
+                                  "右栏稍等一两秒或点顶部「🔄 刷新数据」即可看到。")
                         st.rerun()
 
     with right:
