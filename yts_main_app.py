@@ -313,6 +313,30 @@ def dlg_add():
             st.error("「直接进履约」请先选择「能否二次利用」")
         else:
             _month = month.strip() if _to_ful else ""
+            # 没点「自动识别」也没手填粉丝数时，保存前自动按频道抓一次，
+            # 避免新增后粉丝量为 0、又没法重新抓数据
+            _auto_note = ""
+            if int(subs or 0) <= 0 and (raw.strip() or cid.strip()):
+                with st.spinner("正在自动抓取频道粉丝数…"):
+                    _r = LK.lookup((raw.strip() or cid.strip()))
+                if _r.get("ok"):
+                    _newcid = (_r.get("channel_id") or "").strip()
+                    # 频道ID 不是标准 UC（比如误把主页链接/handle 填进来了），
+                    # 而这次能解析出真正的 UC 频道ID，就用它，方便后续抓播放/去重
+                    if _newcid.startswith("UC") and (
+                            not cid.strip() or not cid.strip().startswith("UC")):
+                        cid = _newcid
+                    elif not cid.strip():
+                        cid = _newcid
+                    if int(_r.get("subscribers") or 0) > 0:
+                        subs = int(_r["subscribers"])
+                    if not cname.strip() and _r.get("name"):
+                        cname = _r["name"]
+                    if not email.strip() and _r.get("email"):
+                        email = _r["email"]
+                    _auto_note = f"，已自动抓取粉丝 {subs:,}"
+                else:
+                    _auto_note = "，粉丝数自动抓取失败（可稍后在详情页点「🔄 重新抓取频道数据」）"
             rec = {
                 "channel_id": cid.strip(), "channel_name": cname.strip(),
                 "category": cat.strip(), "subscribers": int(subs),
@@ -338,8 +362,9 @@ def dlg_add():
                 st.session_state["activity_recruiter"] = _who
                 if _who:
                     st.query_params["rec"] = _who
-                flash("ok", f"🚀 已新增「{cname.strip()}」为 {_month} 履约中记录，"
-                            "已定位到你的活动模块，可继续前期准备 / 下单 / 拍摄")
+                flash("ok", f"🚀 已新增「{cname.strip()}」为 {_month} 履约中记录"
+                            f"{_auto_note}，已定位到你的活动模块，"
+                            "可继续前期准备 / 下单 / 拍摄")
                 go("activity")
                 return
             # 进挖掘池：挖掘池按 id 升序 + 分页，新记录默认排最后一页，
@@ -350,7 +375,7 @@ def dlg_add():
             st.session_state["dig_rec"] = "全部挖掘人"
             st.session_state["dig_status"] = "全部"
             st.session_state["dig_page"] = 1
-            flash("ok", f"✅ 已新增「{cname.strip()}」到挖掘池，"
+            flash("ok", f"✅ 已新增「{cname.strip()}」到挖掘池{_auto_note}，"
                         "当前列表已定位到该频道，可继续标记邮件/洽谈")
             go("dig")
 
@@ -1432,6 +1457,27 @@ def page_detail(collab_id):
         ("长视频总播放", f'{yt["long_views"]:,}' if yt else "-", "c-green"),
         ("短视频总播放", f'{yt["short_views"]:,}' if yt else "-", "c-amber"),
     ]), unsafe_allow_html=True)
+    # 重新抓取频道数据：新增/直接进履约时没抓到粉丝（显示 0），或粉丝后来变了，
+    # 在这里点一下即可按频道重新拉取真实粉丝数（并顺带回填空昵称/邮箱、补正频道ID）
+    _rf1, _rf2 = st.columns([2.2, 5.8])
+    if _rf1.button("🔄 重新抓取频道数据（粉丝/播放）",
+                   key=f"btn_refetch_{collab_id}", use_container_width=True,
+                   help="按频道主页重新抓取真实粉丝数并写回，解决新增后粉丝量为 0、"
+                        "无法重新抓数据的问题"):
+        if not YT.get_key():
+            flash("err", "未配置 YOUTUBE_API_KEY，无法抓取频道数据。"
+                  "请先在密钥设置里补上 YouTube API Key 再点。")
+        else:
+            with st.spinner("正在按频道重新抓取粉丝/播放数据…"):
+                res = store.refetch_channel_stats(collab_id)
+            _hard_refresh()
+            if res.get("ok"):
+                flash("ok", f"✅ 粉丝量已更新为 {int(res.get('subscribers') or 0):,}"
+                            f"（{res.get('msg','')}）。若播放/垂类仍为空，"
+                            "多为该频道未公开或链接无效，可手动补填。")
+            else:
+                flash("err", "⚠️ " + res.get("msg", "抓取失败"))
+        st.rerun()
     if not YT.get_key():
         st.caption("配置 YOUTUBE_API_KEY 后自动同步长/短总播放（缓存 7 天）")
     _meta = []
