@@ -1444,31 +1444,20 @@ _STORE = None
 
 
 def get_yts_store():
-    """进程级单例。开关优先级：
-    USE_SUPABASE_STORE=1 → 走 Supabase 共享库（Phase 1 换库后正式路径）
-    否则有宜搭 AK/SK     → 走宜搭（回退老路径，搬家灰度期用）
-    都没有               → 走本地 demo（无网/无凭证时的兜底）"""
+    """进程级单例。2026-11 换库定案：写死强制走 Supabase 共享库，
+    不再看 USE_SUPABASE_STORE 开关，也绝不静默回退宜搭/demo。
+    SupaStore.__init__ 只设 base/key/headers（URL/Key 缺省从 yts_roster 硬编码兜底），
+    不发网络请求，因此构造不会失败；若真构造异常则明确抛错，宁可炸站也不偷偷用旧库。"""
     global _STORE
     if _STORE is not None:
         return _STORE
-    import os
-    if os.environ.get("USE_SUPABASE_STORE") == "1":
-        try:
-            from yts_supabase_store import YTSStore as SupaStore
-            _STORE = SupaStore()
-            return _STORE
-        except Exception:
-            # 初始化失败继续往下走，保证不炸站
-            pass
-    cfg = _cfg()
-    if cfg.get("access_key_id") and cfg.get("access_key_secret"):
-        try:
-            _STORE = YTSStore(YidaBDDB(**cfg))
-            return _STORE
-        except Exception:
-            pass
-    from yts_store import YTSStore as DemoStore
-    d = DemoStore()
-    d.demo = True
-    _STORE = d
-    return d
+    try:
+        from yts_supabase_store import YTSStore as SupaStore
+        _STORE = SupaStore()
+        return _STORE
+    except Exception as e:  # 不再静默吞掉：强制 Supabase 失败必须显式暴露
+        raise RuntimeError(
+            "强制使用 Supabase 共享库失败，已禁止回退宜搭。"
+            "请检查 yts_supabase_store.py / yts_roster.py 是否已上传最新版。"
+            f" 原始错误：{e!r}"
+        ) from e
