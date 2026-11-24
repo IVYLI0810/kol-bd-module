@@ -722,6 +722,11 @@ def page_dig():
                 mark_actions.append((p["id"], "unneg"))
             else:
                 st_cell = T.badge("已流入活动")
+            _recr_txt = esc(p.get("recruiter") or "-")
+            _recr_cell = (
+                f'{_recr_txt} <a class="act act-u" title="更改挖掘人（覆盖该频道负责人）" '
+                f'data-nav="#mark={len(mark_actions)}">✏️ 改</a>')
+            mark_actions.append((p["id"], "rec"))
             trows.append([
                 name_cell,
                 esc(" · ".join(
@@ -729,7 +734,7 @@ def page_dig():
                                 (p.get("sales_category") or "").strip())
                     if t) or "-"),
                 f'<span class="num">{p.get("followers", 0):,}</span>',
-                esc(p.get("recruiter") or "-"),
+                _recr_cell,
                 f'<span style="color:#86868b">{esc(p.get("email") or "-")}</span>',
                 st_cell,
             ])
@@ -752,10 +757,56 @@ def page_dig():
             elif act == "unneg":
                 store.unmark_negotiating(iid)
                 st.toast("已取消「洽谈中」，退回已发邮件状态")
+            elif act == "rec":
+                # 只打开下方「改挖掘人」内联编辑框，不在回调里写库
+                st.session_state["_rec_cid"] = iid
+                st.session_state["_rec_open"] = True
 
         for i, (iid, act) in enumerate(mark_actions):
             st.button(f"mark{i}", key=f"digmark{i}",
                       on_click=_mark_cb, args=(iid, act, _dig_actor))
+
+        # —— 改挖掘人：内联编辑框（非 iframe、非 dialog，交互最稳）——
+        if st.session_state.get("_rec_open") and st.session_state.get("_rec_cid"):
+            _rcid = st.session_state["_rec_cid"]
+            _card = next((x for x in pool if x.get("id") == _rcid), None)
+            _cur = (_card or {}).get("recruiter") or ""
+            _cnm = (_card or {}).get("name") or _rcid
+            st.markdown(
+                '<div style="border:1px solid #e6c9d3;background:#fbf5f7;'
+                'border-radius:12px;padding:12px 14px;margin:10px 0">',
+                unsafe_allow_html=True)
+            st.markdown(f"**✏️ 更改挖掘人** · {_cnm}　"
+                        f'<span style="color:#86868b;font-size:12.5px">'
+                        f'（当前：{esc(_cur or "-")}）</span>',
+                        unsafe_allow_html=True)
+            st.caption("把该频道（含它所有月份合作记录）的挖掘人 / 负责人覆盖为新名字。")
+            _names_all = sorted(set(R.get_members())
+                                | ({_cur} if _cur else set()))
+            r1, r2, r3, r4 = st.columns([2, 2, 1, 1])
+            with r1:
+                _rsel = st.selectbox("从名单选择", ["（请选择）"] + _names_all,
+                                     key="rec_sel")
+            with r2:
+                _rman = st.text_input("或直接输入新名字", key="rec_manual")
+            _newr = _rman.strip() or (_rsel if _rsel != "（请选择）" else "")
+            with r3:
+                if st.button("💾 保存", type="primary", use_container_width=True,
+                             key="rec_save"):
+                    if not _newr:
+                        st.warning("先选一个名字或手动输入")
+                    else:
+                        store.set_recruiter(_rcid, _newr)
+                        for _k in ("_rec_cid", "_rec_open", "rec_sel", "rec_manual"):
+                            st.session_state.pop(_k, None)
+                        flash("ok", f"✅ 已把「{_cnm}」的挖掘人改为 {esc(_newr)}")
+                        st.rerun()
+            with r4:
+                if st.button("取消", use_container_width=True, key="rec_cancel"):
+                    for _k in ("_rec_cid", "_rec_open", "rec_sel", "rec_manual"):
+                        st.session_state.pop(_k, None)
+                    st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
 
     p1, p2, p3 = st.columns([1, 3, 1])
     with p1:
@@ -1096,7 +1147,7 @@ def page_activity():
                 cids = [c["collab_id"] for c in rows]
                 # 卡片固定 64px 高 + 上下 margin 16px = 80px/卡；
                 # 月份标签约 36px；公式贴合实际，避免底部积空白
-                _cap = 520
+                _cap = 640  # 约一屏 8 张（8 × 80px），再多才内部滚动
                 card_area = min(len(rows) * 80, _cap)
                 full = 36 + card_area
                 with col:
