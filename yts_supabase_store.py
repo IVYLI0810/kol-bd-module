@@ -715,13 +715,17 @@ class YTSStore:
 
     def skip_review(self, collab_id, note=""):
         """跳过审核：运营直接判定审核通过，放行到「闭环」，无需审核站同学操作。
-        走与 review_pass 完全相同的通路（写 audit_status=已通过 → review_status→
-        已通过，解锁「审核 / 闭环」节点），只在审核日志里留一条「跳过审核」痕迹，
-        便于审核站与后续复盘追溯。"""
+        写 audit_status=已通过 → review_status→已通过，解锁「审核 / 闭环」节点，
+        只在审核日志里留一条「跳过审核」痕迹，便于后续复盘追溯。
+
+        注意：跳过审核是运营线下自行放行，不应再触发机器人往群里发「审核结果」
+        通知（否则群里会出现一条本不该有的自动审核消息）。因此这里刻意不调用
+        _notify_result，只做本地写库 + 日志留痕，静默完成。"""
         msg = note or "跳过审核（运营直接通过）"
         self._add_audit(collab_id, "已通过", msg)
         self._upd(collab_id, {"audit_status": "已通过"})
-        return self._notify_result(collab_id, "已通过", msg)
+        self._invalidate()
+        return (True, "已跳过审核（未发送群通知）")
 
     def review_reject(self, collab_id, reason):
         self._add_audit(collab_id, "未通过", reason)
