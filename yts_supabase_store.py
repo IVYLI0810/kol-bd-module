@@ -500,6 +500,62 @@ class YTSStore:
             n += 1
         return n
 
+    def refetch_channel_stats(self, collab_id):
+        """按频道重新抓取「粉丝量」等基础数据并写回该频道的全部月份记录。
+
+        用途：新增/直接进履约时没抓到粉丝（显示 0），或频道粉丝后来变了，
+        在履约详情页点一下即可重新拉取真实粉丝数（顺带回填空昵称/邮箱，
+        并在原频道ID不是标准 UC 开头、而这次能解析出 UC 时把频道ID补正，
+        让长/短视频总播放也能随之显示）。返回 {ok, subscribers, channel_id,
+        name, email, msg}。"""
+        import yts_channel_lookup as LK
+        cid, _m = _split(collab_id)
+        rows = self._all()
+        fam = [r for r in rows if r.get("channel_id") == cid]
+        if not fam:
+            return {"ok": False, "subscribers": 0, "channel_id": cid,
+                    "name": "", "email": "", "msg": "未找到该频道记录"}
+        url = next((r.get("channel_url") for r in fam
+                    if r.get("channel_url")), "")
+        raw = url or cid
+        info = LK.lookup(raw) or {}
+        if not info.get("ok"):
+            return {"ok": False, "subscribers": 0, "channel_id": cid,
+                    "name": "", "email": "",
+                    "msg": "没抓到：请确认频道链接/ID 正确、粉丝数在 YouTube 公开可见，"
+                           "且已配置 YOUTUBE_API_KEY"}
+        sub = int(info.get("subscribers") or 0)
+        new_cid = (info.get("channel_id") or "").strip()
+        name = (info.get("name") or "").strip()
+        email = (info.get("email") or "").strip()
+        # 仅当原频道ID非 UC、且解析出的 UC 未被别的频道占用时，才补正频道ID
+        upgrade_cid = (bool(new_cid) and new_cid.startswith("UC")
+                       and not str(cid).startswith("UC")
+                       and not any(r.get("channel_id") == new_cid for r in rows))
+        target_cid = new_cid if upgrade_cid else cid
+        patched = 0
+        for r in fam:
+            patch = {}
+            if sub > 0:
+                patch["subscribers"] = sub
+            if not (r.get("channel_name") or "").strip() and name:
+                patch["channel_name"] = name
+            if not (r.get("email") or "").strip() and email:
+                patch["email"] = email
+            if not (r.get("channel_url") or "").strip() and url:
+                patch["channel_url"] = url
+            if upgrade_cid:
+                patch["channel_id"] = new_cid
+            if patch:
+                self._patch_row(r.get("channel_id"),
+                                r.get("plan_month") or "", patch)
+                patched += 1
+        self._invalidate()
+        return {"ok": True, "subscribers": sub, "channel_id": target_cid,
+                "name": name, "email": email,
+                "msg": f"已更新 {patched} 条记录"
+                       + ("，并补正了频道ID" if upgrade_cid else "")}
+
     def url_index(self):
         return {(r.get("channel_url") or "").strip(): r.get("channel_id")
                 for r in self._all() if r.get("channel_url")}
