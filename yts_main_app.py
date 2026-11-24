@@ -43,6 +43,19 @@ if getattr(store, "demo", False):
 esc = html.escape
 NOW_MONTH = datetime.now().strftime("%Y-%m")
 
+
+def _backend_label():
+    """诊断当前进程实际连的数据源（换库开关没生效时会静默回退宜搭）。"""
+    mod = type(store).__module__ or ""
+    flag = os.environ.get("USE_SUPABASE_STORE", "")
+    if "yts_supabase_store" in mod:
+        url = os.environ.get("SUPABASE_URL", "")
+        host = url.split("//")[-1].split("/")[0] if url else "(URL空)"
+        return f"🟦 Supabase 共享库 · {host} · 开关={flag or '未设'}"
+    if getattr(store, "demo", False) or mod.endswith("yts_store"):
+        return f"🟨 演示数据（未连真库）· 开关={flag or '未设'}"
+    return f"🟧 宜搭 Yida（旧库）· USE_SUPABASE_STORE={flag or '未设'}"
+
 if "page" not in st.session_state:
     st.session_state.page = "home"
 
@@ -987,6 +1000,7 @@ def _export_all_data():
 def page_activity():
     render_nav()
     _render_flash()  # 显示上一步操作提示（如「🔄 刷新数据」结果）
+    st.caption(f"数据源诊断：{_backend_label()}")
     # 审核状态快速同步（写入就反馈）：审核站与主站是两个进程、缓存不通，
     # 这里每次打开活动模块就把「待审核/已驳回待复审」的记录逐条直查宜搭
     # （通常只有几条，1-2秒），审核站的驳回/通过几秒内即可见，无需手动刷新
