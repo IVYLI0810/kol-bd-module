@@ -1130,7 +1130,11 @@ def page_activity():
                                         step=10000,
                                         value=int(c.get("price") or 0),
                                         key=f"p_{cid}")
-                reuse = st.radio("能否二次利用", ["请选择", "可二次利用", "不可二次利用"],
+                _reuse_opts = ["请选择", "可二次利用", "不可二次利用"]
+                _reuse_idx = (_reuse_opts.index(c["settlement"])
+                              if c.get("settlement") in _reuse_opts[1:] else 0)
+                reuse = st.radio("能否二次利用", _reuse_opts,
+                                 index=_reuse_idx,
                                  horizontal=True, key=f"ru_{cid}",
                                  help="必填：该网红内容/账号后续能否二次利用"
                                       "（如剪辑复用、二次分发等）")
@@ -1140,10 +1144,16 @@ def page_activity():
                                      placeholder="如：二次利用需另付50%费用等补充说明")
                 if st.button("确认合作", key=f"ok_{cid}", type="primary",
                              use_container_width=True):
+                    _miss = []
                     if price <= 0:
-                        st.warning("请先填写报价（韩币）再确认合作")
-                    elif reuse == "请选择":
-                        st.warning("请先选择「能否二次利用」再确认合作")
+                        _miss.append("报价（韩币，需大于 0）")
+                    if reuse == "请选择":
+                        _miss.append("「能否二次利用」")
+                    if _miss:
+                        flash("err",
+                              f"⚠️ 还差 {len(_miss)} 项才能确认合作：{'、'.join(_miss)}。"
+                              "填好后再次点击「确认合作」即可流入右栏履约。")
+                        st.rerun()
                     else:
                         store.confirm_collab(cid, month, price,
                                              reusable=(reuse == "可二次利用"),
