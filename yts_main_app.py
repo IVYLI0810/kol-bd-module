@@ -986,6 +986,7 @@ def _export_all_data():
 
 def page_activity():
     render_nav()
+    _render_flash()  # 显示上一步操作提示（如「🔄 刷新数据」结果）
     # 审核状态快速同步（写入就反馈）：审核站与主站是两个进程、缓存不通，
     # 这里每次打开活动模块就把「待审核/已驳回待复审」的记录逐条直查宜搭
     # （通常只有几条，1-2秒），审核站的驳回/通过几秒内即可见，无需手动刷新
@@ -1004,6 +1005,17 @@ def page_activity():
                     unsafe_allow_html=True)
     with h2:
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+        if st.button("🔄 刷新数据", key="btn_refresh_act",
+                     use_container_width=True):
+            # 手动强制刷新：清底层缓存(会顶高写代次→_cache_key 变→列表重算)，
+            # 并把审核同步节流归零，下次渲染再顺带直查一次审核状态。
+            try:
+                store._invalidate()
+            except Exception:
+                pass
+            st.session_state["act_sync_ts"] = 0
+            flash("ok", "已重新拉取最新数据。")
+            st.rerun()
         _fi_open = st.session_state.get("flow_import_open", False)
         _pi_open = st.session_state.get("product_import_open", False)
         if st.button("✕ 收起导入面板" if _fi_open else " 流程导入",
@@ -1122,7 +1134,13 @@ def page_activity():
                         store.confirm_collab(cid, month, price,
                                              reusable=(reuse == "可二次利用"),
                                              settle_note=note)
-                        st.toast(f"{c['name']} 已进入右栏（{month}）")
+                        try:
+                            store._invalidate()
+                        except Exception:
+                            pass
+                        flash("ok",
+                              f"✅ {c['name']} 已进入「{month}」履约栏。"
+                              "若右栏暂时没显示，点顶部「🔄 刷新数据」即可立刻看到。")
                         st.rerun()
 
     with right:
