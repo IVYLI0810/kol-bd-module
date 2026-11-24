@@ -189,11 +189,19 @@ def dlg_add():
     st.session_state.setdefault("add_subs", 0)
     st.session_state.setdefault("add_email", "")
     st.session_state.setdefault("add_month", "")
+    st.session_state.setdefault("add_price", 0)
+    st.session_state.setdefault("add_settle_note", "")
     if not st.session_state.get("add_rec"):
         st.session_state["add_rec"] = actor
+    mode = st.pills(
+        "加到哪里", ["🔍 先进挖掘池", "🚀 直接进履约"],
+        default="🔍 先进挖掘池", key="add_mode")
+    _to_ful = (mode or "").startswith("🚀")
     st.caption("贴频道主页链接点「🔎 自动识别」：自动带出最新粉丝数 / 昵称 / "
                "你之前给这个频道标过的内容垂类，邮箱尽力抓取（抓不到就手填）。"
-               "挖掘人默认＝你当前选的名字；填了「归属月份」就直接开当月合作记录。")
+               "挖掘人默认＝你当前选的名字。"
+               + ("「直接进履约」＝跳过挖掘/洽谈，建好就是当月履约中记录。"
+                  if _to_ful else "「先进挖掘池」＝只入池，后续再标邮件/洽谈。"))
     raw = st.text_input("频道主页链接 / @handle / 频道ID", key="add_raw",
                         placeholder="https://youtube.com/@xxx 或 UCxxxx")
     if st.button("🔎 自动识别", key="add_lookup_btn", use_container_width=True):
@@ -228,30 +236,77 @@ def dlg_add():
     b1, b2 = st.columns(2)
     cat = b1.text_input("内容垂类", key="add_cat", placeholder="뷰티")
     subs = b2.number_input("粉丝数", key="add_subs", min_value=0, step=1000)
-    d1, d2 = st.columns(2)
-    email = d1.text_input("联系邮箱", key="add_email")
-    month = d2.text_input("归属月份（选填，如 2026-11）", key="add_month",
-                          placeholder="留空＝只进挖掘池")
+    email = st.text_input("联系邮箱", key="add_email")
     recruiter = st.text_input("挖掘人（你的名字）", key="add_rec")
+    reuse = None
+    settle_note = ""
+    if _to_ful:
+        st.markdown("— 直接进履约，补齐合作信息 —")
+        m1, m2 = st.columns(2)
+        month = m1.text_input("上线月份（如 2026-11）", key="add_month",
+                              placeholder=NOW_MONTH)
+        price = m2.number_input("报价（韩币）", min_value=0, step=10000,
+                                key="add_price")
+        reuse = st.radio("能否二次利用", ["请选择", "可二次利用", "不可二次利用"],
+                         horizontal=True, key="add_reuse",
+                         index=["请选择", "可二次利用", "不可二次利用"].index(
+                             st.session_state.get("add_reuse", "请选择")))
+        settle_note = st.text_input("结算备注（选填）", key="add_settle_note",
+                                    placeholder="如：二次利用需另付50%费用等")
+    else:
+        month = st.session_state.get("add_month", "")
+        price = st.session_state.get("add_price", 0)
     if st.button("💾 保存", type="primary", use_container_width=True):
         if not cid.strip() or not cname.strip():
             st.error("频道ID 和昵称为必填项")
+        elif _to_ful and not month.strip():
+            st.error("「直接进履约」必须填上线月份（如 2026-11）")
+        elif _to_ful and int(price or 0) <= 0:
+            st.error("「直接进履约」请先填写报价（韩币）")
+        elif _to_ful and reuse == "请选择":
+            st.error("「直接进履约」请先选择「能否二次利用」")
         else:
+            _month = month.strip() if _to_ful else ""
             rec = {
                 "channel_id": cid.strip(), "channel_name": cname.strip(),
                 "category": cat.strip(), "subscribers": int(subs),
                 "recruiter": (recruiter.strip() or actor),
-                "email": email.strip(), "plan_month": month.strip(),
+                "email": email.strip(), "plan_month": _month,
             }
+            if _to_ful:
+                rec["stage"] = "已确认"
+                rec["price"] = int(price or 0)
+                rec["settlement"] = ("可二次利用" if reuse == "可二次利用"
+                                     else "不可二次利用")
+                rec["settlement_note"] = (settle_note or "").strip()
             if raw.strip().lower().startswith("http"):
                 rec["channel_url"] = raw.strip()
             store.add_influencer(rec)
             for _k in ("add_raw", "add_cid", "add_name", "add_cat",
-                       "add_subs", "add_email", "add_month", "add_rec"):
+                       "add_subs", "add_email", "add_month", "add_rec",
+                       "add_price", "add_reuse", "add_settle_note", "add_mode"):
                 st.session_state.pop(_k, None)
-            st.toast(f"{cname} 已加入"
-                     + (f"（{month.strip()} 合作）" if month.strip() else "挖掘池"))
-            st.rerun()
+            _who = (recruiter.strip() or actor)
+            if _to_ful:
+                # 直接进履约：选好活动页「我的名字」并跳活动模块，落到该月履约栏
+                st.session_state["activity_recruiter"] = _who
+                if _who:
+                    st.query_params["rec"] = _who
+                flash("ok", f"🚀 已新增「{cname.strip()}」为 {_month} 履约中记录，"
+                            "已定位到你的活动模块，可继续前期准备 / 下单 / 拍摄")
+                go("activity")
+                return
+            # 进挖掘池：挖掘池按 id 升序 + 分页，新记录默认排最后一页，
+            # 不筛就会「像没加一样」——锁定到该频道 + 重置筛选/页码，保证加完立刻看得见
+            _lock_cid = cid.strip()
+            st.session_state["dig_q"] = _lock_cid
+            st.session_state["dig_cat"] = "全部垂类"
+            st.session_state["dig_rec"] = "全部挖掘人"
+            st.session_state["dig_status"] = "全部"
+            st.session_state["dig_page"] = 1
+            flash("ok", f"✅ 已新增「{cname.strip()}」到挖掘池，"
+                        "当前列表已定位到该频道，可继续标记邮件/洽谈")
+            go("dig")
 
 
 def _import_template_bytes() -> bytes:
@@ -504,6 +559,7 @@ def _fix_zero_subscribers():
 
 def page_dig():
     render_nav()
+    _render_flash()  # 显示上一步操作提示（如「新增网红」成功定位）
     h1, h2, h3 = st.columns([4, 1, 1])
     with h1:
         st.markdown(T.header("挖掘模块",
@@ -1344,6 +1400,20 @@ def _render_danger_zone(cid, c, sel, steps):
         else:
             st.caption(f"当前步骤「{label}」未完成，无需回退")
         st.divider()
+        # 1.5) 跳过审核：审核站一时没人审 / 走线下确认时，运营直接放行到闭环
+        if c.get("plan_month") and c.get("review_status") \
+                not in ("已通过", "复审通过"):
+            st.caption("审核站暂时没人审、或已线下确认内容合格？可「跳过审核」直接放行到闭环"
+                       "（会在审核日志留一条「跳过审核」记录，便于追溯）")
+            def _do_skip():
+                store.skip_review(cid)
+                st.session_state.setdefault("detail_steps", {})[cid] = 7
+                flash("ok", "已跳过审核，现在可以登记已发布视频并闭环")
+                st.rerun()
+            _confirm_btn("skiprev", "⏭ 跳过审核，直接放行闭环",
+                         "确认跳过审核？将视为审核通过并进入闭环",
+                         _do_skip)
+            st.divider()
         # 2) 取消合作 / 流回挖掘库 / 淘汰
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -1623,6 +1693,18 @@ def _render_actions(cid, c, step):
                     st.rerun()
             else:
                 st.markdown(T.badge(rs or "待审核"), unsafe_allow_html=True)
+            if rs not in ("已通过", "复审通过"):
+                st.divider()
+                st.caption("审核站暂时没人审 / 已线下确认内容合格？可跳过审核直接放行到闭环"
+                           "（审核日志会留一条「跳过审核」记录）")
+
+                def _skip6():
+                    store.skip_review(cid)
+                    st.session_state.setdefault("detail_steps", {})[cid] = 7
+                    flash("ok", "已跳过审核，现在可以登记已发布视频并闭环")
+                    st.rerun()
+                _confirm_btn("skiprev6", "⏭ 跳过审核，直接放行闭环",
+                             "确认跳过审核？将视为审核通过并进入闭环", _skip6)
             log = c.get("audit_log") or []
             if log:
                 with st.expander(f"📜 审核历史（{len(log)} 条）"):
@@ -1728,8 +1810,18 @@ def _render_step7_videos(cid, c, rs):
             return
 
         if rs not in ("已通过", "复审通过"):
-            st.markdown(T.empty_hint("审核通过后，在此登记已发布视频并完成闭环"),
-                        unsafe_allow_html=True)
+            st.markdown(T.sub("还未通过审核，暂时无法闭环"), unsafe_allow_html=True)
+            st.caption("正常流程：视频发到审核站 → 审核通过 → 回到这里登记已发布视频并闭环。")
+            st.caption("若审核站暂时没人审 / 已线下确认内容合格，可「跳过审核」直接放行"
+                       "（审核日志会留一条「跳过审核」记录，便于追溯）")
+
+            def _skip7():
+                store.skip_review(cid)
+                st.session_state.setdefault("detail_steps", {})[cid] = 7
+                flash("ok", "已跳过审核，现在可以登记已发布视频并闭环")
+                st.rerun()
+            _confirm_btn("skiprev7", "⏭ 跳过审核，直接放行闭环",
+                         "确认跳过审核？将视为审核通过并进入闭环", _skip7)
             return
 
         st.caption("登记本次合作发布的所有视频（一条长视频+一条Shorts就登记两行）；"
